@@ -73,7 +73,7 @@ $has_filters = !empty(array_filter($_GET));
 $has_date_range = !empty($selected_date_from) || !empty($selected_date_to);
 
 // Function to get daily breakdown for a partner (used inline)
-function getDailyBreakdown($conn, $partner_id, $bank, $settlement_type, $date_from, $date_to) {
+function getDailyBreakdown( mysqli $conn, int $partner_id, string $bank, string $settlement_type, string $date_from, string $date_to) {
     $where_conditions = [];
     $params = [];
     $types = "";
@@ -257,111 +257,6 @@ function generateDailyBreakdownHTML($data) {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js"></script>
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="css/settlement_bank.css?v=<?= time(); ?>">
-    <style>
-        .chevron-toggle {
-            cursor: pointer;
-            transition: transform 0.3s ease;
-            display: inline-block;
-            width: 20px;
-            text-align: center;
-            font-size: 14px;
-            color: #007bff;
-        }
-        .chevron-toggle.expanded {
-            transform: rotate(180deg);
-        }
-        .chevron-toggle:hover {
-            color: #0056b3;
-        }
-        .chevron-toggle.loading {
-            color: #ffc107;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        .daily-breakdown-row {
-            background-color: #f8f9fa !important;
-        }
-        .daily-breakdown-row td {
-            padding: 8px 12px !important;
-            font-size: 13px !important;
-            border-bottom: 1px dashed #dee2e6 !important;
-        }
-        .daily-breakdown-row .date-cell {
-            font-weight: 500;
-            color: #495057;
-        }
-        .daily-breakdown-row .daily-total {
-            font-weight: 600;
-        }
-        .daily-breakdown-row .daily-settlement {
-            font-weight: 600;
-        }
-        .daily-subtotal-row {
-            background-color: #e9ecef !important;
-        }
-        .daily-subtotal-row td {
-            padding: 8px 12px !important;
-            font-weight: 600;
-            border-top: 2px solid #dee2e6 !important;
-        }
-        .chevron-placeholder {
-            display: inline-block;
-            width: 20px;
-        }
-        .data-row .partner-name-cell {
-            position: relative;
-        }
-        .daily-breakdown-container {
-            animation: slideDown 0.3s ease;
-        }
-        @keyframes slideDown {
-            from {
-                opacity: 0;
-                transform: translateY(-10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        .daily-breakdown-row .txn-count,
-        .daily-breakdown-row .amount-col {
-            font-size: 13px !important;
-        }
-        .daily-breakdown-loading {
-            text-align: center;
-            padding: 15px !important;
-            color: #6c757d;
-        }
-        .daily-breakdown-loading i {
-            font-size: 24px;
-            margin-bottom: 5px;
-            display: block;
-        }
-        .daily-breakdown-error {
-            text-align: center;
-            padding: 15px !important;
-            color: #dc3545;
-        }
-        .daily-breakdown-error i {
-            font-size: 24px;
-            margin-bottom: 5px;
-            display: block;
-        }
-        .daily-breakdown-container td {
-            padding: 0 !important;
-        }
-        .daily-breakdown-table {
-            width: 100% !important;
-        }
-        .daily-breakdown-table td, 
-        .daily-breakdown-table th {
-            padding: 6px 12px !important;
-        }
-    </style>
 </head>
 <body>
     <!-- Loading Modal - Visible by default -->
