@@ -158,82 +158,81 @@ if (isset($_GET['action'])) {
                 $inc_exc_value = 'NON-VAT';
             }
             
-            // Get transaction summary for date range
-            $from_date = $_GET['from_date'] ?? '';
-            $to_date = $_GET['to_date'] ?? '';
+           // Get transaction summary for date range
+$from_date = $_GET['from_date'] ?? '';
+$to_date = $_GET['to_date'] ?? '';
+
+// Only query transactions if both dates are provided
+if (!empty($from_date) && !empty($to_date)) {
+    // Validate dates
+    if (!strtotime($from_date) || !strtotime($to_date)) {
+        echo json_encode(['error' => 'Invalid date format']);
+        exit;
+    }
+    
+    // Check if the billspayment_transaction table exists and has data
+    $check_table_query = "SHOW TABLES LIKE 'billspayment_transaction'";
+    $check_table_result = mysqli_query($conn, $check_table_query);
+    $table_exists = mysqli_num_rows($check_table_result) > 0;
+    
+    if (!$table_exists) {
+        error_log("Table 'billspayment_transaction' does not exist in database 'mldb'");
+        // Return empty transaction data
+        $trans_data = [
+            'total_amount_paid' => 0,
+            'total_charge' => 0,
+            'transaction_count' => 0
+        ];
+    } else {
+        // Check if the table has the required columns
+        $check_columns_query = "SHOW COLUMNS FROM mldb.billspayment_transaction LIKE 'partner_id_kpx'";
+        $check_columns_result = mysqli_query($conn, $check_columns_query);
+        $column_exists = mysqli_num_rows($check_columns_result) > 0;
+        
+        if (!$column_exists) {
+            error_log("Column 'partner_id_kpx' does not exist in billspayment_transaction table");
+            $trans_data = [
+                'total_amount_paid' => 0,
+                'total_charge' => 0,
+                'transaction_count' => 0
+            ];
+        } else {
+            // Updated query: Fetch only transactions where datetime is within range AND cancellation_date is NULL or empty
+            $trans_query = "SELECT 
+                                SUM(amount_paid) AS total_amount_paid,
+                                SUM(charge_to_partner + charge_to_customer) AS total_charge,
+                                COUNT(*) AS transaction_count
+                            FROM mldb.billspayment_transaction
+                            WHERE partner_id_kpx = '$partner_id'
+                            AND DATE(`datetime`) BETWEEN '$from_date' AND '$to_date'
+                            AND (status is null or STATUS = '')";
             
-            // Only query transactions if both dates are provided
-            if (!empty($from_date) && !empty($to_date)) {
-                // Validate dates
-                if (!strtotime($from_date) || !strtotime($to_date)) {
-                    echo json_encode(['error' => 'Invalid date format']);
-                    exit;
-                }
-                
-                // Check if the billspayment_transaction table exists and has data
-                $check_table_query = "SHOW TABLES LIKE 'billspayment_transaction'";
-                $check_table_result = mysqli_query($conn, $check_table_query);
-                $table_exists = mysqli_num_rows($check_table_result) > 0;
-                
-                if (!$table_exists) {
-                    error_log("Table 'billspayment_transaction' does not exist in database 'mldb'");
-                    // Return empty transaction data
-                    $trans_data = [
-                        'total_amount_paid' => 0,
-                        'total_charge' => 0,
-                        'transaction_count' => 0
-                    ];
-                } else {
-                    // Check if the table has the required columns
-                    $check_columns_query = "SHOW COLUMNS FROM mldb.billspayment_transaction LIKE 'partner_id_kpx'";
-                    $check_columns_result = mysqli_query($conn, $check_columns_query);
-                    $column_exists = mysqli_num_rows($check_columns_result) > 0;
-                    
-                    if (!$column_exists) {
-                        error_log("Column 'partner_id_kpx' does not exist in billspayment_transaction table");
-                        $trans_data = [
-                            'total_amount_paid' => 0,
-                            'total_charge' => 0,
-                            'transaction_count' => 0
-                        ];
-                    } else {
-                        $trans_query = "SELECT 
-                                            SUM(amount_paid) AS total_amount_paid,
-                                            SUM(charge_to_partner + charge_to_customer) AS total_charge,
-                                            COUNT(*) AS transaction_count
-                                        FROM mldb.billspayment_transaction
-                                        WHERE partner_id_kpx = '$partner_id'
-                                        AND (
-                                            DATE(`datetime`) BETWEEN '$from_date' AND '$to_date'
-                                            OR DATE(cancellation_date) BETWEEN '$from_date' AND '$to_date'
-                                        )";
-                        
-                        error_log("Transaction Query: " . $trans_query);
-                        
-                        $trans_result = mysqli_query($conn, $trans_query);
-                        
-                        if (!$trans_result) {
-                            error_log("Transaction Query Error: " . mysqli_error($conn));
-                            $trans_data = [
-                                'total_amount_paid' => 0,
-                                'total_charge' => 0,
-                                'transaction_count' => 0
-                            ];
-                        } else {
-                            $trans_data = mysqli_fetch_assoc($trans_result);
-                            error_log("Transaction Data: " . print_r($trans_data, true));
-                        }
-                    }
-                }
-            } else {
-                // No dates provided, return empty transaction data
+            error_log("Transaction Query: " . $trans_query);
+            
+            $trans_result = mysqli_query($conn, $trans_query);
+            
+            if (!$trans_result) {
+                error_log("Transaction Query Error: " . mysqli_error($conn));
                 $trans_data = [
                     'total_amount_paid' => 0,
                     'total_charge' => 0,
                     'transaction_count' => 0
                 ];
-                error_log("No date range provided. Returning empty transaction data.");
+            } else {
+                $trans_data = mysqli_fetch_assoc($trans_result);
+                error_log("Transaction Data: " . print_r($trans_data, true));
             }
+        }
+    }
+} else {
+    // No dates provided, return empty transaction data
+    $trans_data = [
+        'total_amount_paid' => 0,
+        'total_charge' => 0,
+        'transaction_count' => 0
+    ];
+    error_log("No date range provided. Returning empty transaction data.");
+}
             
             // Check if partner is 434 for additional fields
             $is_partner_434 = ($partner_id == '434');

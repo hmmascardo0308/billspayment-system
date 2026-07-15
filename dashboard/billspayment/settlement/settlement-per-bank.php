@@ -97,25 +97,24 @@ function getDailyBreakdown( mysqli $conn, int $partner_id, string $bank, string 
         $types .= "s";
     }
     
-    // Date range filters - Check both datetime and cancellation_date (same logic as main query)
+    // Date range filters - Use datetime only
     if (!empty($date_from) && !empty($date_to)) {
-        $where_conditions[] = "(DATE(bt.datetime) BETWEEN ? AND ? OR DATE(bt.cancellation_date) BETWEEN ? AND ?)";
-        $params[] = $date_from;
-        $params[] = $date_to;
-        $params[] = $date_from;
-        $params[] = $date_to;
-        $types .= "ssss";
+        $where_conditions[] = "bt.datetime BETWEEN ? AND ?";
+        $params[] = $date_from . ' 00:00:00';
+        $params[] = $date_to . ' 23:59:59';
+        $types .= "ss";
     } elseif (!empty($date_from)) {
-        $where_conditions[] = "(DATE(bt.datetime) >= ? OR DATE(bt.cancellation_date) >= ?)";
-        $params[] = $date_from;
-        $params[] = $date_from;
-        $types .= "ss";
+        $where_conditions[] = "bt.datetime >= ?";
+        $params[] = $date_from . ' 00:00:00';
+        $types .= "s";
     } elseif (!empty($date_to)) {
-        $where_conditions[] = "(DATE(bt.datetime) <= ? OR DATE(bt.cancellation_date) <= ?)";
-        $params[] = $date_to;
-        $params[] = $date_to;
-        $types .= "ss";
+        $where_conditions[] = "bt.datetime <= ?";
+        $params[] = $date_to . ' 23:59:59';
+        $types .= "s";
     }
+    
+    // Status filter - only include records where status is null or empty
+    $where_conditions[] = "(bt.status IS NULL OR bt.status = '')";
     
     // Build the daily breakdown query
     $sql = "SELECT 
@@ -423,28 +422,27 @@ function generateDailyBreakdownHTML($data) {
                     $types .= "s";
                 }
                 
-                // Date range filters - Check both datetime and cancellation_date
+                // Date range filters - Use datetime only (not cancellation_date)
                 if (!empty($selected_date_from) && !empty($selected_date_to)) {
-                    // When both dates are provided, check both datetime and cancellation_date
-                    $where_conditions[] = "(DATE(bt.datetime) BETWEEN ? AND ? OR DATE(bt.cancellation_date) BETWEEN ? AND ?)";
-                    $params[] = $selected_date_from;
-                    $params[] = $selected_date_to;
-                    $params[] = $selected_date_from;
-                    $params[] = $selected_date_to;
-                    $types .= "ssss";
+                    // When both dates are provided
+                    $where_conditions[] = "bt.datetime BETWEEN ? AND ?";
+                    $params[] = $selected_date_from . ' 00:00:00';
+                    $params[] = $selected_date_to . ' 23:59:59';
+                    $types .= "ss";
                 } elseif (!empty($selected_date_from)) {
                     // Only from date provided
-                    $where_conditions[] = "(DATE(bt.datetime) >= ? OR DATE(bt.cancellation_date) >= ?)";
-                    $params[] = $selected_date_from;
-                    $params[] = $selected_date_from;
-                    $types .= "ss";
+                    $where_conditions[] = "bt.datetime >= ?";
+                    $params[] = $selected_date_from . ' 00:00:00';
+                    $types .= "s";
                 } elseif (!empty($selected_date_to)) {
                     // Only to date provided
-                    $where_conditions[] = "(DATE(bt.datetime) <= ? OR DATE(bt.cancellation_date) <= ?)";
-                    $params[] = $selected_date_to;
-                    $params[] = $selected_date_to;
-                    $types .= "ss";
+                    $where_conditions[] = "bt.datetime <= ?";
+                    $params[] = $selected_date_to . ' 23:59:59';
+                    $types .= "s";
                 }
+                
+                // Status filter - only include records where status is null or empty
+                $where_conditions[] = "(bt.status IS NULL OR bt.status = '')";
                 
                 // Build the full query with JOIN to get all partner data from partner_masterfile
                 $sql = "SELECT 
