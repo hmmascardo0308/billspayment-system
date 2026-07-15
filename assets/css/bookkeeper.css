@@ -1,0 +1,219 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@100;200;300;400;500;600&display=swap');
+
+*{
+   font-family: 'Poppins', sans-serif;
+   margin:0; padding:0;
+   box-sizing: border-box;
+   outline: none; border:none;
+   text-decoration: none;
+}
+body{
+    background-image: url(../images/bg.jpg);
+    background-repeat: no-repeat;
+    background-size: cover;
+    padding: 0%;
+    margin: 0%;
+    width: 100%;
+}
+.container{
+    /* background-color: aliceblue; */
+    padding: 0%;
+    margin: 0%;
+}
+.col{
+    /* background-color: pink; */
+    width: auto;
+    margin: 0%;
+    padding: 0%;
+}
+.mycss{
+    background-color: whitesmoke;
+    color: green;
+    padding: 10px;
+    display: none;
+
+}
+.msg{
+    font-size: 16px;
+    background-color: yellowgreen;
+    color: white;
+    padding: 5px;
+    margin: 0%;
+    font-weight: 200;
+}
+.card{
+    background-color: whitesmoke;
+    padding: 5px;
+    margin-top: 1%;
+    margin-left: 1%;
+    margin-bottom: 1%;
+    margin-right: 1%;
+    height: auto;
+    width: auto;
+}
+
+.card-header h4{
+    font-size: 24px;
+    text-align: center;
+    padding: 5px;
+    margin: 1%;
+}
+.card-body{
+    padding: 0%;
+    margin: 0%;
+    height: auto;
+}
+.card-body form{
+    padding: 0%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.card-body .form-control{
+    background-color: white;
+    padding: 0px;
+    width: 80%;
+    border: 1px solid gray;
+    outline: none;
+}
+.card-body input::file-selector-button {
+    font-weight: bold;
+    color: dodgerblue;
+    padding: 10px;
+    border-top: 0px;
+    border-left: 0px;
+    border-bottom: 0px;
+    border-right: 1px solid gray;
+    width: 90px;
+    font-size: 12px;
+    background-color: whitesmoke;
+}
+
+.card-body input:hover{
+    cursor: pointer;
+}
+.card-body .btn:hover{
+    cursor: pointer;
+}
+.card-body .btn{
+    background-color: #d70c0c;
+    color: white;
+    width: 80px;
+    padding: 0px;
+    border-top-left-radius: 0px;
+    border-top-right-radius: 5px;
+    border-bottom-left-radius: 0px;
+    border-bottom-right-radius: 5px;
+    border: none;
+    font-weight: 700;
+}
+.card-body .choose-file{
+    width: auto;
+    display: flex;
+    justify-content: left;
+    padding: 10px;
+}
+.card-body #search-data{
+    padding: 10px;
+    width: auto;
+    display: flex;
+    justify-content: center;
+}
+.card-body .search{
+    padding: 10px;
+    width: 50%;
+    outline: none;
+    border: 1px solid gray;
+    border-top-left-radius: 15px;
+    border-bottom-left-radius: 15px;
+}
+.card-body .search-btn:hover{
+    cursor: pointer;
+}
+.card-body .search-btn{
+    background-color: #d70c0c;
+    color: white;
+    padding: 11px;
+    width: 100px;
+    font-weight:700 ;
+    border: none;
+    border-top-left-radius: 0px;
+    border-top-right-radius: 15px;
+    border-bottom-left-radius: 0px;
+    border-bottom-right-radius: 15px;
+}
+.display-data{
+    display: block;
+    margin-bottom: 2%;
+    margin-top: 2%;
+    padding: 8px;
+}
+.display-btn{
+    padding-left: 20px;
+    padding-right: 20px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    background-color: whitesmoke;
+    color: #000;
+    font-size: 12px;
+    border-radius: 5px;
+    border: 1px solid gray;
+}
+.display-btn:hover{
+    cursor: pointer;
+    background-color: #d70c0c;
+    color: white;
+    border: none;
+}
+.tbl-container{
+    background-color: whitesmoke;
+    padding: 10px;
+    overflow-y: scroll;
+    overflow-x: scroll;
+    margin: 1%;
+}
+.tbl-container .table{
+    background-color: whitesmoke;
+    font-size: 10px;
+    border-collapse: collapse;
+    width: 100%;
+    text-align: center;
+}
+.tbl-container .table th{
+    background-color: #000;
+    color: white;
+    border: 1px solid gray;
+    padding: 10px;
+    width: 1%;
+    white-space: nowrap;
+}
+.tbl-container .table td{
+    border: 1px solid gray;
+    width: 1%;
+    padding: 10px;
+    white-space: nowrap;
+}
+
+.s-container{
+    background-color: whitesmoke;
+    height: auto;
+    padding: 8px;
+    margin: 8px;
+    display: flex;
+}
+.table2{
+    background-color: whitesmoke;
+    border-collapse: collapse;
+    border: 1px solid gray;
+    text-align: center;
+    font-size: 10px;
+    padding:10px;
+}
+.table2 th{
+    border: 1px solid gray;
+    background-color: #000;
+    color: white;
+}
+.table2 td{
+    border: 1px solid gray;
+}

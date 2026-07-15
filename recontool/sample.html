@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Excel Fetch Test</title>
+  <link rel="icon" href="../mlauto/mlassets/MLW%20Logo.png" type="image/png">
+  <link rel="stylesheet" href="sample.css">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=Spline+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://kit.fontawesome.com/30b908cc5a.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header class="app-header page">
+    <img src="../mlauto/mlassets/ml.png" alt="ML Logo" class="app-logo">
+    <div class="app-nav">
+      <a href="../mlauto/index.html">KPX/KP7 Generator</a>
+      <a href="../mlbranchmaker/convert.html">Branch.json Generator</a>
+      <a href="sample.html" class="active">Excel Fetch Test</a>
+      <a href="../exceldecryptpassword/index.html">Excel Unlock Password Generator</a>
+    </div>
+  </header>
+
+  <main class="page">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Recon Tool</p>
+        <h1>Excel Fetch Test</h1>
+        <p class="subhead">Drag files here or choose to load and inspect Excel contents.</p>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <div id="dropZone" class="drop-zone" role="button" tabindex="0">
+          <div class="drop-inner">
+            <p class="drop-title">Drag &amp; drop Excel files</p>
+            <p class="drop-sub">or click to browse</p>
+          </div>
+          <input id="fileInput" type="file" accept=".xlsx,.xls" />
+        </div>
+
+        <div class="section-header" style="margin-top:16px">
+          <div></div>
+          <div class="header-actions">
+            <button id="fetch" class="primary">Fetch</button>
+            <button id="clear-btn" class="ghost">Clear</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel result-panel full-bleed">
+        <div class="section-header">
+          <h2>Extracted Data</h2>
+        </div>
+        <div id="output" class="table-wrap"></div>
+      </section>
+    </main>
+
+    <div id="output"></div>
+
+    <div id="loading-overlay" class="hidden" role="status" aria-live="polite">
+      <div class="overlay-inner">
+        <div class="spinner" aria-hidden="true"></div>
+        <div class="loading-text">Fetching data…</div>
+      </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="sample.js"></script>
+  </main>
+</body>
+</html>

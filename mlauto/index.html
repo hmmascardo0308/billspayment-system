@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KPX/KP7 Gen.</title>
+    <link rel="icon" href="mlassets/MLW Logo.png" type="image/png">
+    <link rel="stylesheet" href="index.css" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=Spline+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://kit.fontawesome.com/30b908cc5a.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  </head>
+  <body>
+    <header class="app-header page">
+      <img src="mlassets/ml.png" alt="ML Logo" class="app-logo">
+      <div class="app-nav">
+        <a href="index.html" class="active">KPX/KP7 Generator</a>
+        <a href="../mlbranchmaker/convert.html">Branch.json Generator</a>
+        <a href="../recontool/sample.html">Excel Fetch Test</a>
+        <a href="../exceldecryptpassword/index.html">Excel Unlock Password Generator</a>
+      </div>
+    </header>
+
+    <div class="page">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">ML Tool Generation</p>
+          <h1>KPX/KP7 GENERATOR</h1>
+          <p class="subhead">
+            This tool is used for the Auto Detection of the new Import Feature
+          </p>
+        </div>
+        <div class="source-select">
+          <label for="sourceType">Source Type</label>
+          <select id="sourceType">
+            <option value="KPX">KPX</option>
+            <option value="KP7">KP7</option>
+          </select>
+        </div>
+        <div class="source-select" style="margin-left:12px;">
+          <label for="fileType">File Type</label>
+          <select id="fileType">
+            <option value="transaction">Transaction</option>
+            <option value="cancellation">Cancellation</option>
+          </select>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel">
+          <div id="dropZone" class="drop-zone" role="button" tabindex="0">
+            <div class="drop-inner">
+              <p class="drop-title">Drag &amp; drop Excel files</p>
+              <p class="drop-sub">or click to browse</p>
+            </div>
+            <input
+              id="fileInput"
+              type="file"
+              accept=".xlsx,.xls"
+              multiple
+            />
+          </div>
+
+          <div class="file-section">
+            <div class="section-header">
+              <h2>Selected Files</h2>
+              <div class="header-actions">
+                <button id="warningsBtn" class="warn-btn" type="button" disabled aria-label="View warnings">
+                  !
+                  <span id="warningsCount" class="warn-count">0</span>
+                </button>
+                <button id="generateBtn" class="primary">Generate</button>
+                <button id="clearBtn" class="ghost">Clear</button>
+                <span id="fileCount" class="file-count">0 files</span>
+              </div>
+            </div>
+            <div id="fileList" class="file-list"></div>
+          </div>
+
+          <div id="status" class="status"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-header">
+            <h2>Generated Files <span id="generatedCount" class="file-count">0</span></h2>
+            <button id="downloadAll" class="ghost" disabled>Download All</button>
+          </div>
+          <div id="resultList" class="result-list"></div>
+        </section>
+      </main>
+      <div id="warningModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="warningTitle">
+        <div class="modal-backdrop" data-close="true"></div>
+        <div class="modal-card">
+          <div class="modal-header">
+            <h3 id="warningTitle">Warnings</h3>
+            <button id="warningClose" class="ghost" type="button" aria-label="Close warnings">Close</button>
+          </div>
+          <div id="warningList" class="modal-list"></div>
+        </div>
+      </div>
+      <div id="progressModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="progressTitle">
+        <div class="modal-backdrop"></div>
+        <div class="modal-card progress-card">
+          <div class="modal-header">
+            <h3 id="progressTitle">Generating Files</h3>
+          </div>
+          <div class="progress-meta">
+            <span id="progressCount">File 0/0</span>
+            <span id="progressPercent">0%</span>
+          </div>
+          <div class="progress-track" aria-hidden="true">
+            <div id="progressBar" class="progress-bar" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="index.js"></script>
+  </body>
+</html>

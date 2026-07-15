@@ -1,0 +1,1259 @@
+/* =============================================================
+   TICKET MODAL — ticket-modal.css
+   Covers: overlay, modal shell, header, body (trail timeline),
+   footer variants, close sub-modal, attachments, animations.
+   Shared by Branch, VPO, and CAD views.
+   ============================================================= */
+
+/* ── Variables ─────────────────────────────────────────────── */
+:root {
+  --tm-font:           'DM Sans', system-ui, sans-serif;
+  --tm-radius-sm:      6px;
+  --tm-radius-md:      10px;
+  --tm-radius-lg:      14px;
+  --tm-radius-xl:      18px;
+
+  --tm-bg:             #ffffff;
+  --tm-bg-secondary:   #f7f6f3;
+  --tm-bg-tertiary:    #efede8;
+  --tm-border:         rgba(0, 0, 0, 0.09);
+  --tm-border-strong:  rgba(0, 0, 0, 0.18);
+  --tm-shadow:         0 8px 40px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+
+  --tm-text-primary:   #1a1916;
+  --tm-text-secondary: #6b6a65;
+  --tm-text-tertiary:  #9e9d97;
+  --tm-text-inverse:   #ffffff;
+
+  /* Role colors */
+  --tm-branch-bg:      #e2f4ee;
+  --tm-branch-text:    #0a5c3f;
+  --tm-branch-dot:     #1d9e75;
+  --tm-vpo-bg:         #e5effa;
+  --tm-vpo-text:       #0c3f7a;
+  --tm-vpo-dot:        #2b7dd4;
+  --tm-cad-bg:         #faeae5;
+  --tm-cad-text:       #7a2c12;
+  --tm-cad-dot:        #d85a30;
+  --tm-sys-bg:         #f0eeea;
+  --tm-sys-text:       #5a5955;
+  --tm-sys-dot:        #9e9d97;
+
+  /* Status badge colors */
+  --tm-status-open-bg:       #d1fae5;
+  --tm-status-open-text:     #065f46;
+  --tm-status-accepted-bg:   #e5effa;
+  --tm-status-accepted-text: #0c3f7a;
+  --tm-status-resolving-bg:  #fef3e2;
+  --tm-status-resolving-text:#7a4f08;
+  --tm-status-resolved-bg:   #e5f5ec;
+  --tm-status-resolved-text: #1a5c35;
+  --tm-status-closed-bg:     #2a2926;
+  --tm-status-closed-text:   #d0cfc8;
+  --tm-status-transferred-bg: #6f42c1;
+  --tm-status-transferred-text: #ffffff;
+  --tm-status-transferred-border: #5a34a8;
+
+  /* Semantic */
+  --tm-danger-bg:      #faeae5;
+  --tm-danger-text:    #7a2c12;
+  --tm-danger-border:  #d85a30;
+  --tm-info-bg:        #e5effa;
+  --tm-info-text:      #0c3f7a;
+  --tm-highlight:      #dc3545;
+}
+
+/* Dark-mode overrides removed — modal will follow the site's global theme.
+   The original prefers-color-scheme block was intentionally disabled
+   so the ticket modal uses the same color variables as the rest of the site. */
+
+
+/* ── Overlay ────────────────────────────────────────────────── */
+.tm-overlay {
+  /* Hidden by default; toggled with .open */
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  /* Ensure overlay sits above application header and other UI chrome */
+  z-index: 100000;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: tm-fade-in 0.18s ease;
+}
+
+.tm-overlay.open {
+  display: flex;
+}
+
+.tm-overlay.tm-closing {
+  animation: tm-fade-out 0.18s ease forwards;
+}
+
+
+/* ── Modal shell ─────────────────────────────────────────────── */
+.tm-modal {
+  font-family: var(--tm-font);
+  background: var(--tm-bg);
+  border: 0.5px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-xl);
+  box-shadow: var(--tm-shadow);
+  width: 100%;
+  max-width: 680px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: tm-slide-up 0.22s cubic-bezier(0.34, 1.26, 0.64, 1);
+}
+
+.tm-modal.tm-closing {
+  animation: tm-slide-down 0.18s ease forwards;
+}
+
+
+/* ── Modal header ────────────────────────────────────────────── */
+.tm-header {
+  padding: 20px 24px 16px;
+  border-bottom: 0.5px solid var(--tm-border);
+  flex-shrink: 0;
+  background: linear-gradient(180deg, #ffffff 0%, #fcfaf7 100%);
+}
+
+.tm-header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.tm-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+}
+
+.tm-ticket-number {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--tm-text-primary);
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.tm-ticket-number--card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 0.5px solid var(--tm-border);
+  border-radius: 12px;
+  background: linear-gradient(160deg, #fff6f6 0%, #fff 100%);
+  padding: 10px 12px;
+  width: 100%;
+  max-width: 760px;
+}
+
+.tm-ticket-number-main {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tm-ticket-number-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tm-text-secondary);
+  background: #ffffff;
+  border: 0.5px solid var(--tm-border);
+  border-radius: 999px;
+  padding: 3px 8px;
+}
+
+.tm-ticket-id-value {
+  font-weight: 700;
+  color: var(--tm-highlight);
+  letter-spacing: 0.01em;
+}
+
+.tm-ticket-icon { margin-right: 8px; font-size: 16px; color: var(--tm-highlight); display: inline-flex; align-items: center; }
+
+.tm-ticket-meta-grid {
+  margin-top: 2px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(145px, 1fr));
+  gap: 10px;
+  width: 100%;
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.tm-meta-item {
+  min-width: 0;
+  text-align: left;
+  border: 0.5px solid #e6ddd4;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fffdfb 0%, #fff8f2 100%);
+  padding: 9px 11px 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 2px 10px rgba(26, 25, 22, 0.03);
+  position: relative;
+  overflow: hidden;
+}
+
+/* top accent removed per design feedback */
+
+.tm-meta-label {
+  font-size: 9px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tm-text-tertiary);
+  margin-bottom: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tm-meta-value {
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 600;
+  color: #b42333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+/* Reference number specific: indicate interactivity and provide hover affordance */
+.tm-meta-value--ref {
+  cursor: pointer;
+}
+.tm-meta-value--ref:hover {
+  text-decoration: underline;
+}
+
+.tm-header-right {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.tm-header-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.tm-header-actions--card {
+  min-width: 148px;
+  border: 0.5px solid var(--tm-border);
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.tm-header-actions-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tm-header-actions-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.tm-inline-form {
+  margin: 0;
+}
+
+.tm-owner-help {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 0.5px solid var(--tm-border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--tm-text-secondary);
+  background: var(--tm-bg-secondary);
+  cursor: help;
+}
+
+.tm-owner-help:hover {
+  color: var(--tm-text-primary);
+  background: var(--tm-bg-tertiary);
+}
+
+.tm-owner-help--inline {
+  width: 14px;
+  height: 14px;
+  font-size: 9px;
+  margin-left: 4px;
+}
+
+/* Status badge */
+.tm-status {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 3px 10px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.tm-status--open      { background: var(--tm-status-open-bg);      color: var(--tm-status-open-text); }
+.tm-status--accepted  { background: var(--tm-status-accepted-bg);  color: var(--tm-status-accepted-text); }
+.tm-status--resolving { background: var(--tm-status-resolving-bg); color: var(--tm-status-resolving-text); }
+.tm-status--resolved  { background: var(--tm-status-resolved-bg);  color: var(--tm-status-resolved-text); }
+.tm-status--transferred{ background: var(--tm-status-transferred-bg); color: var(--tm-status-transferred-text); border: 1px solid var(--tm-status-transferred-border); }
+.tm-status--closed    { background: var(--tm-status-closed-bg);    color: var(--tm-status-closed-text); }
+
+/* Close (X) button */
+.tm-close-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 0.5px solid var(--tm-border);
+  background: transparent;
+  color: var(--tm-text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+
+.tm-close-btn:hover {
+  background: var(--tm-bg-secondary);
+  color: var(--tm-text-primary);
+}
+
+/* Copy ticket button (small clipboard) */
+.tm-copy-ticket {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 0.5px solid var(--tm-border);
+  background: transparent;
+  color: var(--tm-text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  margin-left: 8px;
+  padding: 0;
+}
+
+.tm-copy-ticket:hover {
+  background: var(--tm-bg-secondary);
+  color: var(--tm-text-primary);
+}
+
+/* Toast shown after copying ticket number */
+.st-copy-toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  background: rgba(17, 24, 39, 0.95);
+  color: #ffffff;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  box-shadow: 0 10px 30px rgba(2,6,23,0.3);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.18s ease, transform 0.22s ease;
+  z-index: 130000;
+}
+.st-copy-toast--success {
+  background: rgba(22, 101, 52, 0.96);
+}
+
+.st-copy-toast--danger {
+  background: rgba(153, 27, 27, 0.96);
+}
+
+.st-copy-toast--show {
+  opacity: 1;
+  transform: translateY(0);
+}
+.st-copy-toast--hide {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+/* Ticket details row (Type, Reason preview, Handler) */
+.tm-header-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+
+.tm-detail-item {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.tm-detail-label {
+  font-size: 11px;
+  color: var(--tm-text-tertiary);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tm-detail-value {
+  font-size: 12px;
+  color: var(--tm-text-secondary);
+}
+
+/* Handler role indicator */
+.tm-handler-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 20px;
+  border: 0.5px solid var(--tm-border);
+  color: var(--tm-text-secondary);
+}
+
+.tm-handler-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
+
+.tm-handler-badge--vpo { color: var(--tm-vpo-text); background: var(--tm-vpo-bg); border-color: transparent; }
+.tm-handler-badge--cad { color: var(--tm-cad-text); background: var(--tm-cad-bg); border-color: transparent; }
+.tm-handler-badge--branch { color: var(--tm-branch-text); background: var(--tm-branch-bg); border-color: transparent; }
+
+/* Close Ticket button (VPO/CAD Active only — sits in header right) */
+.tm-btn-close-ticket {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: var(--tm-radius-sm);
+  border: 0.5px solid transparent;
+  background: #dc3545;
+  color: #ffffff;
+  cursor: pointer;
+  transition: background 0.12s, opacity 0.12s;
+  white-space: nowrap;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.tm-btn-close-ticket:hover { background: #b52a37; }
+
+
+/* ── Modal body (trail timeline) ────────────────────────────── */
+.tm-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+
+  /* Custom scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--tm-border-strong) transparent;
+}
+
+.tm-body::-webkit-scrollbar       { width: 4px; }
+.tm-body::-webkit-scrollbar-track { background: transparent; }
+.tm-body::-webkit-scrollbar-thumb { background: var(--tm-border-strong); border-radius: 4px; }
+
+/* Empty state */
+.tm-empty-trail {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 0;
+  color: var(--tm-text-tertiary);
+  font-size: 13px;
+}
+
+/* Loading skeleton */
+.tm-skeleton-trail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.tm-skeleton-item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.tm-skeleton-dot {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--tm-bg-tertiary);
+  flex-shrink: 0;
+  animation: tm-pulse 1.4s ease infinite;
+}
+
+.tm-skeleton-lines {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.tm-skeleton-line {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--tm-bg-tertiary);
+  animation: tm-pulse 1.4s ease infinite;
+}
+
+.tm-skeleton-line--short  { width: 40%; }
+.tm-skeleton-line--medium { width: 65%; }
+.tm-skeleton-line--long   { width: 90%; }
+.tm-skeleton-line--block  { height: 52px; border-radius: var(--tm-radius-sm); }
+
+
+/* ── Trail connector line ───────────────────────────────────── */
+.tm-trail {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.tm-trail-item {
+  display: flex;
+  gap: 12px;
+  position: relative;
+  padding-bottom: 4px;
+}
+
+/* Vertical connector between trail items */
+.tm-trail-item:not(:last-child) .tm-trail-dot-wrap::after {
+  content: '';
+  position: absolute;
+  top: 32px;
+  left: 15px;
+  width: 1px;
+  bottom: 0;
+  background: var(--tm-border);
+}
+
+.tm-trail-dot-wrap {
+  position: relative;
+  flex-shrink: 0;
+  width: 32px;
+  display: flex;
+  justify-content: center;
+}
+
+
+/* ── Trail card ─────────────────────────────────────────────── */
+.tm-trail-card {
+  flex: 1;
+  border: 0.5px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  overflow: hidden;
+  margin-bottom: 12px;
+  transition: border-color 0.12s;
+  cursor: pointer;
+}
+
+.tm-trail-card:hover {
+  border-color: var(--tm-border-strong);
+}
+
+/* Card header — always visible, always shows DateTime */
+.tm-trail-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--tm-bg-secondary);
+  user-select: none;
+}
+
+.tm-trail-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.tm-trail-avatar--branch { background: var(--tm-branch-bg); color: var(--tm-branch-text); }
+.tm-trail-avatar--vpo    { background: var(--tm-vpo-bg);    color: var(--tm-vpo-text); }
+.tm-trail-avatar--cad    { background: var(--tm-cad-bg);    color: var(--tm-cad-text); }
+.tm-trail-avatar--system { background: var(--tm-sys-bg);    color: var(--tm-sys-text); }
+
+.tm-trail-avatar-icon {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  object-fit: contain;
+  display: block;
+  /* Normalize raw black SVG icon files and tint by role filters below */
+  filter: brightness(0) saturate(100%);
+}
+
+.tm-trail-avatar-icon--branch {
+  filter: brightness(0) saturate(100%) invert(45%) sepia(27%) saturate(1183%) hue-rotate(111deg) brightness(96%) contrast(90%);
+}
+
+.tm-trail-avatar-icon--vpo {
+  filter: brightness(0) saturate(100%) invert(43%) sepia(78%) saturate(1642%) hue-rotate(190deg) brightness(94%) contrast(89%);
+}
+
+.tm-trail-avatar-icon--cad {
+  filter: brightness(0) saturate(100%) invert(43%) sepia(74%) saturate(765%) hue-rotate(344deg) brightness(91%) contrast(92%);
+}
+
+.tm-trail-avatar i.fa-gear {
+  font-size: 18px;
+  color: var(--tm-sys-dot);
+}
+
+.tm-trail-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.tm-trail-sender {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tm-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tm-trail-datetime {
+  font-size: 11px;
+  color: var(--tm-text-tertiary);
+  margin-top: 1px;
+  white-space: nowrap;
+}
+
+.tm-trail-type-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 20px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.tm-trail-type-label--message  { background: var(--tm-bg-tertiary);  color: var(--tm-text-secondary); }
+.tm-trail-type-label--accept   { background: var(--tm-info-bg);       color: var(--tm-info-text); }
+.tm-trail-type-label--transfer { background: var(--tm-vpo-bg);        color: var(--tm-vpo-text); }
+.tm-trail-type-label--resolve  { background: var(--tm-status-resolved-bg);  color: var(--tm-status-resolved-text); }
+.tm-trail-type-label--close    { background: var(--tm-status-closed-bg);    color: var(--tm-status-closed-text); }
+.tm-trail-type-label--auto_close { background: var(--tm-sys-bg);      color: var(--tm-sys-text); }
+
+/* Expand/collapse chevron */
+.tm-trail-chevron {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--tm-text-tertiary);
+  transition: transform 0.18s ease;
+}
+
+.tm-trail-card.tm-expanded .tm-trail-chevron {
+  transform: rotate(180deg);
+}
+
+/* Card body — collapsed by default, expanded for latest */
+.tm-trail-card-body {
+  padding: 0 14px;
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.25s ease, padding 0.25s ease;
+}
+
+.tm-trail-card.tm-expanded .tm-trail-card-body {
+  padding: 12px 14px 14px;
+}
+
+.tm-trail-message {
+  font-size: 13px;
+  color: var(--tm-text-primary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Compact inline ticket details (icons + label + value) */
+.tm-ticket-details {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+  margin-top: 8px;
+  width: 100%;
+}
+
+.tm-ticket-details-col {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.tm-ticket-billers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+  width: 100%;
+  align-items: start;
+}
+
+.tm-ticket-amounts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 10px;
+  margin-top: 8px;
+  width: 100%;
+}
+
+.tm-ticket-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+  width: 100%;
+  align-items: start;
+}
+
+@media (max-width: 640px) {
+  .tm-ticket-billers,
+  .tm-ticket-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.tm-ticket-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--tm-text-secondary);
+}
+
+.tm-ticket-detail .tm-detail-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--tm-text-tertiary);
+}
+
+/* Correct / Wrong icon color variants */
+.tm-ticket-detail .tm-detail-icon.tm-detail-icon--correct {
+  color: #16a34a; /* green */
+}
+.tm-ticket-detail .tm-detail-icon.tm-detail-icon--wrong {
+  color: #ef4444; /* red */
+}
+
+.tm-ticket-detail .tm-detail-label {
+  font-size: 11px;
+  color: var(--tm-text-tertiary);
+  font-weight: 600;
+}
+
+.tm-ticket-detail .tm-detail-value {
+  font-size: 12px;
+  color: var(--tm-highlight);
+  font-weight: 600;
+}
+
+/* Space between inline ticket details and the following message (Reason). */
+.tm-ticket-details + .tm-trail-message {
+  margin-top: 10px;
+}
+
+/* System / automation trail cards */
+.tm-trail-card--system {
+  border-style: dashed;
+}
+
+.tm-trail-card--system .tm-trail-card-header {
+  background: transparent;
+}
+
+.tm-trail-card--system .tm-trail-message {
+  font-style: italic;
+  color: var(--tm-text-secondary);
+}
+
+.tm-trail-resolve-meta {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: var(--tm-bg-secondary);
+  border-radius: var(--tm-radius-sm);
+  font-size: 12px;
+  color: var(--tm-text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tm-trail-resolve-meta span {
+  color: var(--tm-text-primary);
+  font-weight: 500;
+}
+
+
+/* ── Attachments ─────────────────────────────────────────────── */
+.tm-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.tm-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--tm-text-secondary);
+  background: var(--tm-bg-secondary);
+  border: 0.5px solid var(--tm-border);
+  border-radius: var(--tm-radius-sm);
+  padding: 4px 10px;
+  text-decoration: none;
+  transition: background 0.12s, color 0.12s;
+  max-width: 200px;
+  overflow: hidden;
+}
+
+.tm-attachment:hover {
+  background: var(--tm-bg-tertiary);
+  color: var(--tm-text-primary);
+}
+
+.tm-attachment-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.tm-attachment-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tm-attachment-size {
+  font-size: 10px;
+  color: var(--tm-text-tertiary);
+  flex-shrink: 0;
+}
+
+
+/* ── Modal footer ────────────────────────────────────────────── */
+.tm-footer {
+  border-top: 0.5px solid var(--tm-border);
+  padding: 14px 20px;
+  flex-shrink: 0;
+  background: var(--tm-bg);
+}
+
+.tm-footer-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+  flex: 1 1 auto; /* allow the inner row to grow and occupy footer space */
+}
+
+/* Ensure attach button and preview do not grow and textarea takes available space */
+.tm-btn-attach {
+  flex: 0 0 auto;
+  margin-right: 6px;
+}
+
+.tm-attach-preview {
+  flex: 0 0 auto;
+  margin-right: 6px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.tm-footer-inner > .tm-textarea-container {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tm-reply-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tm-reply-main .tm-attach-preview {
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+}
+
+.tm-textarea-container .tm-textarea {
+  width: 100%;
+  display: block;
+}
+
+.tm-textarea {
+  flex: 1 1 72%;
+  min-width: 0; /* allow flex children to shrink properly */
+  min-height: 72px; /* make reply box more prominent */
+  max-height: 240px;
+}
+
+.tm-footer-inner > div:last-child {
+  flex: 0 0 auto;
+}
+
+.tm-btn-attach {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--tm-radius-sm);
+  border: 0.5px solid var(--tm-border-strong);
+  background: var(--tm-bg-secondary);
+  color: var(--tm-text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.tm-btn-attach:hover {
+  background: var(--tm-bg-tertiary);
+  color: var(--tm-text-primary);
+}
+
+.tm-attach-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tm-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--tm-text-secondary);
+  background: var(--tm-bg-secondary);
+  border: 0.5px solid var(--tm-border);
+  border-radius: 20px;
+  padding: 3px 8px 3px 6px;
+}
+
+.tm-attach-chip[data-previewable="1"] {
+  cursor: pointer;
+}
+
+.tm-attach-chip[data-previewable="1"]:hover {
+  background: var(--tm-bg-tertiary);
+}
+
+.tm-attach-chip-remove {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--tm-bg-tertiary);
+  border: none;
+  color: var(--tm-text-tertiary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.1s;
+}
+
+.tm-attach-chip-remove:hover {
+  background: var(--tm-danger-bg);
+  color: var(--tm-danger-text);
+}
+
+.tm-textarea {
+  flex: 1;
+  min-height: 72px; /* keep consistent height in all ticket pages */
+  max-height: 200px;
+  resize: none;
+  border: 0.5px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-sm);
+  background: var(--tm-bg-secondary);
+  color: var(--tm-text-primary);
+  font-family: var(--tm-font);
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 10px 12px;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+  overflow-y: auto;
+}
+
+.tm-textarea::placeholder { color: var(--tm-text-tertiary); }
+
+.tm-textarea:focus {
+  border-color: var(--tm-border-strong);
+  background: var(--tm-bg);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.05);
+}
+
+.tm-btn {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--tm-radius-sm);
+  font-family: var(--tm-font);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  border: 0.5px solid var(--tm-border-strong);
+  background: var(--tm-bg-secondary);
+  color: var(--tm-text-primary);
+  transition: background 0.12s, opacity 0.12s;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  text-decoration: none;
+}
+
+.tm-btn:hover    { background: var(--tm-bg-tertiary); }
+.tm-btn:active   { transform: scale(0.98); }
+.tm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.tm-btn--primary {
+  background: var(--tm-text-primary);
+  color: var(--tm-bg);
+  border-color: transparent;
+}
+
+.tm-btn--primary:hover { opacity: 0.85; background: var(--tm-text-primary); }
+
+/* Red submit button (matches site danger color) */
+.tm-btn--red {
+  background: #dc3545;
+  color: #ffffff;
+  border-color: transparent;
+}
+
+.tm-btn--red:hover { opacity: 0.92; background: #b52a37; color: #ffffff; border-color: transparent; }
+
+.tm-btn--outline { background: transparent; }
+.tm-btn--transfer { background: var(--tm-vpo-bg); color: var(--tm-vpo-text); border-color: transparent; }
+.tm-btn--transfer:hover { opacity: 0.8; }
+.tm-btn--danger { background: var(--tm-danger-bg); color: var(--tm-danger-text); border-color: var(--tm-danger-border); }
+
+.tm-footer--open { display: flex; justify-content: space-between; align-items: center; }
+.tm-footer--closed { text-align: center; font-size: 12px; color: var(--tm-text-tertiary); padding: 12px 20px; }
+.tm-footer-error { font-size: 12px; color: var(--tm-danger-text); background: var(--tm-danger-bg); border-radius: var(--tm-radius-sm); padding: 6px 10px; margin-bottom: 8px; border: 0.5px solid var(--tm-danger-border); }
+.tm-btn--loading { pointer-events: none; opacity: 0.7; }
+.tm-btn--loading::after { content: ''; width: 12px; height: 12px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: tm-spin 0.7s linear infinite; }
+
+
+/* Remaining submodal, animations and responsive rules (copied) */
+.tm-submodal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 110000;
+  animation: tm-fade-in 0.15s ease;
+}
+
+.tm-submodal {
+  background: var(--tm-bg);
+  border: 0.5px solid var(--tm-border-strong);
+  border-radius: var(--tm-radius-lg);
+  padding: 22px 24px 20px;
+  width: 100%;
+  max-width: 520px;
+  box-sizing: border-box;
+  animation: tm-slide-up 0.18s cubic-bezier(0.34, 1.2, 0.64, 1);
+}
+.tm-submodal-title { font-size: 15px; font-weight: 600; color: var(--tm-text-primary); margin-bottom: 4px; }
+.tm-submodal-ticket-info { font-size: 12px; color: var(--tm-text-secondary); margin-bottom: 18px; }
+.tm-submodal-divider { border: none; border-top: 0.5px solid var(--tm-border); margin: 0 0 16px; }
+.tm-close-options { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
+.tm-close-option { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 0.5px solid var(--tm-border); border-radius: var(--tm-radius-md); cursor: pointer; transition: border-color 0.12s, background 0.12s; }
+.tm-close-option:hover { background: var(--tm-bg-secondary); border-color: var(--tm-border-strong); }
+.tm-close-option.tm-selected { border-color: var(--tm-border-strong); background: var(--tm-bg-secondary); }
+.tm-close-option input[type="radio"] { margin-top: 2px; flex-shrink: 0; accent-color: var(--tm-text-primary); }
+.tm-close-option-label { font-size: 13px; font-weight: 500; color: var(--tm-text-primary); margin-bottom: 2px; }
+.tm-close-option-desc { font-size: 12px; color: var(--tm-text-secondary); }
+.tm-duration-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.tm-duration-input { width: 64px; height: 30px; padding: 0 8px; border: 0.5px solid var(--tm-border-strong); border-radius: var(--tm-radius-sm); background: var(--tm-bg); color: var(--tm-text-primary); font-family: var(--tm-font); font-size: 13px; text-align: center; outline: none; transition: border-color 0.12s; }
+.tm-duration-input:focus { border-color: var(--tm-text-primary); }
+.tm-duration-select { height: 30px; padding: 0 8px; border: 0.5px solid var(--tm-border-strong); border-radius: var(--tm-radius-sm); background: var(--tm-bg); color: var(--tm-text-primary); font-family: var(--tm-font); font-size: 13px; outline: none; cursor: pointer; }
+.tm-submodal-footer { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* Re-open picker grid and option cards */
+.tm-reopen-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.tm-reopen-option {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 0.5px solid var(--tm-border);
+  border-radius: var(--tm-radius-md);
+  background: linear-gradient(180deg, #ffffff 0%, var(--tm-bg-secondary) 100%);
+  text-align: left;
+  justify-content: center;
+  min-height: 64px;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s;
+}
+
+.tm-reopen-option { box-sizing: border-box; min-width: 0; }
+
+.tm-reopen-option:hover {
+  transform: translateY(-2px);
+  border-color: transparent;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.10);
+  background: var(--tm-highlight);
+  color: #ffffff;
+}
+
+/* Ensure internal text flips to white on hover */
+.tm-reopen-option:hover .tm-reopen-option-title,
+.tm-reopen-option:hover .tm-reopen-option-desc {
+  color: #ffffff;
+}
+
+.tm-reopen-option:focus {
+  outline: none;
+  box-shadow: 0 0 0 6px rgba(220,53,69,0.12);
+  border-color: var(--tm-highlight);
+}
+
+.tm-reopen-option:active {
+  transform: translateY(-1px) scale(0.995);
+}
+
+.tm-reopen-option-title { font-weight: 700; color: var(--tm-text-primary); }
+.tm-reopen-option-desc { font-size: 12px; color: var(--tm-text-secondary); }
+
+.tm-submodal-footer--center { justify-content: center; }
+.tm-submodal-footer--confirm { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+
+@media (max-width: 600px) {
+  .tm-reopen-grid { grid-template-columns: 1fr; }
+}
+
+@keyframes tm-fade-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes tm-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes tm-slide-up { from { opacity: 0; transform: translateY(16px) scale(0.98); } to   { opacity: 1; transform: translateY(0)    scale(1); } }
+@keyframes tm-slide-down { from { opacity: 1; transform: translateY(0)    scale(1); } to   { opacity: 0; transform: translateY(12px) scale(0.98); } }
+@keyframes tm-pulse { 0%, 100% { opacity: 1; } 50%       { opacity: 0.45; } }
+@keyframes tm-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .tm-overlay, .tm-modal, .tm-submodal-overlay, .tm-submodal,
+  .tm-trail-card-body, .tm-skeleton-dot, .tm-skeleton-line,
+  .tm-btn--loading::after {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .tm-overlay { padding: 0; align-items: flex-end; }
+
+  .tm-modal { max-width: 100%; max-height: 95vh; border-radius: var(--tm-radius-xl) var(--tm-radius-xl) 0 0; animation: tm-slide-up-mobile 0.25s cubic-bezier(0.34, 1.2, 0.64, 1); }
+
+  .tm-header { padding: 16px 16px 12px; }
+  .tm-body   { padding: 16px; }
+  .tm-footer { padding: 12px 14px; }
+
+  .tm-header-top { flex-direction: column; align-items: stretch; }
+  .tm-header-right { width: 100%; }
+  .tm-header-actions--card { width: 100%; }
+
+  .tm-header-details { gap: 6px 14px; }
+  .tm-ticket-number--card,
+  .tm-ticket-meta-grid { max-width: 100%; }
+  .tm-ticket-meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tm-btn { padding: 0 11px; font-size: 12px; }
+
+  .tm-submodal-overlay { padding: 16px; border-radius: var(--tm-radius-xl) var(--tm-radius-xl) 0 0; }
+}
+
+@keyframes tm-slide-up-mobile { from { opacity: 0; transform: translateY(40px); } to   { opacity: 1; transform: translateY(0); } }

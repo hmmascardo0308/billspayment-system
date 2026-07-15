@@ -1,0 +1,433 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@100;200;300;400;500;600&display=swap');
+
+.soa-div {
+  padding: 15px;
+  margin: 0 auto;
+  margin-top: 20px;
+  width: 65%;
+  border-radius: 10px;
+  background-color: #fff;
+}
+.soa_wrap{
+    overflow:auto;
+    height: 90vh;
+}
+.header {
+  text-align: center;
+  font-weight: bold;
+  margin-bottom: 15px;
+}
+
+h5 {
+  margin: 0;
+}
+
+.soa-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+
+#date-div,
+#reference-div,
+#customer-div,
+#customerTin-div,
+#address-div,
+#business-div,
+#service-charge-div,
+#date-range-div,
+#poNumber-div,
+#numberOfTransaction-div,
+#amount-div,
+#addAmount-div,
+#multiplyAmount-div,select {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  font-size: 12px;
+}
+
+#date-div input,
+#reference-div input,
+#customer-div input,
+#customerTin-div input,
+#address-div input,
+#business-div input,
+#service-charge-div input,
+#date-range-div input,
+#poNumber-div input,
+#numberOfTransaction-div input,
+#amount-div input,
+#addAmount-div input,
+#multiplyAmount-div input,select {
+  border: 1px solid #ddd;
+  padding: 5px;
+  border-radius: 4px;
+  width: 100%;
+}
+#toDate{
+  margin-left: 20px;
+  width: 100px;
+  text-align: center;
+}
+
+/* #label {
+  margin-right: 10px;
+} */
+
+label {
+  font-weight: normal;
+  display: inline-block;
+  width: 185px;
+  font-size: 14px;
+}
+
+.process-div {
+  text-align: center;
+  margin-top: 10px;
+  width: 100%;
+}
+
+#process {
+  padding: 10px 20px;
+  width: 100px;
+  border: 1px solid #07bc55;
+  border-radius: 50px;
+  cursor: pointer;
+  color: #fff;
+  background-color: #07bc55;
+}
+
+#process:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* Additional styles for specific elements */
+
+#reference-number,
+#customerTin,
+#address,
+#businessStyle,
+#servicetype-select {
+  background-color: #eee;
+}
+
+#date-range-div input {
+  width: 50%;
+  text-align: center;
+}
+
+#addAmount-div,
+#multiplyAmount-div {
+  display: none;
+}
+/* General styles */
+
+.container-div {
+  width: fit-content;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.content-div {
+  background-color: transparent;
+  border-radius: 5px;
+    border:1px solid #ccc;
+  border-radius: 5px;
+}
+
+.transaction-table {
+  width: 100%;
+  border-collapse: collapse;
+
+}
+
+th, td {
+  padding: 0px 50px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+th {
+  font-weight: bold;
+  text-align: center;
+}
+/* .transaction-table input{
+  text-align: right;
+} */
+#amount-t, #totalAmount{
+  text-align: right;
+  background-color: transparent;
+}
+#formulaExcDisplay, #formulaIncDisplay, #formulaWithheldDisplay{
+  width: 100%;
+  resize: none;
+  color: #104581;
+  text-align: center;
+  background-color: transparent;
+}
+#numberTransaction, #service-charge-t{
+  width: 55%;
+  resize: none;
+  color: #104581;
+  text-align: left;
+  background-color: transparent;
+}
+#from-date-range{
+  width: 80px;
+  color: #104581;
+  font-weight: 700;
+  background-color: transparent;
+}
+#to-date-range{
+  color: #104581;
+  font-weight: 700;
+  background-color: transparent;
+}
+#formulaInp{
+  color: #104581;
+  font-weight: 700;
+  background-color: transparent;
+}
+/* Specific element styles */
+
+#head-amount {
+  text-align: center;
+  background-color: transparent;
+}
+
+#from-span, #to-span {
+  margin-right: 5px;
+  background-color: transparent;
+
+}
+
+.formula-content {
+  display: none;
+}
+
+.formula-content p {
+  margin-bottom: 5px;
+}
+
+.green-peso {
+  color: green;
+}
+
+.col {
+  display: flex;
+  width: 50%;
+}
+
+.label {
+  font-weight: bold;
+}
+
+.pesos-div, .pesos-div2 {
+  display: inline-block;
+  vertical-align: middle;
+  /* background-color: pink; */
+  margin-left: 200px;
+  margin-right: 10px;
+}
+
+.pesos-div h4, .pesos-div2 h4 {
+  margin: 0;
+}
+.pesos-div2{
+  /* background-color: violet; */
+  margin-left: 385px;
+}
+
+.amount-inp, .vat-amount, .net-amount, .wtax-amount, .addAmount-amount, .totalAmountDue-inp, .lesswtax-amount, .netAmount-amount {
+  border-radius: 4px;
+  text-align: right;
+  background-color: transparent;
+
+}
+.lesswtax-inp, .netAmount-inp, .vat-inp, .net-inp, .wtax-inp{
+  width: 100%;
+}
+/* Responsive adjustments */
+
+@media screen and (max-width: 768px) {
+  .col {
+    width: 50%;
+  }
+}
+
+.table-div {
+  width: 100%;
+  border-collapse: collapse;
+
+}
+
+.sig-div {
+  /* border: 1px solid #ddd; */
+  border-radius: 5px;
+  width: 50%;
+  /* background-color: #07bc55; */
+  margin-bottom: 20px;
+}
+.sig-div td{
+  border: none;
+}
+/* tr#signature-row {
+  border-bottom: 1px solid #ddd;
+} */
+
+td#signature-row {
+  padding: 10px;
+}
+#signature{
+  width: 100%;
+  background-color: transparent;
+}
+
+.preparedby-lbl, .reviewedby-lbl, .notedby-lbl {
+  font-weight: bold;
+}
+
+.signature-inp, .dateSignature-inp, .preparedFix-inp, .preparedInput, .reviewdbyInput, .notedfix_signature, .noteInput {
+  width: 100%;
+  /* border: 1px solid #ddd; */
+  border-radius: 4px;
+  text-align: center;
+  padding: 5px;
+  background-color: transparent;
+}
+
+.dateSignature-inp, .preparedFix-inp, .reviewedFix-inp, .notedfix_signature {
+  display: none;
+}
+
+.position-lbl {
+  text-align: center;
+  font-size: 12px;
+  margin-top: 5px;
+}
+
+.submit-btn {
+  text-align: center;
+  margin-top: 20px;
+  margin-bottom: 30px;
+}
+
+.saveBtn {
+  background-color: #4CAF50; /* Green color */
+  color: white;
+  padding: 10px 25px;
+  border: none;
+  border-radius: 50px;
+  cursor: pointer;
+}
+
+.saveBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Additional styles can be added based on your preferences and visual design. */
+/* Modal Styles */
+.modal {
+  display: none; /* Hidden by default */
+  position: fixed; /* Stay on top of the webpage content */
+  z-index: 1000; /* Highest layer */
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100vh;
+  overflow: auto; /* Enable scrolling if needed */
+  background-color: rgba(0, 0, 0, 0.4); /* Transparent black overlay */
+}
+
+.modal-content {
+  margin: 5% auto; /* Center the modal content */
+  background-color: #fff;
+  padding: 20px;
+  border-radius: 5px;
+  box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+  width: 50%;
+}
+
+.modal-header {
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 10px;
+  text-align: center;
+}
+
+.modal-header h3 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.header-line {
+  border-top: 1px solid #ddd;
+  margin: 10px 0;
+}
+
+/* Make labels and inputs have the same width */
+.modal-fields {
+  display: block;
+}
+
+.modal-fields label {
+  width: 250px; /* Adjust this width as needed */
+  font-weight: bold;
+  margin-bottom: 5px;
+}
+#transactionFromDate, #transactionToDate{
+  width: 24%;
+}
+.modal-fields input {
+  width: 50%;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 5px;
+  margin: 5px;
+}
+
+/* Additional styles for specific sections */
+
+.amount-content, .vat-div, .netvat-div, .wthax-div, .netamountDue-div {
+  display: flex;
+  align-items: center;
+}
+
+.amount-content, .vat-div, .netvat-div, .wthax-div, .netamountDue-div label {
+  margin-right: 5px;
+}
+
+.peso-sign {
+  font-size: 16px;
+  color: #4CAF50;
+}
+
+#addAmountDue-div {
+  display: none;
+}
+
+.modal-buttons {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 20px;
+}
+
+.modal-buttons button {
+  border: none;
+  outline: none;
+  padding: 10px 20px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.confirmBtn {
+  background-color: #4CAF50; /* Green color */
+  color: white;
+}
+
+.closeBtn {
+  background-color: #d70c0c;
+  color: #fff;
+}

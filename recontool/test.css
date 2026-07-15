@@ -1,0 +1,30 @@
+body,
+html {
+    box-sizing: 0;
+
+}
+
+.main {
+    max-width: 100vw;
+    max-height: 100vh;
+    min-width: 100vw;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+
+    background-color: red;
+}
+
+.sub {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border: 1px solid green;
+    background-color: cadetblue;
+    height: 50%;
+    width: 50%;
+}
+h2{
+    font-size: 50%;
+}

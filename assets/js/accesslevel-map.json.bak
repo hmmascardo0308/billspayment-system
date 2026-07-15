@@ -1,0 +1,145 @@
+{
+    "version": 2,
+    "permission_catalog": [
+        {
+            "key": "Bills Payment",
+            "label": "Bills Payment",
+            "icon": "payments",
+            "children": [
+                { "key": "BP Import Transaction", "label": "Import > Transaction", "icon": "receipt" },
+                { "key": "BP Import Cancellation", "label": "Import > Cancellation", "icon": "block" },
+                { "key": "BP Post Transaction", "label": "Post > Transaction", "icon": "send" },
+                { "key": "BP Settlement Adjustment Entry", "label": "Settlement > Adjustment Entry", "icon": "account_tree" },
+                { "key": "BP Settlement Per Bank", "label": "Settlement > Per Bank", "icon": "account_balance" },
+                { "key": "BP Report Volume", "label": "Report > Volume Report", "icon": "bar_chart" },
+                { "key": "BP Report EDI", "label": "Report > EDI Report", "icon": "description" },
+                { "key": "BP Report Transaction Details", "label": "Report > Transaction Details", "icon": "list_alt" },
+                { "key": "BP Report Transaction Summary", "label": "Report > Transaction Summary", "icon": "table_chart" },
+                { "key": "BP Report Cancellation", "label": "Report > Cancellation Report", "icon": "cancel" },
+                { "key": "BP Report Balance Sheet", "label": "Report > Balance Sheet", "icon": "analytics" }
+            ]
+        },
+        {
+            "key": "Billing Invoice",
+            "label": "Billing Invoice",
+            "icon": "receipt_long",
+            "children": [
+                { "key": "BI Create Manual", "label": "Create > Service Charge (MANUAL)", "icon": "edit_note" },
+                { "key": "BI Create Automated", "label": "Create > Service Charge (AUTOMATED)", "icon": "auto_mode" },
+                { "key": "Invoice Review", "label": "Review > For Checking / Review", "icon": "rate_review" },
+                { "key": "Invoice Approval", "label": "Approval > Billing Invoice Approval", "icon": "fact_check" },
+                { "key": "BI Report Billing Invoice", "label": "Report > Billing Invoice Report", "icon": "summarize" }
+            ]
+        },
+        {
+            "key": "Masterfiles",
+            "label": "Masterfiles",
+            "icon": "folder",
+            "children": [
+                { "key": "Masterfiles View Bank List", "label": "View > Bank List", "icon": "account_balance_wallet" }
+            ]
+        },
+        {
+            "key": "Maintenance",
+            "label": "Maintenance",
+            "icon": "build",
+            "children": [
+                {
+                    "key": "Accounts",
+                    "label": "Accounts",
+                    "icon": "manage_accounts",
+                    "children": [
+                        { "key": "Maintenance Accounts User Management", "label": "Accounts > User Management", "icon": "group" },
+                        { "key": "Maintenance Accounts Access Levels", "label": "Accounts > Access Levels", "icon": "vpn_key" }
+                    ]
+                },
+                { "key": "Maintenance Duplicate Transaction", "label": "Duplicate > Transaction", "icon": "content_copy" },
+                { "key": "Maintenance Masterfiles Partner List", "label": "Masterfiles > Partner List", "icon": "groups" },
+                { "key": "Maintenance Masterfiles Bank List", "label": "Masterfiles > Bank List", "icon": "savings" }
+            ]
+        },
+        {
+            "key": "Tools",
+            "label": "Tools",
+            "icon": "handyman",
+            "children": [
+                { "key": "Tools KPX Generator", "label": "KPX/KP7 Generator", "icon": "memory" },
+                { "key": "Tools Branch Maker", "label": "Branch Maker", "icon": "alt_route" },
+                { "key": "Tools File Fetch", "label": "File Fetch", "icon": "cloud_download" }
+            ]
+        }
+    ],
+    "access_levels": [
+        {
+            "access_level": 1,
+            "permissions": [
+                "Tools",
+                "Tools Branch Maker",
+                "Tools File Fetch",
+                "Tools KPX Generator"
+            ]
+        },
+        {
+            "access_level": 2,
+            "permissions": [
+                "Tools",
+                "Tools KPX Generator"
+            ]
+        },
+        {
+            "access_level": 3,
+            "permissions": [
+                "Accounts",
+                "BI Create Automated",
+                "BI Create Manual",
+                "BI Report Billing Invoice",
+                "BP Import Cancellation",
+                "BP Import Transaction",
+                "BP Post Transaction",
+                "BP Report Balance Sheet",
+                "BP Report Cancellation",
+                "BP Report EDI",
+                "BP Report Transaction Details",
+                "BP Report Transaction Summary",
+                "BP Report Volume",
+                "BP Settlement Adjustment Entry",
+                "BP Settlement Per Bank",
+                "Billing Invoice",
+                "Bills Payment",
+                "Invoice Approval",
+                "Invoice Review",
+                "Maintenance",
+                "Maintenance Accounts Access Levels",
+                "Maintenance Accounts User Management",
+                "Maintenance Duplicate Transaction",
+                "Maintenance Masterfiles Bank List",
+                "Maintenance Masterfiles Partner List",
+                "Masterfiles",
+                "Masterfiles View Bank List",
+                "Tools",
+                "Tools Branch Maker",
+                "Tools File Fetch",
+                "Tools KPX Generator"
+            ]
+        },
+        {
+            "access_level": 4,
+            "permissions": [
+                "BP Import Cancellation",
+                "BP Import Transaction",
+                "Bills Payment"
+            ]
+        },
+        {
+            "access_level": 5,
+            "permissions": [
+                "BP Import Cancellation",
+                "BP Import Transaction",
+                "Bills Payment",
+                "Tools",
+                "Tools Branch Maker"
+            ]
+        }
+    ],
+    "needs_migration": false
+}

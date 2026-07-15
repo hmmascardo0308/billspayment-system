@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Excel Unlock Password Gen.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="icon" href="../mlauto/mlassets/MLW%20Logo.png" type="image/png">
+  <link rel="stylesheet" href="../recontool/sample.css">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=Spline+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://kit.fontawesome.com/30b908cc5a.js" crossorigin="anonymous"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header page">
+    <img src="../mlauto/mlassets/ml.png" alt="ML Logo" class="app-logo">
+    <div class="app-nav">
+      <a href="../mlauto/index.html">KPX/KP7 Generator</a>
+      <a href="../mlbranchmaker/convert.html">Branch.json Generator</a>
+      <a href="../recontool/sample.html">Excel Fetch Test</a>
+      <a href="../exceldecryptpassword/index.html" class="active">Excel Unlock Password Generator</a>
+    </div>
+  </header>
+  <main class="app-shell">
+    <section class="card">
+      <header class="card-header">
+        <h1>Excel Unlock Password Generator</h1>
+        <p>
+          Batch unlock password-protected Excel files using <strong>input Excel Password</strong>.
+        </p>
+      </header>
+
+      <div class="controls">
+        <input id="excelFiles" type="file" accept=".xls,.xlsx" multiple hidden />
+        <button id="processBtn" class="primary-btn" type="button">Generate</button>
+        <button id="clearBtn" class="primary-btn" type="button">Clear</button>
+        <button id="bulkDownloadBtn" class="primary-btn secondary-btn" type="button">Download All</button>
+      </div>
+
+      <div id="dropZone" class="drop-zone" role="button" tabindex="0" aria-label="Drag and drop Excel files or press Enter to browse">
+        <p class="drop-title">Drag and drop Excel files here</p>
+        <p class="drop-sub">or click this area to browse files</p>
+      </div>
+
+      <p id="summary" class="summary">No files selected.</p>
+
+      <div class="table-wrap" role="region" aria-label="File processing list">
+        <table>
+          <thead>
+            <tr>
+              <th>File Name</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="fileListBody">
+            <tr>
+              <td colspan="4" class="empty-row">Upload files to begin.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <footer class="note">
+      </footer>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

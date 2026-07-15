@@ -1,0 +1,305 @@
+body { 
+    background: #fff; 
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow-y: auto;
+}
+html {
+    height: 100%;
+    overflow-y: auto;
+}
+.edi-container { 
+    max-width: 1000px; 
+    margin: 40px auto; 
+    background: #f8cccc; 
+    border-radius: 8px; 
+    padding: 30px; 
+}
+.edi-title { text-align: center; color: #dc3545; margin-bottom: 10px; }
+.edi-table { width: 100%; border-collapse: collapse; margin-top: 20px; background: #fff; }
+.edi-table th, .edi-table td { border: 1px solid #e74c3c; padding: 10px; text-align: center; }
+.edi-table th { background: #e74c3c; color: #fff; position: sticky; top: 0; z-index: 10; }
+.edi-table tr:nth-child(even) { background: #fbeaea; }
+.edi-header { 
+    margin-bottom: 20px; 
+    background: linear-gradient(to bottom, #ff5252, #c30000);
+    box-shadow: 0 3px 8px rgba(0,0,0,0.3);
+    border-radius: 8px;
+    padding: 12px;
+}
+.btn-back { 
+    background: #e74c3c; 
+    color: #fff; 
+    border: none; 
+    padding: 4px 10px; 
+    border-radius: 4px; 
+    cursor: pointer; 
+    margin-bottom: 10px;
+    font-size: 12px;
+}
+/* Remove fixed height limit on table container to allow full page scrolling */
+.table-container { 
+    border: 1px solid #e74c3c;
+    background: #fff;
+}
+.filter-section {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: rgb(191, 20, 20);
+    padding: 15px;
+    border-radius: 0 0 6px 6px;
+    z-index: 1000;
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+
+.main-content {
+    margin-top: 140px; /* Increased space for the fixed filter */
+    position: relative;
+    z-index: 100;
+}
+
+.button-container {
+    padding: 10px 0;
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 15px;
+    align-items: center;
+}
+
+.edi-header-content {
+    text-shadow: 1px 1px 3px rgba(0,0,0,0.4);
+}
+
+.edi-logo {
+    filter: drop-shadow(0 0 3px #fff) drop-shadow(0 0 5px rgba(255,255,255,0.7));
+    -webkit-filter: drop-shadow(0 0 3px #fff) drop-shadow(0 0 5px rgba(255,255,255,0.7));
+    position: relative;
+    z-index: 5;
+}
+
+.edi-title-text {
+    font-size: 1.3em;
+    font-weight: bold;
+    color: #fff;
+    letter-spacing: 0.5px;
+}
+
+.period-text {
+    color: #fff;
+    font-weight: bold;
+    background: rgba(0,0,0,0.15);
+    border-radius: 4px;
+    padding: 4px 8px;
+    display: inline-block;
+}
+
+@keyframes buttonBounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-5px); }
+}
+
+@keyframes buttonPulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+    100% { transform: scale(1); }
+}
+
+.export-button-3d {
+    background: linear-gradient(to bottom, #ff5252, #c30000);
+    color: white;
+    font-weight: bold;
+    padding: 8px 15px;
+    border-radius: 6px;
+    border: 1px solid #b30000;
+    box-shadow: 
+        0 1px 0 #ff8080 inset,
+        0 -1px 0 #900 inset,
+        2px 3px 5px rgba(0,0,0,0.3);
+    text-shadow: 1px 1px 1px rgba(0,0,0,0.3);
+    position: relative;
+    top: 0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.export-button-3d:hover {
+    background: linear-gradient(to bottom, #ff6666, #e60000);
+    box-shadow: 
+        0 1px 0 #ff9999 inset,
+        0 -1px 0 #a00 inset,
+        2px 3px 6px rgba(0,0,0,0.4);
+    animation: buttonBounce 0.5s ease infinite;
+}
+
+.export-button-3d:active {
+    animation: none;
+    top: 2px;
+    box-shadow: 
+        0 1px 0 #ff8080 inset,
+        0 -1px 0 #900 inset,
+        0 1px 2px rgba(0,0,0,0.3);
+}
+
+.back-button-3d {
+    background: linear-gradient(to bottom, #e74c3c, #c0392b);
+    color: white;
+    font-weight: bold;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #a5281b;
+    box-shadow: 
+        0 1px 0 #f87a6f inset,
+        0 -1px 0 #962d22 inset,
+        1px 2px 3px rgba(0,0,0,0.3);
+    text-shadow: 1px 1px 1px rgba(0,0,0,0.3);
+    position: relative;
+    top: 0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 14px;
+}
+
+.back-button-3d:hover {
+    background: linear-gradient(to bottom, #f15849, #d44233);
+    box-shadow: 
+        0 1px 0 #f9988e inset,
+        0 -1px 0 #a33024 inset,
+        1px 2px 4px rgba(0,0,0,0.4);
+    text-decoration: none;
+    color: white;
+    animation: buttonPulse 0.6s ease infinite;
+}
+
+.back-button-3d:active {
+    animation: none;
+    top: 1px;
+    box-shadow: 
+        0 1px 0 #f87a6f inset,
+        0 -1px 0 #962d22 inset,
+        0 1px 2px rgba(0,0,0,0.3);
+    color: white;
+}
+
+@keyframes buttonRotate {
+    0% { transform: rotate(0deg); }
+    25% { transform: rotate(-5deg) scale(1.05); }
+    75% { transform: rotate(5deg) scale(1.05); }
+    100% { transform: rotate(0deg); }
+}
+
+.go-button-3d {
+    background: linear-gradient(to bottom, rgb(235, 105, 105), rgb(100, 9, 9));
+    color: white;
+    font-weight: bold;
+    padding: 0 30px;
+    height: 38px;
+    border-radius: 20px;
+    border: 1px solid rgb(255, 251, 251);
+    box-shadow: 
+        0 1px 0 #ff8080 inset,
+        0 -1px 0 #700 inset,
+        2px 3px 5px rgba(0,0,0,0.3);
+    text-shadow: 1px 1px 1px rgba(0,0,0,0.3);
+    position: relative;
+    top: 0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.go-button-3d:hover {
+    background: linear-gradient(to bottom, rgb(255, 120, 120), rgb(150, 10, 10));
+    box-shadow: 
+        0 1px 0 #ff9999 inset,
+        0 -1px 0 #800 inset,
+        2px 3px 6px rgba(0,0,0,0.4);
+    animation: buttonRotate 0.7s ease infinite;
+}
+
+.go-button-3d:active {
+    animation: none;
+    top: 2px;
+    box-shadow: 
+        0 1px 0 #ff8080 inset,
+        0 -1px 0 #700 inset,
+        0 1px 2px rgba(0,0,0,0.3);
+}
+
+.form-input-3d {
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    padding: 8px 10px;
+    height: 38px;
+    background: linear-gradient(to bottom, #ffffff, #f5f5f5);
+    box-shadow: 
+        0 1px 3px rgba(0,0,0,0.1),
+        inset 0 1px 0 rgba(255,255,255,0.9),
+        inset 0 -1px 0 rgba(0,0,0,0.05);
+    width: 150px;
+    font-family: inherit;
+    font-size: 14px;
+    transition: all 0.15s ease;
+}
+
+.form-input-3d:hover {
+    border-color: #aaa;
+    box-shadow: 
+        0 1px 4px rgba(0,0,0,0.15),
+        inset 0 1px 0 rgba(255,255,255,0.9),
+        inset 0 -1px 0 rgba(0,0,0,0.05);
+}
+
+.form-input-3d:focus {
+    border-color: #e74c3c;
+    outline: none;
+    box-shadow: 
+        0 0 5px rgba(231, 76, 60, 0.5),
+        inset 0 1px 0 rgba(255,255,255,0.9),
+        inset 0 -1px 0 rgba(0,0,0,0.05);
+}
+
+.date-input-3d {
+    background: linear-gradient(to bottom, #ffffff, #f5f5f5);
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    padding: 8px;
+    height: 38px;
+    box-shadow: 
+        0 1px 3px rgba(0,0,0,0.1),
+        inset 0 1px 0 rgba(255,255,255,0.9),
+        inset 0 -1px 0 rgba(0,0,0,0.05);
+    font-family: inherit;
+    font-size: 14px;
+    transition: all 0.15s ease;
+}
+
+.date-input-3d:hover {
+    border-color: #aaa;
+    box-shadow: 
+        0 1px 4px rgba(0,0,0,0.15),
+        inset 0 1px 0 rgba(255,255,255,0.9),
+        inset 0 -1px 0 rgba(0,0,0,0.05);
+}
+
+.date-input-3d:focus {
+    border-color: #e74c3c;
+    outline: none;
+    box-shadow: 
+        0 0 5px rgba(231, 76, 60, 0.5),
+        inset 0 1px 0 rgba(255,255,255,0.9),
+        inset 0 -1px 0 rgba(0,0,0,0.05);
+}
+
+.form-label-3d {
+    color: #fff;
+    text-shadow: 1px 1px 1px rgba(0,0,0,0.3);
+    font-weight: bold;
+    margin-bottom: 3px;
+}

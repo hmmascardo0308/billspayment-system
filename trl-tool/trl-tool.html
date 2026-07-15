@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TRL Tool Generator</title>
+    <link rel="stylesheet" href="trl-tool.css" />
+    <link rel="icon" href="../images/MLW%20logo.png" type="image/png">
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  </head>
+  <body>
+    <header class="app-header page">
+      <img src="../images/ml.png" alt="ML Logo" class="app-logo">
+      <div class="app-nav">
+        <a href="#" class="active">TRL Tool</a>
+      </div>
+    </header>
+
+    <div class="page">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">TRL Tool</p>
+          <h1>TRL Sample Generator</h1>
+          <p class="subhead">Generate TRL-format Excel files for import testing.</p>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel">
+          <div class="section-header">
+            <h2>Generator</h2>
+            <div class="header-actions">
+              <label for="rowsCount">Rows</label>
+              <input id="rowsCount" class="input" type="number" value="100" min="1" max="10000" />
+              <span id="generatedCount" class="muted" style="margin-left:8px"></span>
+
+              <label for="typeSelect">Type of Request</label>
+              <select id="typeSelect" class="input">
+                <option value="">Select request type</option>
+                <option>All</option>
+                <option>NO PAYMENT RECEIVED</option>
+                <option>DOUBLE POSTING</option>
+                  <option>MULTI POSTING</option>
+                <option>TRIPLE POSTING</option>
+                <option>WRONG BILLER</option>
+                <option>OVERSTATED AMOUNT</option>
+                <option>CANCELLED TRANSACTION</option>
+                <option>UNREFLECTED TRXN</option>
+              </select>
+
+              <label for="billerSelect">Wrong Biller</label>
+              <select id="billerSelect" class="input">
+                <option value="All">All</option>
+              </select>
+              <button id="generateBtn" class="primary">Generate</button>
+              <button id="clearBtn" class="ghost" onclick="location.reload()">Reset</button>
+            </div>
+          </div>
+
+          <div class="section-header" style="margin-top:8px;">
+            <label for="fileName">File name</label>
+            <input id="fileName" class="input" type="text" placeholder="trl-sample.xlsx" />
+            <button id="downloadBtn" class="primary" disabled>Export Excel</button>
+          </div>
+
+        </section>
+
+        <!-- Table panel expands wider than the control panel and centers to 90vw -->
+        <section class="panel table-panel">
+          <div class="table-container">
+            <table class="table" id="sampleTable">
+              <thead>
+                <tr>
+                  <th>TRANS. DATE/TIME</th>
+                  <th>REF. NO.</th>
+                  <th>WRONG BILLER ID</th>
+                  <th>BILLER NAME</th>
+                  <th>ACCOUNT NO.</th>
+                  <th>NAME</th>
+                  <th>PAYMENT BRANCH ID</th>
+                  <th>PAYMENT BRANCH</th>
+                  <th>AMOUNT</th>
+                  <th>TYPE OF REQUEST</th>
+                  <th>CORRECT BILLER ID</th>
+                  <th>CORRECT BILLER NAME</th>
+                  <th>REASON</th>
+                </tr>
+              </thead>
+              <tbody id="sampleBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="trl-tool.js"></script>
+  </body>
+</html>

@@ -1,0 +1,44 @@
+[
+  {
+    "status": "ACTIVE",
+    "partner_id": "MLBPP180456",
+    "partner_id_kpx": "293",
+    "tg_partner_name": "GI PHILIPPINES CORP."
+  },
+  {
+    "status": "ACTIVE",
+    "partner_id": "3140012",
+    "partner_id_kpx": "297",
+    "tg_partner_name": "GLOBE INNOVE"
+  },
+  {
+    "status": "ACTIVE",
+    "partner_id": "3140012",
+    "partner_id_kpx": "297",
+    "tg_partner_name": "GLOBE INNOVE"
+  },
+  {
+    "status": "ACTIVE",
+    "partner_id": "MLBPP180475",
+    "partner_id_kpx": "300",
+    "tg_partner_name": "GOLDEN BRIA HOLDINGS INC"
+  },
+  {
+    "status": "ACTIVE",
+    "partner_id": "MLBPP150196",
+    "partner_id_kpx": "513",
+    "tg_partner_name": "MICROVENTURES PHILS. FINANCING COMPANY"
+  },
+  {
+    "status": "ACTIVE",
+    "partner_id": "MLBPP190569",
+    "partner_id_kpx": "811",
+    "tg_partner_name": "SKYPAY"
+  },
+  {
+    "status": "ACTIVE",
+    "partner_id": "MLBPP180496",
+    "partner_id_kpx": "1095",
+    "tg_partner_name": "BAYADCENTER II"
+  }
+]

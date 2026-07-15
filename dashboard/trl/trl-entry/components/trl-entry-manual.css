@@ -1,0 +1,271 @@
+/* Manual Mode Specific Styles */
+
+#manualModeBlock {
+    padding: 0;
+}
+
+/* Toggle switch for Include Reference No. */
+.manual-ref-toggle .switch {
+    position: relative;
+    display: inline-block;
+    width: 46px;
+    height: 26px;
+}
+.manual-ref-toggle .switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.manual-ref-toggle .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #d0d0d0;
+    transition: .25s;
+    border-radius: 999px;
+}
+.manual-ref-toggle .slider:before {
+    position: absolute;
+    content: "";
+    height: 20px;
+    width: 20px;
+    left: 3px;
+    bottom: 3px;
+    background-color: #fff;
+    transition: .25s;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+.manual-ref-toggle .switch input:checked + .slider {
+    background-color: #2196f3;
+}
+.manual-ref-toggle .switch input:focus + .slider {
+    box-shadow: 0 0 2px #2196f3;
+}
+.manual-ref-toggle .switch input:checked + .slider:before {
+    transform: translateX(20px);
+}
+
+.manual-entry-form {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+}
+
+/* Ensure right-column request header uses the same yellow/orange as Auto mode */
+.manual-entry-form .auto-input-header .material-icons,
+.auto-input-header .material-icons {
+    color: #ffb300 !important;
+}
+
+/* Form Section Styling */
+.form-section {
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 24px;
+    transition: all 0.3s ease;
+}
+
+.form-section:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 2px solid #f0f0f0;
+}
+
+.section-header .material-icons {
+    font-size: 28px;
+    color: #2196f3;
+}
+
+.section-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #333;
+    margin: 0;
+}
+
+.section-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+}
+
+.section-grid .field-span-2 {
+    grid-column: span 2;
+}
+
+.section-grid .field-fullwidth {
+    grid-column: 1 / -1;
+}
+
+/* Field Group Styling */
+.manual-entry-form .field-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.manual-entry-form .field-group label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #333;
+}
+
+.manual-entry-form label .material-icons {
+    font-size: 18px;
+    color: #2196f3;
+    flex-shrink: 0;
+}
+
+/* Make label icons inside the Request Information card use the Auto mode yellow/orange */
+.manual-entry-form .auto-input-card label .material-icons,
+.auto-input-card label .material-icons {
+    color: #ffb300 !important;
+}
+
+/* Make auto-input-card highlight with yellow border similar to auto mode */
+.auto-input-card {
+    background: #fffef6;
+    border-left: 4px solid #ffb300;
+}
+
+/* Input Fields */
+.manual-entry-form .field-input {
+    padding: 12px;
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: inherit;
+    transition: all 0.3s ease;
+}
+
+.manual-entry-form .field-input:focus {
+    outline: none;
+    border-color: #2196f3;
+    box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.1);
+}
+
+.manual-entry-form .field-input[type="number"] {
+    text-align: right;
+}
+
+.manual-entry-form textarea.field-input {
+    resize: vertical;
+    min-height: 100px;
+    font-family: inherit;
+}
+
+/* Transaction Information Section */
+.form-section:nth-child(2) .section-header .material-icons {
+    color: #2196f3;
+}
+
+/* Account Information Section */
+.form-section:nth-child(3) .section-header .material-icons {
+    color: #009688;
+}
+
+/* Biller Information Section */
+.form-section:nth-child(4) .section-header .material-icons {
+    color: #ff9800;
+}
+
+/* Payment Branch Section */
+.form-section:nth-child(5) .section-header .material-icons {
+    color: #4caf50;
+}
+
+/* Request Details Section */
+.form-section:nth-child(6) .section-header .material-icons {
+    color: #9c27b0;
+}
+
+/* Correction Details Section */
+.form-section:nth-child(7) .section-header .material-icons {
+    color: #f44336;
+}
+
+/* Reason Section */
+.form-section:nth-child(8) .section-header .material-icons {
+    color: #673ab7;
+}
+
+/* Special Styling for Different Sections */
+.form-section:nth-child(3) {
+    border-left: 4px solid #009688;
+}
+
+.form-section:nth-child(4) {
+    border-left: 4px solid #ff9800;
+}
+
+.form-section:nth-child(5) {
+    border-left: 4px solid #4caf50;
+}
+
+.form-section:nth-child(6) {
+    border-left: 4px solid #9c27b0;
+}
+
+.form-section:nth-child(7) {
+    border-left: 4px solid #f44336;
+}
+
+.form-section:nth-child(8) {
+    border-left: 4px solid #673ab7;
+}
+
+.form-section:nth-child(2) {
+    border-left: 4px solid #2196f3;
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+    .section-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .section-grid .field-span-2 {
+        grid-column: span 2;
+    }
+}
+
+@media (max-width: 768px) {
+    .section-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .section-grid .field-span-2 {
+        grid-column: span 1;
+    }
+
+    .form-section {
+        padding: 16px;
+    }
+
+    .section-header {
+        margin-bottom: 16px;
+    }
+
+    .section-header .material-icons {
+        font-size: 24px;
+    }
+
+    .section-header h3 {
+        font-size: 15px;
+    }
+}

@@ -1,0 +1,11 @@
+.st-wrapper { padding: 18px; }
+.st-wrapper .bp-card { padding: 12px; }
+.st-wrapper .mode-cards { display: flex; gap: 12px; margin-bottom: 12px; }
+.st-wrapper .mode-card { border:1px solid #e9ecef; padding:12px; border-radius:8px; cursor:pointer; }
+.st-wrapper .st-empty { padding: 24px; color: #6c757d; }
+.st-ticket-table { width:100%; }
+.st-ticket-row { display:flex; gap:12px; padding:8px 0; border-bottom:1px solid #f1f1f1; }
+.st-ticket-col { display:block; }
+
+/* small helpers */
+.bp-card { margin-top: 12px; }

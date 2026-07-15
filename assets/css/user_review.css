@@ -1,0 +1,1164 @@
+
+
+.container {
+  display: block;
+ }
+ 
+ .nav-list li a {
+  text-decoration: none;
+  color: #fff;
+  font-size: 12px;
+  font-weight: bold;
+  padding: 10px 20px 10px 20px;
+ }
+ 
+ .nav-list li #user {
+  text-decoration: none;
+  color: #d70c0c;
+  font-size: 12px;
+  font-weight: bold;
+  padding: 5px 20px 5px 20px;
+ }
+ 
+ .nav-list li a:hover {
+  color: #d70c0c;
+  background-color: whitesmoke;
+ }
+ 
+ .nav-list li #user:hover {
+  color: #fff;
+ }
+ 
+ .header {
+  text-align: center;
+  padding: 0px;
+ }
+ 
+ .logout a {
+  text-decoration: none;
+  background-color: transparent;
+  padding: 5px 10px 5px 10px;
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  transition: background-color 0.3s ease;
+ }
+ 
+ 
+ .logout a:hover {
+   text-decoration: none;
+   background-color: black;
+   padding: 5px 10px 5px 10px;
+   color: #d70c0c;
+   transition: background-color 0.3s ease;
+ }
+
+ .usernav h6 {
+  margin: 0;
+  font-size: 12px;
+ }
+ 
+ .usernav h5 {
+  margin: 0;
+  font-size: 14px;
+  margin-left: 5px;
+ }
+ 
+ .btn-nav {
+  display: flex;
+ }
+ 
+ .nav-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+ }
+ 
+ .nav-list li {
+  display: inline-block;
+  margin-right: 10px;
+ }
+ 
+ .nav-list li a {
+  text-decoration: none;
+  color: #fff;
+  font-size: 12px;
+  padding: 15px;
+ }
+ 
+ .dropdown {
+  position: relative;
+  display: inline-block;
+ }
+ .dropdown:hover{
+  background-color: whitesmoke;
+  color: #d70c0c;
+ }
+ .dropdown-btn {
+  background-color: transparent;
+  color: #fff;
+  font-weight: 700;
+  border: none;
+  padding: 0px 1px;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0px 10px;
+ }
+ .dropdown-btn:hover{
+  color: #d70c0c;
+  padding: 0px 10px;
+ }
+ .dropdown-content {
+  display: none;
+  position: absolute;
+  background-color: #f9f9f9;
+  min-width: 230px;
+  box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
+  z-index: 1;
+ }
+ 
+ .dropdown-content a {
+  display: block;
+  padding: 8px 0;
+  text-decoration: none;
+  color: #333;
+ }
+ .dropdown:hover .dropdown-content {
+  display: block;
+ }
+ #user:hover{
+  background-color: #d70c0c;
+  color: #fff;
+ }
+ 
+ .content {
+   background-color: white;
+   padding: 20px;
+   display: flex;
+   justify-content: center;
+   align-items: center;
+   min-height: 400px;
+ }
+ 
+ .footer {
+   background-color: #d70c0c;
+   padding: 20px;
+   text-align: center;
+   color: white;
+   font-size: 12px;
+ }
+ 
+ /* Media Queries */
+ 
+ @media only screen and (max-width: 768px) {
+   .top-content {
+     flex-direction: column;
+     align-items: flex-start;
+     padding: 10px;
+   }
+ 
+   .nav-container {
+     flex-direction: column;
+     align-items: flex-start;
+   }
+ 
+   .nav-list {
+     flex-direction: column;
+     margin-top: 10px;
+   }
+ 
+   .nav-list li {
+     margin-right: 0;
+     margin-bottom: 10px;
+   }
+ 
+   .dropdown-btn {
+     width: auto;
+     margin-right: 20px;
+   }
+ 
+   .header {
+     padding: 20px;
+   }
+ 
+   .content {
+     padding: 20px;
+   }
+ 
+   .footer {
+     padding: 20px;
+   }
+ }
+ 
+ .logo-wrap{
+  display: flex;
+  width: 80%;
+  margin: auto;
+  height: 100%
+ } 
+ 
+ .fas{
+  font-size: 20px;
+  padding: 10px;
+ }
+ 
+ i.fas.fa-search{
+  padding: 8px;
+  font-size: 12px;
+ }
+ 
+ .sub a, a:visited, a:hover, a:active {
+  color: inherit;
+  margin: auto;
+ }
+ 
+ .fa-chevron-right, .fa-chevron-down{
+  font-size: 8px;
+ }
+ 
+ .data-table {
+    background-color: whitesmoke;
+    height: auto;
+    display: block;
+    width: auto;
+    height: 70vh;
+    overflow: scroll;
+    margin: 0.5%;
+  }
+  .instruction{
+    margin: 10px;
+    display: flex;
+  }
+  .instruction h6{
+    color: #2eac47;
+  }
+  .instruction span{
+    margin-left: 10px;
+    color: #063364;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    overflow: scroll;
+  }
+  
+  table th {
+    color: #333;
+    font-size: 12px;
+    padding-left: 10px;
+    padding-right: 10px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+    width: 1%;
+    white-space: nowrap;
+  }
+  
+  table td {
+    border-bottom: 1px solid gray;
+    border-top: 1px solid gray;
+    font-size: 12px;
+    padding-left: 10px;
+    padding-right: 10px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    width: 0%;
+    white-space: nowrap;
+  }
+  table td:hover {
+    cursor: pointer;
+  }
+  .modal {
+    display: none;
+    justify-content: center;
+    align-items: center;
+    position: fixed;
+    z-index: 1;
+    left: 0;
+    top: 0;
+    overflow: auto;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal-content {
+    background-color: white;
+    border-radius: 5px;
+    padding: 10px 25px 10px 25px;
+    width: 75%;
+    max-width: 75%;
+    margin: 100px auto; /* Center the modal horizontally */
+}
+.modal-close{
+  display: flex;
+}
+#cancellation_display{
+  background-color: transparent;
+  text-decoration: underline;
+  color: blueviolet;
+}
+.close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    color: #aaa;
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.modal-content .peso-sign {
+    color: green;
+}
+
+
+.t-date {
+    width: 100%;
+    max-width: 100%;
+    text-align: left;
+}
+.reference-div {
+  width: 100%;
+  max-width: 100%;
+  text-align: left;
+}
+#amount-modal {
+    width: 150px;
+    text-align: right;
+}
+#addAmountInp {
+  width: 150px;
+  text-align: right;
+}
+
+#vatAmount {
+    width: 150px;
+    text-align: right;
+}
+
+#withholdingTax {
+    width: 150px;
+    text-align: right;
+}
+
+#netAmountDue {
+    width: 150px;
+    text-align: right;
+    color: black;
+    font-weight: 700;
+}
+#transactionFromDate{
+    width: 32%;
+}
+#transactionToDate{
+    width: 32%;
+}
+#netOfVAT {
+    width: 150px;
+    text-align: right;
+}
+
+.modal-header {
+    text-align: center;
+}
+
+.header-line {
+    border: none;
+    height: 1px;
+    background-color: #666;
+    margin: 10px 0;
+}
+
+.modal-fields label {
+    display: inline-block;
+    font-size: 12px;
+}
+
+.modal-fields input[type="text"] {
+    font-size: 12px;
+    width: 65%;
+    max-width: 65%;
+    text-align: left;
+    
+}
+
+.modal-fields .align-right {
+    text-align: right; /* Align elements to the right */
+}
+
+.modal-buttons {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.modal-buttons button {
+    padding: 5px 10px;
+    
+    color: #fff;
+    border: none;
+    border-radius: 3px;
+    margin: 0 10px;
+    cursor: pointer;
+}
+.modal-buttons #confirmBtn{
+  background-color: #4CAF50;
+}
+.modal-buttons #cancelled-one{
+  background-color: orange;
+}
+.modal-buttons .submit-btn{
+  display: flex;
+}
+.modal-buttons .printBtn{
+  background-color: #2a9df4;
+}
+.modal-buttons button.closeBtn {
+    background-color: #f44336;
+}
+.printBtnNew{
+  background-color: #2a9df4;
+}
+
+/* Responsive Styles */
+
+/* Styles for mobile devices */
+@media screen and (max-width: 480px) {
+    .modal-content {
+        width: 90%;
+        max-width: 300px;
+    }
+
+    .modal-fields label {
+        width: 150px;
+    }
+}
+
+/* Styles for tablet devices */
+@media screen and (min-width: 481px) and (max-width: 768px) {
+    .modal-content {
+        width: 70%;
+        max-width: 500px;
+    }
+
+    .modal-fields label {
+        width: 180px;
+    }
+}
+
+/* Styles for desktop devices */
+@media screen and (min-width: 769px) {
+    .modal-content {
+        width: 50%; /* Updated width to 50% */
+        max-width: 800px;
+    }
+
+    .modal-fields label {
+        width: 170px;
+    }
+}
+.selected-row{
+  background-color: lightblue;
+}
+  /* CSS for the modal */
+  .message-modal {
+    display: none;
+    position: fixed;
+    z-index: 1;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.message-modal-content {
+    background-color: #fefefe;
+    margin: 10% auto;
+    padding: 5px 20px 5px 20px;
+    border: 1px solid #888;
+    width: fit-content;
+    max-width: fit-content;
+    border-radius: 5px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+    position: relative;
+    text-align: center;
+}
+
+/* CSS for the close button */
+.close-button {
+    color: #aaa;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    padding: 2px;
+    width: 100px;
+    border-radius: 5px;
+    background-color: #d70c0c;
+    color: #fff;
+    margin-top: 15px;
+    margin-bottom: 15px;
+}
+
+/* CSS for success and error icons */
+.success-icon::before {
+    content: "\2714"; /* Checkmark icon */
+    color: green;
+    font-size: 48px;
+    margin-bottom: 10px;
+}
+
+.error-icon::before {
+    content: "\2718"; /* Cross icon */
+    color: red;
+    font-size: 48px;
+    margin-bottom: 10px;
+}
+
+/* CSS for responsiveness */
+@media (max-width: 600px) {
+    .message-modal-content {
+        width: 90%;
+        max-width: 400px;
+    }
+}
+.icon-container{
+  /* background-color: #666; */
+  display: flex;
+  padding: 5px 0px 10px 0px;
+  justify-content: center;
+}
+.icon{
+  background-color: transparent;
+  color: darkgreen;
+  border: 4px solid #4CAF50;
+  border-radius: 50px;
+  padding: 25px;
+  padding: 10px 20px 10px 20px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 30px;
+}
+.err-icon{
+  background-color: transparent;
+  color: red;
+  border: 4px solid red;
+  border-radius: 50px;
+  padding: 25px;
+  padding: 10px 15px 10px 15px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 30px;
+}
+.print-head{
+  background-color: transparent;
+  color: #000;
+}
+#date-value{
+  font-size: 12px;
+  font-weight: 700;
+}
+#reference-value{
+  font-size: 12px;
+  font-weight: 700;
+}
+#customerName-value{
+  font-size: 12px;
+  font-weight: 700;
+}
+#customerTIN-value{
+  font-size: 12px;
+  font-weight: 700;
+}
+#address-value{
+  font-size: 12px;
+  font-weight: 700;
+}
+#businessStyle-value{
+  font-size: 12px;
+  font-weight: 700;
+}
+#serviceCharge-value{
+  font-weight: 700;
+}
+#numTransactions-value{
+  font-weight: 700;
+}
+#num-lbl{
+  font-weight: 700;
+}
+#transactionFromDate-value{
+  font-weight: 700;
+}
+#transactionToDate-value{
+  font-weight: 700;
+}
+#amount-modal-value{
+  font-weight: 700;
+}
+#vatAmount-value{
+  font-weight: 700;
+}
+#netOfVAT-value{
+  font-weight: 700;
+}
+#withholdingTax-value{
+  font-weight: 700;
+}
+#total-amount-value{
+  font-weight: 700;
+}
+#less-withholdingTax-value{
+  font-weight: 700;
+}
+#netAmountDue-value{
+  font-weight: 700;
+}
+#prepared-lbl{
+  font-weight: 700;
+}
+#accountingStaff-lbl{
+  font-weight: 700;
+}
+#reviewedby-lbl{
+  font-weight: 700;
+}
+#departmentManager-lbl{
+  font-weight: 700;
+}
+#notedby-lbl{
+  font-weight: 700;
+}
+#divisionHead-lbl{
+  font-weight: 700;
+}
+.total-amount-div{
+  display: flex;
+  justify-content: space-between;
+  text-align: right;
+}
+.less-withax-div{
+  display: flex;
+  justify-content: space-between;
+  text-align: right;
+}
+.netAmountDue-div{
+  display: flex;
+  justify-content: space-between;
+  text-align: left;
+
+}
+
+#amount-content{
+  display: flex;
+  justify-content: space-between;
+  text-align: right;
+}
+#vat-div{
+  display: flex;
+  justify-content: space-between;
+  text-align: right;
+}
+#netvat-div{
+  display: flex;
+  justify-content: space-between;
+  text-align: right;
+}
+#wthax-div{
+  display: flex;
+  justify-content: space-between;
+  text-align: right;
+}
+#addedAmount-div{
+  display: flex;
+  justify-content: space-between;
+  text-align: right;
+}
+
+#address-value {
+  font-size: 12px;
+  width: fit-content;
+  }
+#signature{
+  font-family: 'Great Vibes', cursive;
+  font-size: 12px;
+  width: fit-content;
+  background-color: transparent;
+}
+.Fixsignature-inp{
+  margin-top:5px;
+}
+.status-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 5px;
+  margin: 10px;
+}
+#status{
+  text-align: center;
+
+}
+.status-select input,
+.status-select select {
+  margin: 5px;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+}
+/* 
+.status-select select {
+  width: 350px;
+} */
+
+#start-date,
+#end-date {
+  width: 350px;
+  text-align: center;
+}
+
+#status option[value="status"] {
+  color: #aaa;
+}
+
+#partner-select {
+  width: 100%;
+  padding: 10px 15px;
+}
+
+#proceed-button {
+  padding: 10px 10px;
+  border: none;
+  border-radius: 3px;
+  background-color: #007bff;
+  color: #fff;
+  cursor: pointer;
+  width: 200px;
+}
+
+#proceed-button:hover {
+  background-color: #0069d9;
+}
+
+.notedby-inp{
+  font-style: italic;
+}
+.reviewedby-inp{
+  font-style: italic;
+}
+#preparedfix-signature{
+  font-style: italic;
+}
+.notedby-inp{
+  font-size:10px;
+  font-style: italic;
+}
+.reviewedby-inp{
+  font-size:10px;
+  font-style: italic;
+}
+#preparedfix-signature{
+  font-size:10px;
+  font-style: italic;
+}
+
+/* Primary button style */
+#forreviewed {
+  background-color: #4caf50;
+  border-radius: 5px;
+  padding: 10px 20px;
+  margin-bottom: 0.5%;
+  color: #fff;
+  font-weight: bold;
+}
+
+/* Cancel button style */
+#forcancelled {
+  background-color: #d70c0c;
+  border-radius: 5px;
+  padding: 10px 20px;
+  margin-bottom: 0.5%;
+  color: #fff;
+  font-weight: bold;
+}
+/* Primary button style */
+#forapproved {
+  background-color: #4caf50;
+  border-radius: 5px;
+  padding: 10px 20px;
+  margin-bottom: 0.5%;
+  color: #fff;
+  font-weight: bold;
+}
+/* Button hover effect */
+#forapproved:hover {
+  opacity: 0.8;
+}
+#forcancelled:hover {
+  opacity: 0.8;
+}
+#forreviewed:hover {
+  opacity: 0.8;
+}
+
+/* CSS for the non-resizable textarea */
+textarea#cancellationReason {
+  border: 1px solid gray;
+  resize: none;
+  border-radius: 5px;
+  padding: 5px;
+}
+
+/* CSS for the cancellation modal */
+.cancel-modal {
+  display: none;
+  position: fixed;
+  z-index: 9999;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: rgba(0, 0, 0, 0.4);
+}
+
+.cancel-modal-content {
+  background-color: #fefefe;
+  margin: 10% auto;
+  width: fit-content;
+  padding: 20px;
+  border: 1px solid #888;
+  border-radius: 4px;
+  text-align: center;
+}
+
+/* Add styling for the modal close button */
+.cancel-close {
+  color: #aaa;
+  float: right;
+  font-size: 28px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.cancel-close:hover,
+.cancel-close:focus {
+  color: #000;
+  text-decoration: none;
+}
+
+/* Add styling for the modal confirm button */
+#cancelConfirmBtn {
+  background-color: #4caf50;
+  color: #fff;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#cancelConfirmBtn:hover {
+  background-color: #45a049;
+}
+/* Multiple Cancellation */
+
+/* CSS for the cancellation modal */
+.multipleCancel-modal {
+  display: none;
+  position: fixed;
+  z-index: 9999;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: rgba(0, 0, 0, 0.4);
+}
+
+.multipleCancel-modal-content {
+  background-color: #fefefe;
+  margin: 15% auto;
+  width: fit-content;
+  padding: 20px;
+  border: 1px solid #888;
+  border-radius: 4px;
+  text-align: center;
+}
+
+/* Add styling for the modal close button */
+.multipleCancel-close {
+  color: #aaa;
+  float: right;
+  font-size: 28px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.multipleCancel-close:hover,
+.multipleCancel-close:focus {
+  color: #000;
+  text-decoration: none;
+}
+
+/* Add styling for the modal confirm button */
+#multipleCancelConfirmBtn {
+  background-color: #4caf50;
+  color: #fff;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#multipleCancelConfirmBtn:hover {
+  background-color: #45a049;
+}
+
+/* CSS for the Edit modal */
+.Edit-modal {
+  display: none;
+  position: fixed;
+  z-index: 1;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: rgba(0, 0, 0, 0.4);
+}
+
+.Edit-modal-content {
+  background-color: #fefefe;
+  margin: 5% auto;
+  padding: 25px;
+  border: 1px solid #888;
+  width: 55%;
+  border-radius: 10px;
+}
+
+.Edit-close {
+  color: #aaa;
+  float: right;
+  font-size: 28px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.Edit-close:hover,
+.Edit-close:focus {
+  color: #000;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.edit-date,
+.edit-reference-div,
+.edit-customer-div,
+.edit-customerTin-div,
+.edit-serviceCharge-div,
+.edit-transactionDate-div,
+.edit-numberOfTransaction-div,
+.edit-amount-content,
+.edit-vat-div,
+.edit-netvat-div,
+.edit-wthax-div,
+.edit-netamountDue-div {
+  margin-bottom: 10px;
+}
+#label {
+  display: inline-block;
+  width: 180px;
+  text-align: left;
+  font-size: 12px;
+  margin-right: 10px;
+  font-weight: bold;
+}
+.edit-input {
+  padding: 2px;
+  border: 1px solid #e9e9e9;
+  border-radius: 3px;
+  width: 250px;
+  font-size: 12px;
+}
+
+hr.header-line {
+  margin-top: 20px;
+  margin-bottom: 20px;
+  border: 0;
+  border-top: 1px solid #ccc;
+}
+
+.peso-sign {
+  font-size: 12px;
+  margin-right: 5px;
+}
+
+button[type="submit"] {
+  background-color: #4CAF50;
+  color: white;
+  padding: 10px 25px;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+#edit-one{
+  background-color: #2a9df4;
+  color: #fff;
+  padding: 5px 20px;
+}
+button[type="submit"]:hover {
+  background-color: #45a049;
+}
+center {
+  margin-top: 20px;
+}
+#e-amount-modal,
+#e-addAmount,
+#e-vatAmount,
+#e-netOfVAT,
+#e-withholdingTax,
+#e-netAmountDue
+{
+  text-align: right;
+}
+
+/* Modal Container */
+.cancelled_modal {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 9999; /* Ensures the modal is on top of other elements */
+}
+
+/* Modal Content */
+.cancelled_modal-content {
+  background-color: #fff;
+  margin: 15% auto;
+  padding: 10px 20px;
+  width: 80%;
+  max-width: 500px;
+  border-radius: 10px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+}
+
+/* Close Button */
+.cancelled_close {
+  text-align: right;
+  font-size: 24px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.cancelled_close:hover {
+  color: #d70c0c;
+}
+.cancel_close{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.cancel-content label{
+  font-size: 12px;
+}
+/* Modal Text Styles */
+#cancel_date,
+#cancel_by,
+#reason_cancel {
+  margin-bottom: 10px;
+  border: 1px solid #666;
+  border-radius: 5px;
+  font-size: 12px;
+  padding: 8px;
+
+}
+#reason_cancel{
+  resize: none;
+  width: 100%;
+  overflow: auto;
+  height: auto;
+}
+#cancel_date,
+#cancel_by{
+  text-align: center;
+  width: 250px;
+}
+#cancel_date{
+  margin-left:15px;
+}
+#cancel_by{
+  margin-left: 28px;
+}
+#cancel_date::before,
+#cancel_by::before,
+#reason_cancel::before {
+  content: attr(data-label);
+  font-weight: bold;
+  margin-right: 5px;
+}
+
+
+.formatModal {
+  display: none;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  z-index: 1000;
+  min-width: 300px;
+  text-align: center;
+}
+
+
+.formatModal button {
+  margin: 10px;
+  padding: 10px 15px;
+  border: none;
+  cursor: pointer;
+  border-radius: 5px;
+}
+
+.formatModal .format-btn {
+  background: #007bff;
+  color: white;
+}
+
+.formatModal .close-btn {
+  background: red;
+  color: white;
+}
+
+
+.newFormatModal {
+  display: none;
+  justify-content: center;
+  align-items: center;
+  position: fixed;
+  z-index: 1;
+  left: 0;
+  top: 0;
+  overflow: auto;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+.newFormatModal-content {
+  background-color: white;
+  border-radius: 5px;
+  padding: 10px 25px 10px 25px;
+  width: 75%;
+  max-width: 75%;
+  margin: 100px auto; /* Center the modal horizontally */
+}
+.modal-close{
+display: flex;
+}

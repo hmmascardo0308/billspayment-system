@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(php tools/generate_version_details.php --count=10)",
+      "Bash(php tools/generate_version_details.php --count=5)",
+      "Bash(php tools/generate_version_details.php --since=f1b434205bb6d8111aedd1871d37b063c485cc16)",
+      "Bash(php tools/generate_version_details.php --since=176c3e2)",
+      "Bash(php tools/generate_version_details.php --from=f1b434205bb6d8111aedd1871d37b063c485cc16 --count=999)"
+    ]
+  }
+}

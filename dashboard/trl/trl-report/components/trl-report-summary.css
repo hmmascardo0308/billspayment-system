@@ -1,0 +1,395 @@
+.trl-summary-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 16px;
+}
+
+.trl-summary-head h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 800;
+    color: #1f2937;
+}
+
+.trl-summary-head p {
+    margin: 6px 0 0;
+    color: #6b7280;
+    font-size: 13px;
+}
+
+.trl-summary-filters {
+    margin-top: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-width: 360px;
+}
+
+.trl-summary-filter-row {
+    margin-top: 14px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.trl-summary-filter-row .trl-summary-filters {
+    margin-top: 0;
+}
+
+.trl-summary-actions {
+    margin-left: auto;
+}
+
+.trl-export-btn {
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 0 14px;
+}
+
+.trl-export-btn.is-disabled {
+    opacity: 0.6;
+}
+
+.trl-summary-filters label {
+    font-size: 12px;
+    color: #374151;
+    font-weight: 700;
+}
+
+.trl-summary-select {
+    height: 40px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 0 10px;
+    font-size: 14px;
+    color: #111827;
+    background: #fff;
+}
+
+.trl-summary-title {
+    margin-top: 16px;
+    font-size: 14px;
+    font-weight: 800;
+    color: #111827;
+}
+
+.trl-summary-empty {
+    margin-top: 14px;
+    border: 1px dashed #d1d5db;
+    border-radius: 10px;
+    padding: 16px;
+    color: #6b7280;
+    font-size: 13px;
+}
+
+.trl-summary-table-wrap {
+    margin-top: 12px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+}
+
+.trl-summary-table {
+    width: max-content;
+    border-collapse: collapse;
+    min-width: 720px;
+    table-layout: fixed;
+    background: #fff;
+}
+
+.trl-summary-table th,
+.trl-summary-table td {
+    border-bottom: 1px solid #f1f5f9;
+    padding: 10px 12px;
+    font-size: 12px;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+
+.trl-summary-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #f8fafc;
+    color: #374151;
+    font-weight: 800;
+}
+
+/* column sizing via colgroup classes */
+.trl-summary-table col.col-name { width: 280px; }
+.trl-summary-table col.col-year { width: 130px; }
+.trl-summary-table col.col-total { width: 170px; }
+
+/* ensure first column text wraps visually if needed */
+.trl-summary-table td:first-child { white-space: normal; }
+
+/* center column headers except first; keep first header left */
+.trl-summary-table thead th.partner-col-head {
+    text-align: center;
+}
+
+.trl-summary-table thead th:not(.partner-col-head) {
+    text-align: right;
+}
+
+.trl-summary-table td:first-child {
+    text-align: left;
+}
+
+.trl-summary-table thead th.partner-col-head {
+    line-height: 1.2;
+}
+
+.trl-summary-table thead th.partner-col-head span {
+    font-weight: 700;
+}
+
+/* ensure numeric body cells align to end */
+.trl-summary-table td:not(:first-child) { text-align: right; }
+
+.trl-summary-table td.amt,
+.trl-summary-table th.amt {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.trl-summary-table td.total,
+.trl-summary-table tfoot th {
+    font-weight: 800;
+}
+
+.trl-summary-row-link {
+    transition: background-color .15s ease;
+    cursor: pointer;
+}
+
+.trl-summary-row-link:hover {
+    background: #fff7ed;
+}
+
+.trl-summary-row-link:focus {
+    outline: 2px solid #dc2626;
+    outline-offset: -2px;
+}
+
+.trl-summary-table tfoot th {
+    background: #fff7ed;
+    border-top: 2px solid #fed7aa;
+}
+
+/* per-row total value in red */
+.trl-summary-table td.total {
+    color: #d9534f;
+}
+
+/* highlight overall and grand total cells with yellow background and black text */
+.trl-summary-table tfoot th.overall-total,
+.trl-summary-table tfoot th.grand-total {
+    background: #fff59d;
+    color: #000;
+}
+
+.trl-summary-table tfoot th.grand-label {
+    text-align: right;
+    font-weight: 800;
+    background: #fff59d;
+    color: #000;
+}
+
+/* spacer row in footer to create a small gap before Grand Total */
+.trl-summary-table tfoot tr.spacer-row th {
+    border: 0;
+    background: transparent;
+    height: 10px;
+    padding: 0;
+}
+
+body.trl-submodal-open {
+    overflow: hidden;
+}
+
+.trl-subbiller-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 120000;
+    display: none;
+    background: rgba(15, 23, 42, 0.5);
+}
+
+.trl-subbiller-modal-overlay.open {
+    display: block;
+}
+
+.trl-subbiller-modal {
+    width: 100%;
+    height: 100%;
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+}
+
+.trl-subbiller-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 18px;
+    border-bottom: 1px solid #e5e7eb;
+    background: #f8fafc;
+}
+
+.trl-subbiller-modal-title-wrap h4 {
+    margin: 0;
+    font-size: 20px;
+    color: #111827;
+    font-weight: 800;
+}
+
+.trl-subbiller-modal-title-wrap p {
+    margin: 3px 0 0;
+    color: #6b7280;
+    font-size: 13px;
+}
+
+.trl-subbiller-modal-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.trl-sub-export-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    border-radius: 8px;
+}
+
+.trl-subbiller-modal-close {
+    width: 40px;
+    height: 40px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #fff;
+    color: #1f2937;
+    font-size: 26px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.trl-subbiller-modal-body {
+    flex: 1;
+    overflow: auto;
+    padding: 16px 18px 20px;
+}
+
+.trl-sub-section {
+    margin-bottom: 18px;
+}
+
+.trl-sub-section-title {
+    font-size: 13px;
+    font-weight: 800;
+    color: #111827;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+}
+
+.trl-sub-table-wrap {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    overflow: auto;
+    background: #fff;
+}
+
+.trl-sub-table-wrap--transactions {
+    overflow-x: auto;
+    overflow-y: auto;
+}
+
+.trl-sub-table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+}
+
+.trl-sub-table th,
+.trl-sub-table td {
+    border-bottom: 1px solid #f1f5f9;
+    padding: 9px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.trl-sub-table thead th {
+    background: #f8fafc;
+    color: #334155;
+    font-weight: 800;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.trl-sub-table td.amt,
+.trl-sub-table th.amt,
+.trl-sub-table--summary td:not(:first-child),
+.trl-sub-table--summary th:not(:first-child) {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.trl-sub-table td.total {
+    color: #d9534f;
+    font-weight: 800;
+}
+
+.trl-sub-total-row td {
+    border-top: 1px solid #e5e7eb;
+}
+
+.trl-sub-total-row .trl-sub-total-label,
+.trl-sub-total-row .trl-sub-total-value {
+    background: #fff59d;
+    color: #000;
+    font-weight: 800;
+}
+
+.trl-sub-total-row .trl-sub-total-label {
+    text-align: left;
+}
+
+.trl-sub-loader,
+.trl-sub-empty {
+    border: 1px dashed #cbd5e1;
+    border-radius: 10px;
+    padding: 16px;
+    font-size: 13px;
+    color: #475569;
+    background: #f8fafc;
+}
+
+.trl-sub-empty-cell {
+    text-align: center;
+    color: #6b7280;
+}
+
+@media (max-width: 768px) {
+    .trl-subbiller-modal-head {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .trl-subbiller-modal-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+}

@@ -1,0 +1,143 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@100;200;300;400;500;600&display=swap');
+
+*{
+   font-family: 'Poppins', sans-serif;
+   margin:0; padding:0;
+   box-sizing: border-box;
+   outline: none; border:none;
+   text-decoration: none;
+}
+body{
+    background-image: url(../images/bg.jpg);
+    background-repeat: no-repeat;
+    background-size: cover;
+    padding: 0%;
+    margin: 0%;
+    width: 100%;
+}
+.col{
+    padding: 0px;
+}
+.container{
+    margin: 8px;
+    background-color: whitesmoke;
+    height: auto;
+    padding: 10px;
+}
+h2{
+    padding: 0px;
+}
+.header-title{
+    padding: 0px;
+    text-align: center;
+}
+.s-container{
+    width: auto;
+    overflow-y: scroll;
+    overflow-x: scroll;
+}
+.back-div{
+    padding-top: 10px;
+    display: flex;
+  }
+  .back-div h3{
+    width: 100%;
+    text-align: center;
+  }
+  .back-div #back{
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background-color: #000;
+    padding: 1px;
+    margin-left: 5px;
+    width: 89px; 
+    height: fit-content;
+    font-size: 12px;
+    color: #fff;
+    border: 1px solid #000;
+  }  
+.table{
+    border: 1px solid gray;
+    border-collapse: collapse;
+    font-size: 10px;
+    text-align: center;
+    width: 100%;
+    white-space: nowrap;
+}
+.table th{
+    background-color: #000;
+    color: #fff;
+    border: 1px solid gray;
+    padding-left: 10px;
+    padding-right: 10px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+}
+.table td{
+    border: 1px solid gray;
+    padding-left: 5px;
+    text-align: center;
+    padding-left: 10px;
+    padding-right: 10px;
+    padding-top: 2px;
+    padding-bottom: 2px;
+}
+label{
+    font-weight: 700;
+}
+.form-control{
+    background-color: white;
+    padding-left: 15px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+    padding-right: 15px;
+    width: 15%;
+    border-radius: 5px;
+    margin-left: 20px;
+    margin-top: 0.5%;
+    border: 1px solid gray;
+}
+.btn-export{
+    text-align: right;
+    display: flex;
+    padding: 5px;
+    align-items: center;
+    justify-content: right;
+}
+.btn-export #export{
+    background-color: #d70c0c;
+    color: white;
+    padding-left: 15px;
+    padding-right: 15px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+    border-radius: 5px;
+    margin-right: 20px;
+}
+.text-danger{
+    color: #d70c0c;
+    background-color: white;
+    width: auto;
+    padding: 5px;
+}
+.btn-proceed{
+    display: flex;
+    align-items: center;
+    padding-top: 8px;
+}
+.btn-proceed #proceed{
+    background-color: whitesmoke;
+    color: #000;
+    padding-left: 25px;
+    padding-right: 25px;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    border-radius: 5px;
+    border: 1px solid #000;
+}
+.btn-proceed #proceed:hover{
+    background-color: #d70c0c;
+    color: #fff;
+    border: none;
+}

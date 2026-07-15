@@ -1,0 +1,91 @@
+/* TRL Report page shell */
+.trl-report-wrap {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.trl-mode-switch {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	background: #f2f4f7;
+	padding: 6px;
+	border-radius: 999px;
+	width: fit-content;
+}
+
+.trl-mode-btn {
+	text-decoration: none;
+	color: #495057;
+	background: transparent;
+	padding: 8px 16px;
+	border-radius: 999px;
+	font-weight: 700;
+	font-size: 13px;
+	transition: all 0.18s ease;
+}
+
+.trl-mode-btn:hover {
+	color: #111827;
+	background: #e9ecef;
+}
+
+.trl-mode-btn.active {
+	color: #fff;
+	background: #dc3545;
+	box-shadow: 0 2px 10px rgba(220, 53, 69, 0.35);
+}
+
+/* Entry-style mode card styles (matching trl-entry.php) */
+.mode-cards {
+	display: flex;
+	gap: 8px;
+}
+
+.mode-card {
+	border: 1px solid #e9ecef;
+	padding: 8px 10px;
+	border-radius: 8px;
+	cursor: pointer;
+	min-width: 170px;
+	background: #fff;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 0;
+}
+
+.mode-card input[type="radio"] {
+	display: none;
+}
+
+.mode-card .mode-icon {
+	width: 28px;
+	text-align: center;
+	color: #6c757d;
+}
+
+.mode-card .mode-label {
+	margin: 0;
+	font-size: 13px;
+	font-weight: 700;
+}
+
+.mode-card small {
+	color: #6c757d;
+	font-size: 11px;
+}
+
+.mode-card.selected {
+	border-color: #dc3545;
+	box-shadow: 0 8px 24px rgba(220, 53, 69, 0.08);
+}
+
+.mode-card.selected .mode-icon {
+	color: #dc3545;
+}
+
+.mode-panel.hidden {
+	display: none;
+}

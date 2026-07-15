@@ -1,0 +1,10 @@
+{
+    "require": {
+        "phpoffice/phpspreadsheet": "^2.1",
+        "dompdf/dompdf": "^3.0",
+        "tecnickcom/tcpdf": "^6.7",
+        "league/csv": "^9.8",
+        "nikic/php-parser": "^5.3",
+        "mpdf/mpdf": "^8.2"
+    }
+}

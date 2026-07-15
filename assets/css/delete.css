@@ -1,0 +1,237 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@100;200;300;400;500;600&display=swap');
+
+*{
+   font-family: 'Poppins', sans-serif;
+   margin:0; padding:0;
+   box-sizing: border-box;
+   outline: none; border:none;
+   text-decoration: none;
+}
+body{
+    background-image: url(../images/bg.jpg);
+    background-repeat: no-repeat;
+    background-size: cover;
+    padding: 0%;
+    margin: 0%;
+    width: 100%;
+    height: auto;
+}
+.btn-back{
+    padding-top: 10px;
+    display: flex;
+ }
+.btn-back #back{
+    background-color: #000;
+    padding: 1px;
+    margin-left: 5px;
+    width: 89px; 
+    text-align: center;
+    font-size: 12px;
+    color: #fff;
+    border: 1px solid #000;
+    
+ }
+ .col-btn{
+    padding: 0%;
+ }
+.container{
+    padding: 0%;
+    margin: 0%;
+    width: auto;
+    height: auto;
+}
+.card{
+    background-color: whitesmoke;
+    padding: 0px;
+    margin-top: 0.5%;
+    margin-left: 0.5%;
+    margin-bottom: 0.5%;
+    margin-right: 0.5%;
+    width: auto;
+    height: auto;
+}
+
+.card-header h4{
+    font-size: 24px;
+    text-align: center;
+    padding: 0px;
+    margin: 0%;
+}
+.card-header .btn-back{
+    padding: 5px;
+    display: flex;
+ }
+ .card-header .btn-back #back{
+    background-color: #000;
+    padding: 1px;
+    margin-left: 5px;
+    width: 89px; 
+    text-align: center;
+    color: #fff;
+    border: 1px solid #000;
+    
+ }
+.card-body{
+    padding: 0%;
+    margin: 0%;
+    height: auto;
+}
+.card-body form{
+    padding: 0%;
+    display: block;
+    align-items: center;
+}
+#partner-select{
+    width: 300px;
+    padding: 5px;
+    border-radius: 5px;
+}
+.card-body .form-control{
+    background-color: white;
+    padding: 0px;
+    margin-left: 1%;
+    margin-top: 1%;
+    width: 80%;
+    border: 1px solid gray;
+    outline: none;
+}
+.form-control option{
+    text-align: left;
+}
+
+.row .col{
+    display: flex;
+    align-items: center;
+}
+
+.form{
+    display: block;
+    padding: 0%;
+    margin: 0%;
+    width: 100%;
+}
+.form-group{
+    width: 400px;
+    display: flex;
+    padding: 0px;
+}
+.form-group label{
+    font-size: 14px;
+    padding: 8px;
+    width: 100px;
+    font-weight: 700;
+    /* background-color: #d70c0c; */
+}
+.form-group .form-control{
+    padding: 5px;
+    text-align: center;
+    border-radius: 5px;
+    /* background-color: aqua; */
+    height: fit-content;
+    width: auto;
+}
+.form-group #partner-select{
+    /* background-color: #ffaf42; */
+    width: 245px;
+}
+.filter-btn{
+    background-color: whitesmoke;
+    padding-top: 5px;
+    padding-bottom: 5px;
+    font-size: 12px;
+    border: 1px solid gray;
+    width: 100px;
+    border-radius: 5px;
+    margin: 1%;
+}
+/* DELETE MODAL */
+.modal {
+    display: none; /* Hidden by default */
+    position: fixed; /* Stay in place */
+    z-index: 1; /* Sit on top */
+    left: 0;
+    top: 0;
+    width: 100%; /* Full width */
+    height: 100%; /* Full height */
+    overflow: auto; /* Enable scroll if needed */
+    background-color: rgba(0,0,0,0.4); /* Black w/ opacity */
+}
+
+.modal-content {
+    display: block;
+    background-color: #fefefe;
+    margin: 15% auto; /* 15% from the top and centered */
+    padding: 15px;
+    border: 1px solid #888;
+    width: 40%; /* Could be more or less, depending on screen size */
+}
+.close-div{
+    text-align: right;
+    height: auto;
+    display: block;
+    width: 100%;
+}
+.close-div span{
+    width: 20px;
+    height: 20px;
+    padding: 15px;
+    display: flex;
+    float: right;
+}
+.del-content{
+    text-align: center;
+    display: block;
+}
+.del-content p{
+    font-size: 20px;
+    padding-bottom: 10px;
+}
+#delete{
+    background-color: #d70c0c;
+    color: whitesmoke;
+    margin: 1%;
+    padding: 5px;
+    font-size: 12px;
+    font-weight: 700;
+    min-width: 100px;
+}
+#cancel{
+    background-color: #ffaf42;
+    color: #000;
+    margin: 1%;
+    padding: 5px;
+    font-size: 12px;  
+    font-weight: 700;
+    min-width: 100px;
+}
+.close {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background-color: #d70c0c;
+    color: #000;
+    border-radius: 50px;
+    padding: 8px;
+    font-size: 24px;
+    width: 25px;
+    font-weight: bold;
+}
+
+.close:hover,
+.close:focus {
+    color: #fff;
+    text-decoration: none;
+    cursor: pointer;
+}
+.header{
+    width: 100%;
+    text-align: center;
+}
+#header-t{
+    text-align: center;
+    background-color: transparent;
+    font-size: 30px;
+    font-weight: 700;
+    border: none;
+    
+}

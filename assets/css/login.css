@@ -1,0 +1,332 @@
+/* ===================================================
+   ML Billspayment — Login Page Redesign
+   Consistent with dashboard/menu visual language
+   =================================================== */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  font-family: 'Poppins', 'Open Sans', sans-serif;
+  min-height: 100vh;
+  margin: 0;
+  display: flex;
+  background: #ffffff;
+}
+
+/* ---- Split Layout ---- */
+.login-page {
+  display: flex;
+  width: 100%;
+  min-height: 100vh;
+  position: relative;
+  z-index: 1;
+}
+
+
+/* ---- Right: Form Panel now carries branded background ---- */
+.login-panel {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 44px;
+  background: transparent; /* let page background show through */
+}
+
+/* ---- Right: Form Panel ---- */
+.login-card {
+  position: relative;
+  background: #dc3545;
+  border-radius: 16px;
+  box-shadow: 0 20px 50px rgba(16,24,40,0.22);
+  padding: 40px 36px;
+  width: 100%;
+  max-width: 520px;
+  z-index: 3;
+  color: #fff;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.04);
+}
+
+/* Close button in top-right of card */
+.login-card .card-close{
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: transparent;
+  border: none;
+  color: rgba(255,255,255,0.92);
+  font-size: 22px;
+  line-height: 1;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  z-index: 6;
+}
+.login-card .card-close:hover{
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+}
+.login-card .card-close:focus{ outline: 2px solid rgba(255,255,255,0.12); }
+
+/* removed decorative circular accents */
+
+.login-card .brand-logo { width:72px; height:72px; object-fit:contain; margin:0 auto 14px; display:block; filter:drop-shadow(0 6px 18px rgba(0,0,0,0.5)); position:relative; z-index:2 }
+.login-card h1{ color:#fff; font-size:20px; margin:6px 0 6px; letter-spacing:1px; text-align:center; font-weight:700; position:relative; z-index:2 }
+.login-card .brand-divider{ width:46px; height:4px; background: rgba(255,255,255,0.28); border-radius:3px; margin:8px auto 12px; position:relative; z-index:2 }
+.login-card .brand-sub{ color: rgba(255,255,255,0.92); font-size:13px; margin-bottom:16px; max-width:380px; text-align:center; position:relative; z-index:2 }
+
+.card-title{ color: rgba(255,255,255,0.95); font-size:22px; font-weight:800; margin-top:6px; margin-bottom:4px; text-align:center; position:relative; z-index:2 }
+.card-sub{ color: rgba(255,255,255,0.85); margin-bottom:12px; text-align:center; position:relative; z-index:2 }
+.login-card .accent-bar { width:48px; height:4px; background: linear-gradient(90deg,#fff3,#ffffff); border-radius: 3px; margin:10px auto 18px; opacity:0.9; position:relative; z-index:2 }
+
+/* ---- Field Groups ---- */
+.field-group {
+  margin-bottom: 20px;
+}
+.field-group > label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(255,255,255,0.92);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 8px;
+}
+.field-input {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.field-input .fi-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #cfcfcf;
+  font-size: 14px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* when input has content, make the left icons red */
+.field-input.input-filled .fi-icon {
+  color: #d70c0c;
+  transition: color 120ms ease;
+}
+.field-input input[type="text"],
+.field-input input[type="password"] {
+  width: 100%;
+  height: 48px;
+  padding: 0 46px 0 44px;
+  border: 1.4px solid rgba(0,0,0,0.08);
+  border-radius: 10px;
+  font-size: 14px;
+  font-family: 'Poppins', sans-serif;
+  background: #fff;
+  color: #222;
+  text-align: left;
+  outline: none;
+  transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+}
+.field-input input::placeholder {
+  color: #c0c0c0;
+  font-size: 13px;
+}
+.field-input input:focus {
+  border-color: rgba(215,12,12,0.95);
+  box-shadow: 0 10px 30px rgba(215,12,12,0.09);
+  background: #fff;
+}
+.field-input .eye-btn {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #d70c0c; /* red by default */
+  font-size: 14px;
+  padding: 6px;
+  line-height: 1;
+  z-index: 4;
+}
+.field-input .eye-btn:hover { color: #9b9b9b; opacity:1 } /* grey on hover */
+
+/* ---- Save as row ---- */
+.save-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 24px;
+}
+.save-row input[type="checkbox"] {
+  width: 16px; height: 16px;
+  accent-color: #d70c0c;
+  cursor: pointer;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 5;
+}
+.save-row label {
+  font-size: 13px;
+  color: rgba(255,255,255,0.88);
+  cursor: pointer;
+  position: relative;
+  z-index: 5;
+}
+
+/* ---- Login Button ---- */
+.login-card .login-submit-btn {
+  display: block;
+  width: 100%;
+  height: 52px;
+  background: #ffffff !important;
+  color: #d70c0c !important;
+  border: 1px solid rgba(215,12,12,0.08);
+  border-radius: 10px;
+  font-family: 'Poppins', sans-serif;
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 140ms ease, background 120ms;
+  margin-bottom: 14px;
+  box-shadow: 0 8px 22px rgba(0,0,0,0.12);
+  position:relative; z-index:6;
+}
+.login-card .login-submit-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 36px rgba(0,0,0,0.14);
+}
+.login-card .login-submit-btn:active { transform: translateY(0); box-shadow: 0 6px 18px rgba(0,0,0,0.08) }
+
+/* ---- Back link ---- */
+.login-back {
+  text-align: center;
+  font-size: 13px;
+}
+.login-back a {
+  color: #d70c0c;
+  text-decoration: none;
+  font-weight: 600;
+}
+.login-back a:hover { text-decoration: underline; }
+
+/* ---- Responsive ---- */
+@media (max-width: 768px) {
+  .login-panel { padding: 28px 12px; }
+  .login-card { padding: 28px 22px; max-width:420px; border-radius:12px; }
+  .login-card .brand-logo{ width:64px; height:64px }
+  .card-title{ font-size:20px }
+}
+@media (max-width: 400px) {
+  .login-card { padding: 22px 16px; }
+
+  /* Branding inside the card should be light */
+  .login-card .brand-logo { width:80px; height:80px; object-fit:contain; margin-bottom:12px; filter:drop-shadow(0 4px 12px rgba(0,0,0,0.5)); }
+  .login-card h1{ color:#fff; font-size:18px; margin:0; letter-spacing:1px; text-align:center }
+  .login-card .brand-divider{ width:40px; height:3px; background: rgba(255,255,255,0.28); border-radius:3px; margin:10px auto 12px; }
+  .login-card .brand-sub{ color: rgba(255,255,255,0.9); font-size:13px; margin-bottom:10px; max-width:360px; text-align:center }
+
+  /* Ensure input backgrounds remain light for contrast */
+  .login-card .field-input input[type="text"],
+  .login-card .field-input input[type="password"]{
+    background: #fff;
+    color: #222;
+  }
+
+  /* Accent bar should still be visible on dark gradient */
+  .login-card .accent-bar { box-shadow:none; }
+}
+
+/* -------------------------
+   Change Password Modal
+   ------------------------- */
+.change-password-modal{
+  position:fixed;
+  inset:0;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  background:rgba(0,0,0,0.45);
+  z-index:9999;
+}
+.change-password-modal-card{
+  width:420px;
+  max-width:94%;
+  background:#fff;
+  border-radius:10px;
+  box-shadow:0 12px 40px rgba(0,0,0,0.25);
+  padding:18px 18px 22px 18px;
+  animation: cpmFade .16s ease-out;
+}
+.cpm-header{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.cpm-header h3{ margin:0; color:#222; font-size:18px; }
+.cpm-close{ background:transparent; border:0; font-size:26px; line-height:1; color:#666; cursor:pointer; }
+.cpm-sub{ font-size:13px; color:#666; margin:8px 0 12px; }
+.cpm-form .field-group{ margin-bottom:12px; }
+.cpm-actions{ display:flex; justify-content:flex-end; margin-top:6px; }
+.eye-btn.small{ background:transparent; border:0; font-size:14px; color:#d70c0c; padding:6px; margin-left:6px; cursor:pointer; }
+.eye-btn.small:hover{ color: #9b9b9b }
+.change-password-modal .field-input{ display:flex; align-items:center; gap:8px; }
+.change-password-modal input{ flex:1; padding:10px 10px; border:1px solid #e6e6e6; border-radius:6px; }
+.change-password-modal input:focus{ outline: none; box-shadow:0 0 0 3px rgba(215,12,12,0.06); border-color:#d70c0c; }
+.change-password-modal{
+  position:fixed;
+  inset:0;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  background:rgba(0,0,0,0.45);
+  z-index:9999;
+}
+.change-password-modal-card{
+  width:560px;
+  max-width:92%;
+  background: #dc3545; /* match login-card */
+  color: #ffffff;
+  border-radius:14px;
+  box-shadow:0 28px 70px rgba(16,24,40,0.32);
+  padding:24px 22px 26px 22px;
+  animation: cpmFade .16s ease-out;
+  border: 1px solid rgba(255,255,255,0.06);
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+.cpm-header{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.cpm-header h3{ margin:0; color:#fff; font-size:20px; font-weight:800 }
+.cpm-close{ background:transparent; border:0; font-size:20px; line-height:1; color:rgba(255,255,255,0.92); cursor:pointer; }
+.cpm-sub{ font-size:13px; color:rgba(255,255,255,0.9); margin:10px 0 14px; }
+.cpm-form .field-group{ margin-bottom:12px; }
+.cpm-actions{ display:flex; justify-content:flex-end; margin-top:6px; }
+.eye-btn.small{ background:transparent; border:0; font-size:14px; color:#d70c0c; padding:6px; margin-left:6px; cursor:pointer; }
+.change-password-modal .field-input{ display:flex; align-items:center; gap:10px; }
+.change-password-modal input{ flex:1; padding:12px 14px; height:48px; border:1px solid #e6e6e6; border-radius:8px; background:#fff; color:#222; font-size:14px }
+.change-password-modal input::placeholder{ color:#9b9b9b }
+.change-password-modal input:focus{ outline: none; box-shadow:0 0 0 4px rgba(0,0,0,0.06); border-color:#d70c0c; }
+
+/* make the change-password submit button match the card (red) */
+.change-password-modal .login-submit-btn{
+  background: #ffffff !important;
+  color: #dc3545 !important;
+  border: 1px solid rgba(220,53,69,0.12);
+  height:44px;
+  padding:0 18px;
+  font-weight:700;
+  border-radius:8px;
+}
+.change-password-modal .login-submit-btn:hover{
+  background: #ffffff !important;
+  color: #b02a37 !important;
+}
+
+@media (max-width: 640px) {
+  .change-password-modal-card{ width:94%; left:50%; top:50%; transform:translate(-50%,-50%); padding:18px }
+  .change-password-modal input{ height:44px }
+  .change-password-modal .login-submit-btn{ height:42px }
+}

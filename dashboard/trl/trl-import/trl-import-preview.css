@@ -1,0 +1,155 @@
+body {
+    background: #f6f8fb;
+}
+
+.trl-preview-page {
+    min-height: 100vh;
+}
+
+.trl-preview-container {
+    max-width: 98%;
+    margin: 20px auto;
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+    border: 1px solid #e7ebf0;
+    padding: 16px;
+}
+
+.trl-preview-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.trl-preview-header h1 {
+    margin: 0;
+    font-size: 24px;
+}
+
+.trl-preview-header p {
+    margin: 6px 0 0;
+    color: #667085;
+}
+
+.trl-preview-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.trl-alert {
+    margin-top: 12px;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-weight: 600;
+}
+
+.trl-alert.success {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.trl-alert.error {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.trl-summary-grid {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(140px, 1fr));
+    gap: 10px;
+}
+
+.summary-card {
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 10px;
+}
+
+.summary-card span {
+    display: block;
+    color: #6b7280;
+    font-size: 12px;
+}
+
+.summary-card strong {
+    font-size: 20px;
+    color: #111827;
+}
+
+.trl-table-section {
+    margin-top: 14px;
+}
+
+.trl-table-wrap {
+    border: 1px solid #e7ebf0;
+    border-radius: 10px;
+    overflow: auto;
+    max-height: 70vh;
+    background: #fff;
+}
+
+.trl-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 1800px;
+}
+
+.trl-table th,
+.trl-table td {
+    border-bottom: 1px solid #edf1f5;
+    padding: 8px;
+    font-size: 12px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.trl-table th {
+    background: #f9fafb;
+    font-weight: 700;
+    color: #344054;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+.trl-table .amount {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.chip {
+    display: inline-flex;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.chip.ok {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.chip.bad {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.trl-empty {
+    border: 1px dashed #d1d5db;
+    border-radius: 10px;
+    padding: 24px;
+    text-align: center;
+    color: #6b7280;
+}
+
+@media (max-width: 900px) {
+    .trl-summary-grid {
+        grid-template-columns: 1fr;
+    }
+}
