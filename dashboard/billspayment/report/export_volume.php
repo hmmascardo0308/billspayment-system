@@ -39,6 +39,35 @@ if ($time_frame === 'daily') {
     $date_to = $date_from_daily;
 }
 
+// ============================================
+// FIX: Calculate start and end datetime for use in queries
+// ============================================
+$start_datetime = '';
+$end_datetime = '';
+
+if ($time_frame === 'daily') {
+    $start_datetime = $date_from . ' 00:00:00';
+    $end_datetime = $date_from . ' 23:59:59';
+} elseif ($time_frame === 'date_range') {
+    if ($selected_day && $selected_day !== 'all') {
+        $selected_date = date('Y-m-d', strtotime($date_from . ' + ' . ($selected_day - 1) . ' days'));
+        $start_datetime = $selected_date . ' 00:00:00';
+        $end_datetime = $selected_date . ' 23:59:59';
+    } else {
+        $start_datetime = $date_from . ' 00:00:00';
+        $end_datetime = $date_to . ' 23:59:59';
+    }
+} elseif ($time_frame === 'monthly') {
+    if ($selected_month && $selected_month !== 'all') {
+        $selected_month_date = date('Y-m', strtotime($month_from . ' + ' . ($selected_month - 1) . ' months'));
+        $start_datetime = $selected_month_date . '-01 00:00:00';
+        $end_datetime = date('Y-m-t 23:59:59', strtotime($selected_month_date . '-01'));
+    } else {
+        $start_datetime = $month_from . '-01 00:00:00';
+        $end_datetime = date('Y-m-t 23:59:59', strtotime($month_to . '-01'));
+    }
+}
+
 // Function to build WHERE clause
 function buildWhereClauseForExport(
     string $time_frame,
@@ -111,30 +140,38 @@ if (!empty($partner_id)) {
     }
 }
 
-// Build and execute the main query
+// Build the WHERE clause
 $where_clause = buildWhereClauseForExport($time_frame, $partner_id, $date_from, $date_to, $month_from, $month_to, $selected_day, $selected_month);
 
-// REMOVED: bank and charge_to columns from query
+// ============================================
+// FIX: Updated query to properly separate normal and cancelled transactions
+// ============================================
 $query = "SELECT 
             bt.partner_id_kpx,
             CASE 
-                WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN 'N/A'
+                WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
                 ELSE bt.sub_billers_name
             END as sub_billers_name,
-            COUNT(CASE WHEN bt.cancellation_date IS NULL THEN 1 END) as datetime_volume,
-            SUM(CASE WHEN bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) as datetime_amount_paid,
-            SUM(CASE WHEN bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as datetime_charge,
-            COUNT(CASE WHEN bt.cancellation_date IS NOT NULL THEN 1 END) as cancellation_volume,
-            SUM(CASE WHEN bt.cancellation_date IS NOT NULL THEN bt.amount_paid ELSE 0 END) as cancellation_amount_paid,
-            SUM(CASE WHEN bt.cancellation_date IS NOT NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancellation_charge,
-            (COUNT(CASE WHEN bt.cancellation_date IS NULL THEN 1 END) - COUNT(CASE WHEN bt.cancellation_date IS NOT NULL THEN 1 END)) as total_volume,
-            (SUM(CASE WHEN bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) + SUM(CASE WHEN bt.cancellation_date IS NOT NULL THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
-            (SUM(CASE WHEN bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + SUM(CASE WHEN bt.cancellation_date IS NOT NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge
+            -- Normal Transactions (datetime between range AND cancellation_date IS NULL)
+            COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN 1 END) as datetime_volume,
+            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) as datetime_amount_paid,
+            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as datetime_charge,
+            -- Cancelled Transactions (cancellation_date between range)
+            COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancellation_volume,
+            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancellation_amount_paid,
+            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancellation_charge,
+            -- NET values (datetime - cancellation)
+            (COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN 1 END) - 
+             COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as total_volume,
+            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) + 
+             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
+            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
+             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge
           FROM mldb.billspayment_transaction bt
           $where_clause
           GROUP BY bt.partner_id_kpx, 
             CASE 
-                WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN 'N/A'
+                WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
                 ELSE bt.sub_billers_name
             END
           ORDER BY bt.partner_id_kpx, total_volume DESC";
@@ -181,12 +218,12 @@ $sheet = $spreadsheet->getActiveSheet();
 // Set timezone to Asia/Manila
 date_default_timezone_set('Asia/Manila');
 
-// HEADER SECTION - Matching the image format
-// Row 1: BILLS PAYMENT DEPARTMENT - Centered, Bold (only in A1, not merged)
+// HEADER SECTION
+// Row 1: BILLS PAYMENT DEPARTMENT - Centered, Bold
 $sheet->setCellValue('A1', 'BILLS PAYMENT DEPARTMENT');
 $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(16);
 
-// Row 2: VOLUME REPORT - DAILY (only in A2, not merged)
+// Row 2: VOLUME REPORT
 $time_frame_display = strtoupper($time_frame);
 if ($time_frame === 'daily') {
     $time_frame_display = 'DAILY';
@@ -201,7 +238,7 @@ $sheet->getStyle('A2')->getFont()->setBold(true)->setSize(14);
 // Row 3: Empty row
 $sheet->setCellValue('A3', '');
 
-// Row 4: Partners - Format like the image
+// Row 4: Partners
 $sheet->setCellValue('A4', 'Partner Name');
 $sheet->setCellValue('B4', $selected_partner_name ?: 'All Partners');
 $sheet->getStyle('A4')->getFont()->setBold(true);
@@ -238,7 +275,7 @@ $sheet->setCellValue('A7', 'Filter Type');
 $sheet->setCellValue('B7', $time_frame_display);
 $sheet->getStyle('A7')->getFont()->setBold(true);
 
-// Row 8: Generated By - Using display name
+// Row 8: Generated By
 $sheet->setCellValue('A8', 'Generated By');
 $sheet->setCellValue('B8', $display_name);
 $sheet->getStyle('A8')->getFont()->setBold(true);
@@ -300,7 +337,6 @@ $headerStyle = [
         'bold' => true,
         'color' => ['rgb' => '000000'],
     ],
-
     'alignment' => [
         'horizontal' => Alignment::HORIZONTAL_CENTER,
         'vertical' => Alignment::VERTICAL_CENTER,
@@ -310,6 +346,10 @@ $headerStyle = [
             'borderStyle' => Border::BORDER_THIN,
             'color' => ['rgb' => '000000'],
         ],
+    ],
+    'fill' => [
+        'fillType' => Fill::FILL_SOLID,
+        'startColor' => ['rgb' => 'F0F0F0'],
     ],
 ];
 
@@ -329,28 +369,6 @@ $sheet->getRowDimension(11)->setRowHeight(25);
 $row = 12;
 $counter = 1;
 
-// Define color styles for different sections
-$datetimeStyle = [
-    // 'fill' => [
-    //     'fillType' => Fill::FILL_SOLID,
-    //     'startColor' => ['rgb' => 'E6F4EA'], // Light green
-    // ],
-];
-
-$cancellationStyle = [
-    // 'fill' => [
-    //     'fillType' => Fill::FILL_SOLID,
-    //     'startColor' => ['rgb' => 'FCE8E6'], // Light red
-    // ],
-];
-
-$netStyle = [
-    // 'fill' => [
-    //     'fillType' => Fill::FILL_SOLID,
-    //     'startColor' => ['rgb' => 'E8F0FE'], // Light blue
-    // ],
-];
-
 // Define style for data rows
 $dataStyle = [
     'alignment' => [
@@ -365,19 +383,38 @@ $dataStyle = [
     ],
 ];
 
+// Define column-specific styles
+$normalStyle = [
+    'fill' => [
+        'fillType' => Fill::FILL_SOLID,
+    ],
+];
+
+$cancelledStyle = [
+    'fill' => [
+        'fillType' => Fill::FILL_SOLID,
+    ],
+];
+
+$netStyle = [
+    'fill' => [
+        'fillType' => Fill::FILL_SOLID,
+    ],
+];
+
 foreach ($display_results as $data) {
     $partner_name = $partner_names[$data['partner_id_kpx']] ?? $data['partner_id_kpx'];
     
     $sheet->setCellValue('A' . $row, $counter++);
     $sheet->setCellValue('B' . $row, $partner_name);
-    $sheet->setCellValue('C' . $row, $data['sub_billers_name'] ?? 'N/A');
+    $sheet->setCellValue('C' . $row, $data['sub_billers_name'] ?? '-');
     
-    // DATETIME columns (D, E, F)
+    // NORMAL columns (D, E, F)
     $sheet->setCellValue('D' . $row, number_format($data['datetime_volume']));
     $sheet->setCellValue('E' . $row, $data['datetime_amount_paid']);
     $sheet->setCellValue('F' . $row, $data['datetime_charge']);
     
-    // CANCELLATION columns (G, H, I) - display as positive numbers
+    // CANCELLED columns (G, H, I) - display as positive numbers
     $sheet->setCellValue('G' . $row, number_format($data['cancellation_volume']));
     $sheet->setCellValue('H' . $row, abs($data['cancellation_amount_paid']));
     $sheet->setCellValue('I' . $row, abs($data['cancellation_charge']));
@@ -390,6 +427,11 @@ foreach ($display_results as $data) {
     // Apply data style
     $sheet->getStyle('A' . $row . ':L' . $row)->applyFromArray($dataStyle);
     
+    // Apply column-specific background colors
+    $sheet->getStyle('D' . $row . ':F' . $row)->applyFromArray($normalStyle);
+    $sheet->getStyle('G' . $row . ':I' . $row)->applyFromArray($cancelledStyle);
+    $sheet->getStyle('J' . $row . ':L' . $row)->applyFromArray($netStyle);
+    
     // Apply number formatting for currency columns
     $sheet->getStyle('E' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('F' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
@@ -397,11 +439,6 @@ foreach ($display_results as $data) {
     $sheet->getStyle('I' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('K' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('L' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
-    
-    // Apply column-specific background colors
-    $sheet->getStyle('D' . $row . ':F' . $row)->applyFromArray($datetimeStyle);
-    $sheet->getStyle('G' . $row . ':I' . $row)->applyFromArray($cancellationStyle);
-    $sheet->getStyle('J' . $row . ':L' . $row)->applyFromArray($netStyle);
     
     // Bold the NET columns
     $sheet->getStyle('J' . $row . ':L' . $row)->getFont()->setBold(true);
@@ -414,11 +451,11 @@ foreach ($display_results as $data) {
     $row++;
 }
 
-// Total ROW
+// TOTAL ROW
 if (!empty($display_results)) {
     $sheet->setCellValue('A' . $row, '');
     $sheet->setCellValue('B' . $row, '');
-    $sheet->setCellValue('C' . $row, 'Total');
+    $sheet->setCellValue('C' . $row, 'TOTAL');
     $sheet->getStyle('C' . $row)->getFont()->setBold(true);
     $sheet->getStyle('C' . $row)->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
     
@@ -435,6 +472,11 @@ if (!empty($display_results)) {
     // Apply data style to Total
     $sheet->getStyle('A' . $row . ':L' . $row)->applyFromArray($dataStyle);
     
+    // Apply column-specific background colors to Total
+    $sheet->getStyle('D' . $row . ':F' . $row)->applyFromArray($normalStyle);
+    $sheet->getStyle('G' . $row . ':I' . $row)->applyFromArray($cancelledStyle);
+    $sheet->getStyle('J' . $row . ':L' . $row)->applyFromArray($netStyle);
+    
     // Apply number formatting for Total
     $sheet->getStyle('E' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('F' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
@@ -442,11 +484,6 @@ if (!empty($display_results)) {
     $sheet->getStyle('I' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('K' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('L' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
-    
-    // Apply background colors to Total
-    $sheet->getStyle('D' . $row . ':F' . $row)->applyFromArray($datetimeStyle);
-    $sheet->getStyle('G' . $row . ':I' . $row)->applyFromArray($cancellationStyle);
-    $sheet->getStyle('J' . $row . ':L' . $row)->applyFromArray($netStyle);
     
     // Make Total row bold
     $sheet->getStyle('C' . $row . ':L' . $row)->getFont()->setBold(true);

@@ -35,12 +35,12 @@ if (isset($_SESSION['user_type'])) {
     }
 }
 
-// Fetch partners for dropdown - show all partners with both partner_id_kpx and partner_name
+// Fetch partners for dropdown - show all partners with soa_status = 'WITH SOA'
+// Modified query to include partners even if partner_id_kpx is NULL or empty
 $partners_query = "SELECT DISTINCT partner_id_kpx, partner_name, soa_status, abbreviation, series_number, 
                    partner_accName, partnerTin, address, businessStyle, serviceCharge, inc_exc, withheld 
                    FROM masterdata.partner_masterfile 
                    WHERE partner_name IS NOT NULL AND partner_name != '' 
-                   AND partner_id_kpx IS NOT NULL AND partner_id_kpx != ''
                    AND TRIM(UPPER(soa_status)) = 'WITH SOA'
                    ORDER BY partner_name ASC";
 $partners_result = mysqli_query($conn, $partners_query);
@@ -656,6 +656,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         .soa-exists-warning i {
             margin-right: 10px;
         }
+        /* Style for partners without partner_id_kpx in dropdown */
+        .partner-no-id {
+            color: #666;
+            font-style: italic;
+        }
+        .partner-no-id .no-id-badge {
+            color: #e67e22;
+            font-size: 11px;
+            background: #fef9e7;
+            padding: 1px 6px;
+            border-radius: 3px;
+            margin-left: 5px;
+            border: 1px solid #f39c12;
+        }
+        .select2-results__option .no-id-badge {
+            color: #e67e22;
+            font-size: 11px;
+            background: #fef9e7;
+            padding: 1px 6px;
+            border-radius: 3px;
+            margin-left: 5px;
+            border: 1px solid #f39c12;
+        }
+        .select2-results__option .with-id-badge {
+            color: #27ae60;
+            font-size: 11px;
+            background: #eafaf1;
+            padding: 1px 6px;
+            border-radius: 3px;
+            margin-left: 5px;
+            border: 1px solid #27ae60;
+        }
     </style>
 </head>
 <body>
@@ -725,24 +757,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 <div class="form-group">
                     <label for="partnerSelect"><i class="fa-solid fa-handshake-angle"></i> Partner <span style="color: red;">*</span></label>
                     <select id="partnerSelect" name="partner_id" style="width: 100%;" required>
-                        <option value="">Search by Partner ID or Name...</option>
+                        <option value="">Search by Partner ID, Name, or Account Name...</option>
                         <?php 
                             $partners_data = [];
                             while($partner = mysqli_fetch_assoc($partners_result)): 
                                 $partners_data[] = $partner;
+                                $partner_id_kpx = trim($partner['partner_id_kpx'] ?? '');
+                                $partner_name = htmlspecialchars($partner['partner_name'] ?? '');
+                                $partner_accName = htmlspecialchars($partner['partner_accName'] ?? '');
+                                
+                                // Build the display text based on whether partner_id_kpx exists
+                                if (!empty($partner_id_kpx)) {
+                                    $display_text = $partner_id_kpx . ' - ' . $partner_name . ' - ' . $partner_accName;
+                                    $has_id = true;
+                                } else {
+                                    $display_text = $partner_name . ' - ' . $partner_accName;
+                                    $has_id = false;
+                                }
+                                
+                                // Use a data attribute to store whether this partner has an ID
+                                $data_has_id = $has_id ? 'true' : 'false';
                             ?>
-                                <option value="<?php echo htmlspecialchars($partner['partner_id_kpx']); ?>"
+                                <option value="<?php echo htmlspecialchars($partner_id_kpx ?: 'no-id-' . md5($partner_name)); ?>"
                                         data-soa-status="<?php echo htmlspecialchars(strtoupper(trim($partner['soa_status'] ?? ''))); ?>"
                                         data-partner-name="<?php echo htmlspecialchars($partner['partner_name']); ?>"
                                         data-partner-accname="<?php echo htmlspecialchars($partner['partner_accName'] ?? ''); ?>"
                                         data-service-charge="<?php echo htmlspecialchars($partner['serviceCharge'] ?? ''); ?>"
-                                        data-abbreviation="<?php echo htmlspecialchars($partner['abbreviation'] ?? ''); ?>">
-                                    <?php 
-                                    echo htmlspecialchars(
-                                        $partner['partner_id_kpx'] . ' - ' . 
-                                        $partner['partner_name']
-                                    ); 
-                                    ?>
+                                        data-abbreviation="<?php echo htmlspecialchars($partner['abbreviation'] ?? ''); ?>"
+                                        data-has-id="<?php echo $data_has_id; ?>"
+                                        data-partner-id-kpx="<?php echo htmlspecialchars($partner_id_kpx); ?>">
+                                    <?php echo $display_text; ?>
                                 </option>
                             <?php endwhile; ?>
                     </select>
@@ -941,7 +985,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
         // Initialize Select2 for partner dropdown
         $('#partnerSelect').select2({
-            placeholder: 'Search by Partner ID or Partner Name',
+            placeholder: 'Partner ID - Partner Name - Partner Acc Name',
             allowClear: true,
             width: '100%',
             matcher: function(params, data) {
@@ -951,7 +995,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 var searchTerm = params.term.toLowerCase();
                 var text = data.text.toLowerCase();
                 var id = data.id ? data.id.toLowerCase() : '';
-                if (id.indexOf(searchTerm) > -1 || text.indexOf(searchTerm) > -1) {
+                // Also check the data attributes for partner_accName
+                var accName = data.element ? $(data.element).data('partner-accname') || '' : '';
+                accName = accName.toLowerCase();
+                
+                if (id.indexOf(searchTerm) > -1 || text.indexOf(searchTerm) > -1 || accName.indexOf(searchTerm) > -1) {
                     return data;
                 }
                 return null;
@@ -961,6 +1009,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     var $element = $(data.element);
                     var isDisabled = $element.prop('disabled');
                     var soaStatus = $element.data('soa-status') || '';
+                    var hasId = $element.data('has-id') === true || $element.data('has-id') === 'true';
+                    var partnerAccName = $element.data('partner-accname') || '';
+                    var partnerName = $element.data('partner-name') || '';
                     
                     if (isDisabled) {
                         return $('<span style="color: #999; background-color: #f5f5f5; padding: 4px 8px; border-radius: 3px; display: block;">' + 
@@ -968,12 +1019,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             ' <span style="font-size: 11px; color: #e74c3c; font-weight: 600;">(Disabled - Without SOA)</span>' + 
                             '</span>');
                     }
+                    
+                    // Add badge to indicate if partner has ID or not
+                    var badgeHtml = '';
+                    if (hasId) {
+                        badgeHtml = ' <span class="with-id-badge" style="color: #27ae60; font-size: 11px; background: #eafaf1; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #27ae60;">✓ Has ID</span>';
+                    } else {
+                        badgeHtml = ' <span class="no-id-badge" style="color: #e67e22; font-size: 11px; background: #fef9e7; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #f39c12;">No ID</span>';
+                    }
+                    
                     if (soaStatus === 'WITH SOA') {
                         return $('<span>' + 
                             data.text + 
                             ' <span style="color: #27ae60; font-size: 12px; font-weight: 600;">✓</span>' + 
+                            badgeHtml +
                             '</span>');
                     }
+                    return $('<span>' + data.text + badgeHtml + '</span>');
                 }
                 return data.text;
             },
@@ -984,6 +1046,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     if (isDisabled) {
                         return $('<span style="color: #999;">' + data.text + ' (Disabled)</span>');
                     }
+                    // Return the full text (already in format: ID - Name - Account Name or Name - Account Name)
+                    return data.text;
                 }
                 return data.text;
             }
@@ -1198,6 +1262,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     showAlert('Invalid selection. Please select a partner with "WITH SOA" status.', 'warning');
                     return;
                 }
+                // Check if this partner has an ID or not
+                var hasId = selectedOption.data('has-id') === true || selectedOption.data('has-id') === 'true';
+                if (!hasId) {
+                    // For partners without ID, we need to handle differently
+                    // The value might be 'no-id-xxxxx' format
+                    var partnerName = selectedOption.data('partner-name') || '';
+                    var partnerAccName = selectedOption.data('partner-accname') || '';
+                    
+                    // For partners without ID, we can't use the standard fetch by ID
+                    // We need to fetch by name instead
+                    showAlert('This partner does not have a Partner ID. Please check the partner configuration.', 'warning');
+                    // Still try to fetch using the value if it's not in the 'no-id-' format
+                    if (partnerId && !partnerId.startsWith('no-id-')) {
+                        fetchPartnerDetails(partnerId);
+                    } else {
+                        // For no-id partners, we need a different approach - fallback to fetching by name
+                        fetchPartnerByName(partnerName);
+                    }
+                    return;
+                }
                 fetchPartnerDetails(partnerId);
             } else {
                 clearForm();
@@ -1207,12 +1291,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
         });
         
+        // NEW: Fetch partner by name for partners without ID
+        function fetchPartnerByName(partnerName) {
+            // This would need a new backend endpoint to fetch by name
+            // For now, show a message and use the existing data from the option
+            showAlert('Partner without ID selected. Some features may be limited and may not pick up transactions.', 'warning');
+            
+            // Populate fields from the selected option data
+            var selectedOption = $('#partnerSelect').find('option:selected');
+            var partnerAccName = selectedOption.data('partner-accname') || '';
+            var abbreviation = selectedOption.data('abbreviation') || '';
+            var serviceCharge = selectedOption.data('service-charge') || '';
+            
+            $('#partnerAccName').val(partnerAccName);
+            $('#partnerAbbreviation').val(abbreviation);
+            $('#serviceCharge').val(serviceCharge);
+            
+            // Try to generate a control number using abbreviation
+            if (abbreviation) {
+                var controlNumber = abbreviation + '-1'; // Start with 1 for no-ID partners
+                $('#controlNumber').val(controlNumber);
+            }
+        }
+        
         // =============================================
         // CHECK EXISTING SOA FUNCTION
         // =============================================
         
         function checkExistingSOA(partnerId, fromDate, toDate) {
             return new Promise((resolve, reject) => {
+                // For partners without ID, skip the check or use a different approach
+                if (partnerId && partnerId.startsWith('no-id-')) {
+                    resolve({ exists: false });
+                    return;
+                }
+                
                 $.ajax({
                     url: window.location.href,
                     method: 'GET',
@@ -1270,6 +1383,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             
             // Validate date range before fetching
             if (!validateDateRange()) {
+                return;
+            }
+            
+            // Check if this is a partner without ID
+            if (partnerId.startsWith('no-id-')) {
+                showAlert('This partner does not have a Partner ID. Please configure the partner properly.', 'warning');
+                // Still try to fetch some data
+                var selectedOption = $('#partnerSelect').find('option:selected');
+                var partnerName = selectedOption.data('partner-name') || '';
+                fetchPartnerByName(partnerName);
                 return;
             }
             
@@ -1338,6 +1461,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 if (partnerId && fromDate && toDate) {
                     // Validate date range before fetching
                     if (validateDateRange()) {
+                        // Check if this is a partner without ID
+                        if (partnerId.startsWith('no-id-')) {
+                            var selectedOption = $('#partnerSelect').find('option:selected');
+                            var partnerName = selectedOption.data('partner-name') || '';
+                            fetchPartnerByName(partnerName);
+                            return;
+                        }
+                        
                         // Check for existing SOA
                         try {
                             const result = await checkExistingSOA(partnerId, fromDate, toDate);
@@ -1412,6 +1543,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const controlNumber = $('#controlNumber').val();
             if (!controlNumber) {
                 showAlert('Please fetch partner data first (click Fetch Data).', 'warning');
+                return;
+            }
+            
+            // Check if this is a partner without ID
+            if (partnerId.startsWith('no-id-')) {
+                // For partners without ID, we can still generate an invoice preview
+                // using the data we have
+                generateInvoicePreview();
                 return;
             }
             

@@ -55,112 +55,182 @@ $adjustment = [
 
 if ($has_filters) {
     try {
-        // Build the query
-        $sql = "SELECT 
-                    bt.*,
-                    pm.partner_name
-                FROM mldb.billspayment_transaction bt
-                LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
-                WHERE 1=1";
+        // ============================================
+        // FIX: Build separate queries for normal and cancelled
+        // ============================================
         
+        // Base conditions
+        $base_conditions = "1=1";
         $params = [];
         $types = "";
         
         // Partner filter
         if (!empty($selected_partner)) {
-            $sql .= " AND bt.partner_id_kpx = ?";
+            $base_conditions .= " AND bt.partner_id_kpx = ?";
             $params[] = $selected_partner;
             $types .= "s";
         }
         
-        // Date filter - searches both datetime and cancellation_date
-        if (!empty($date_from) && !empty($date_to)) {
-            $sql .= " AND (";
-            $sql .= " (DATE(bt.datetime) BETWEEN ? AND ?)";
-            $sql .= " OR (DATE(bt.cancellation_date) BETWEEN ? AND ?)";
-            $sql .= " )";
-            $params[] = $date_from;
-            $params[] = $date_to;
-            $params[] = $date_from;
-            $params[] = $date_to;
-            $types .= "ssss";
-        } elseif (!empty($date_from)) {
-            $sql .= " AND (";
-            $sql .= " (DATE(bt.datetime) >= ?)";
-            $sql .= " OR (DATE(bt.cancellation_date) >= ?)";
-            $sql .= " )";
-            $params[] = $date_from;
-            $params[] = $date_from;
-            $types .= "ss";
-        } elseif (!empty($date_to)) {
-            $sql .= " AND (";
-            $sql .= " (DATE(bt.datetime) <= ?)";
-            $sql .= " OR (DATE(bt.cancellation_date) <= ?)";
-            $sql .= " )";
-            $params[] = $date_to;
-            $params[] = $date_to;
-            $types .= "ss";
-        }
-        
-        // Status filter
-        if (!empty($selected_status)) {
-            if ($selected_status === 'active') {
-                $sql .= " AND (bt.status IS NULL OR bt.status = '')";
-            } elseif ($selected_status === 'cancelled') {
-                $sql .= " AND bt.status = '*'";
-            }
-        }
-
         // Search filter - reference_no and outlet (branch name)
         if (!empty($search_keyword)) {
-            $sql .= " AND (bt.reference_no LIKE ? OR bt.outlet LIKE ?)";
+            $base_conditions .= " AND (bt.reference_no LIKE ? OR bt.outlet LIKE ?)";
             $search_param = "%" . $search_keyword . "%";
             $params[] = $search_param;
             $params[] = $search_param;
             $types .= "ss";
         }
         
-        $sql .= " ORDER BY bt.datetime ASC";
+        // ============================================
+        // QUERY 1: NORMAL TRANSACTIONS (datetime BETWEEN range AND cancellation_date IS NULL)
+        // ============================================
+        $normal_sql = "SELECT 
+                        bt.*,
+                        pm.partner_name
+                    FROM mldb.billspayment_transaction bt
+                    LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+                    WHERE $base_conditions";
         
-        // Execute query using MySQLi
-        $stmt = $conn->prepare($sql);
-        if (!empty($params)) {
-            $stmt->bind_param($types, ...$params);
+        $normal_params = $params;
+        $normal_types = $types;
+        
+        // Date filter for NORMAL transactions - only datetime
+        if (!empty($date_from) && !empty($date_to)) {
+            $normal_sql .= " AND DATE(bt.datetime) BETWEEN ? AND ?";
+            $normal_params[] = $date_from;
+            $normal_params[] = $date_to;
+            $normal_types .= "ss";
+        } elseif (!empty($date_from)) {
+            $normal_sql .= " AND DATE(bt.datetime) >= ?";
+            $normal_params[] = $date_from;
+            $normal_types .= "s";
+        } elseif (!empty($date_to)) {
+            $normal_sql .= " AND DATE(bt.datetime) <= ?";
+            $normal_params[] = $date_to;
+            $normal_types .= "s";
         }
-        $stmt->execute();
-        $result = $stmt->get_result();
         
-        // Process transactions and calculate summaries
-        while ($row = $result->fetch_assoc()) {
+        // FIX: Normal transactions MUST have cancellation_date IS NULL
+        $normal_sql .= " AND bt.cancellation_date IS NULL";
+        
+        // Status filter for NORMAL - only 'active' or all (excluding cancelled)
+        if (!empty($selected_status)) {
+            if ($selected_status === 'active') {
+                $normal_sql .= " AND (bt.status IS NULL OR bt.status = '')";
+            } elseif ($selected_status === 'cancelled') {
+                // If status is cancelled, don't return any normal transactions
+                $normal_sql .= " AND 1=0";
+            }
+        } else {
+            // If no status filter, exclude cancelled from normal
+            $normal_sql .= " AND (bt.status IS NULL OR bt.status = '')";
+        }
+        
+        $normal_sql .= " ORDER BY bt.datetime ASC";
+        
+        // Execute NORMAL query
+        $normal_stmt = $conn->prepare($normal_sql);
+        if (!empty($normal_params)) {
+            $normal_stmt->bind_param($normal_types, ...$normal_params);
+        }
+        $normal_stmt->execute();
+        $normal_result = $normal_stmt->get_result();
+        
+        // Process normal transactions
+        while ($row = $normal_result->fetch_assoc()) {
             $transactions[] = $row;
             
-            // Determine if transaction is normal or adjustment/cancellation
-            $isCancelled = !empty($row['status']) && $row['status'] === '*';
-            
-            // Get amount values (handle nulls)
+            // Normal transaction (positive amounts)
             $amount_paid = floatval($row['amount_paid'] ?? 0);
             $charge_to_partner = floatval($row['charge_to_partner'] ?? 0);
             $charge_to_customer = floatval($row['charge_to_customer'] ?? 0);
             $total_charge = $charge_to_partner + $charge_to_customer;
             
-            if ($isCancelled) {
-    // Adjustment/Cancellation - stored as negative in DB,
-    // but we accumulate/display as positive so net subtraction works correctly
-    $adjustment['volume']++;
-    $adjustment['principal'] += abs($amount_paid);
-    $adjustment['charge_to_partner'] += abs($charge_to_partner);
-    $adjustment['charge_to_customer'] += abs($charge_to_customer);
-    $adjustment['total_charge'] += abs($total_charge);
-            } else {
-                // Normal transaction (positive amounts)
-                $normal['volume']++;
-                $normal['principal'] += $amount_paid;
-                $normal['charge_to_partner'] += $charge_to_partner;
-                $normal['charge_to_customer'] += $charge_to_customer;
-                $normal['total_charge'] += $total_charge;
-            }
+            $normal['volume']++;
+            $normal['principal'] += $amount_paid;
+            $normal['charge_to_partner'] += $charge_to_partner;
+            $normal['charge_to_customer'] += $charge_to_customer;
+            $normal['total_charge'] += $total_charge;
         }
-        $stmt->close();
+        $normal_stmt->close();
+        
+        // ============================================
+        // QUERY 2: CANCELLED TRANSACTIONS (cancellation_date BETWEEN range)
+        // ============================================
+        $cancelled_sql = "SELECT 
+                            bt.*,
+                            pm.partner_name
+                        FROM mldb.billspayment_transaction bt
+                        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+                        WHERE $base_conditions";
+        
+        $cancelled_params = $params;
+        $cancelled_types = $types;
+        
+        // Date filter for CANCELLED transactions - only cancellation_date
+        if (!empty($date_from) && !empty($date_to)) {
+            $cancelled_sql .= " AND DATE(bt.cancellation_date) BETWEEN ? AND ?";
+            $cancelled_params[] = $date_from;
+            $cancelled_params[] = $date_to;
+            $cancelled_types .= "ss";
+        } elseif (!empty($date_from)) {
+            $cancelled_sql .= " AND DATE(bt.cancellation_date) >= ?";
+            $cancelled_params[] = $date_from;
+            $cancelled_types .= "s";
+        } elseif (!empty($date_to)) {
+            $cancelled_sql .= " AND DATE(bt.cancellation_date) <= ?";
+            $cancelled_params[] = $date_to;
+            $cancelled_types .= "s";
+        }
+        
+        // FIX: Cancelled transactions MUST have cancellation_date IS NOT NULL
+        $cancelled_sql .= " AND bt.cancellation_date IS NOT NULL";
+        
+        // Status filter for CANCELLED - only 'cancelled'
+        if (!empty($selected_status)) {
+            if ($selected_status === 'cancelled') {
+                $cancelled_sql .= " AND bt.status = '*'";
+            } elseif ($selected_status === 'active') {
+                // If status is active, don't return any cancelled transactions
+                $cancelled_sql .= " AND 1=0";
+            }
+        } else {
+            // If no status filter, include all cancelled
+            $cancelled_sql .= " AND bt.status = '*'";
+        }
+        
+        $cancelled_sql .= " ORDER BY bt.datetime ASC";
+        
+        // Execute CANCELLED query
+        $cancelled_stmt = $conn->prepare($cancelled_sql);
+        if (!empty($cancelled_params)) {
+            $cancelled_stmt->bind_param($cancelled_types, ...$cancelled_params);
+        }
+        $cancelled_stmt->execute();
+        $cancelled_result = $cancelled_stmt->get_result();
+        
+        // Process cancelled transactions
+        while ($row = $cancelled_result->fetch_assoc()) {
+            $transactions[] = $row;
+            
+            // Adjustment/Cancellation - stored as negative in DB,
+            // but we accumulate/display as positive so net subtraction works correctly
+            $amount_paid = floatval($row['amount_paid'] ?? 0);
+            $charge_to_partner = floatval($row['charge_to_partner'] ?? 0);
+            $charge_to_customer = floatval($row['charge_to_customer'] ?? 0);
+            $total_charge = $charge_to_partner + $charge_to_customer;
+            
+            $adjustment['volume']++;
+            $adjustment['principal'] += abs($amount_paid);
+            $adjustment['charge_to_partner'] += abs($charge_to_partner);
+            $adjustment['charge_to_customer'] += abs($charge_to_customer);
+            $adjustment['total_charge'] += abs($total_charge);
+        }
+        $cancelled_stmt->close();
+        
+        // Sort combined transactions by datetime
+        usort($transactions, function($a, $b) {
+            return strtotime($a['datetime'] ?? '') - strtotime($b['datetime'] ?? '');
+        });
         
     } catch (Exception $e) {
         // Handle error quietly or log it
@@ -260,9 +330,6 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
                         <input type="text" id="search" name="search" placeholder="Reference # or Branch name..." value="<?php echo htmlspecialchars($search_keyword); ?>">
                         <i class="fa-solid fa-search"></i>
                     </div>
-                    <!-- <div class="search-help-text">
-                        <i class="fa-regular fa-lightbulb"></i> Search by Reference No. or Branch Name
-                    </div> -->
                 </div>
 
                 <div class="filter-actions">
@@ -284,7 +351,7 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
                 <div class="card-header bg-light fw-bold text-secondary d-flex justify-content-between align-items-center">
                     <span><i class="fa-solid fa-table me-2"></i> Transaction Results</span>
                     <?php if ($has_filters): ?>
-                        <span class="badge bg-primary rounded-pill"><?php echo count($transactions); ?> records found</span>
+                        <span class="badge bg-danger rounded-pill"><?php echo count($transactions); ?> records found</span>
                     <?php endif; ?>
                 </div>
                 <div class="card-body">

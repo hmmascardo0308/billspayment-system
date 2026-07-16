@@ -112,29 +112,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
         $date_to = $date_from;
     }
     
+    // ============================================
+    // FIX: Define start and end datetime variables
+    // ============================================
+    $start_datetime = '';
+    $end_datetime = '';
+    
+    // FIX: Calculate start and end datetime for use in queries
+    if ($time_frame === 'daily') {
+        $start_datetime = $date_from . ' 00:00:00';
+        $end_datetime = $date_from . ' 23:59:59';
+    } elseif ($time_frame === 'date_range') {
+        if ($selected_day && $selected_day !== 'all') {
+            $selected_date = date('Y-m-d', strtotime($date_from . ' + ' . ($selected_day - 1) . ' days'));
+            $start_datetime = $selected_date . ' 00:00:00';
+            $end_datetime = $selected_date . ' 23:59:59';
+        } else {
+            $start_datetime = $date_from . ' 00:00:00';
+            $end_datetime = $date_to . ' 23:59:59';
+        }
+    } elseif ($time_frame === 'monthly') {
+        if ($selected_month && $selected_month !== 'all') {
+            $selected_month_date = date('Y-m', strtotime($month_from . ' + ' . ($selected_month - 1) . ' months'));
+            $start_datetime = $selected_month_date . '-01 00:00:00';
+            $end_datetime = date('Y-m-t 23:59:59', strtotime($selected_month_date . '-01'));
+        } else {
+            $start_datetime = $month_from . '-01 00:00:00';
+            $end_datetime = date('Y-m-t 23:59:59', strtotime($month_to . '-01'));
+        }
+    }
+    
     // Build the query for billspayment_transaction with detailed breakdown
+    // FIX: Use separate conditions for normal and cancelled transactions
     $where_clause = buildWhereClause($time_frame, $partner_id, $date_from, $date_to, $month_from, $month_to, $selected_day, $selected_month);
     
-    if (!empty($where_clause)) {
-        // FIX: Updated query to show NET values (datetime - cancellation)
-        // FIX: Treat NULL and empty sub_billers_name as '-'
-        // REMOVED: bank and charge_to columns
+    if (!empty($where_clause) && !empty($start_datetime) && !empty($end_datetime)) {
+        // FIX: Updated query to properly separate normal and cancelled transactions
         $query = "SELECT 
                     bt.partner_id_kpx,
                     CASE 
                         WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
                         ELSE bt.sub_billers_name
                     END as sub_billers_name,
-                    COUNT(CASE WHEN bt.cancellation_date IS NULL THEN 1 END) as datetime_volume,
-                    SUM(CASE WHEN bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) as datetime_amount_paid,
-                    SUM(CASE WHEN bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as datetime_charge,
-                    COUNT(CASE WHEN bt.cancellation_date IS NOT NULL THEN 1 END) as cancellation_volume,
-                    SUM(CASE WHEN bt.cancellation_date IS NOT NULL THEN bt.amount_paid ELSE 0 END) as cancellation_amount_paid,
-                    SUM(CASE WHEN bt.cancellation_date IS NOT NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancellation_charge,
+                    -- Normal Transactions (datetime between range AND cancellation_date IS NULL)
+                    COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN 1 END) as datetime_volume,
+                    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) as datetime_amount_paid,
+                    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as datetime_charge,
+                    -- Cancelled Transactions (cancellation_date between range)
+                    COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancellation_volume,
+                    SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancellation_amount_paid,
+                    SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancellation_charge,
                     -- NET values (datetime - cancellation)
-                    (COUNT(CASE WHEN bt.cancellation_date IS NULL THEN 1 END) - COUNT(CASE WHEN bt.cancellation_date IS NOT NULL THEN 1 END)) as total_volume,
-                    (SUM(CASE WHEN bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) + SUM(CASE WHEN bt.cancellation_date IS NOT NULL THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
-                    (SUM(CASE WHEN bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + SUM(CASE WHEN bt.cancellation_date IS NOT NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge
+                    (COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN 1 END) - 
+                     COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as total_volume,
+                    (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) + 
+                     SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
+                    (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
+                     SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge
                   FROM mldb.billspayment_transaction bt
                   $where_clause
                   GROUP BY bt.partner_id_kpx, 
@@ -145,6 +179,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                   ORDER BY bt.partner_id_kpx, total_volume DESC";
         
         $results = mysqli_query($conn, $query);
+        
+        // Debug: Check for query errors
+        if (!$results) {
+            error_log("MySQL Error: " . mysqli_error($conn));
+            error_log("Query: " . $query);
+        }
     }
     
     // FIX: Get daily summary for daily time frame with NET values
@@ -153,13 +193,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
         $end_datetime = $date_from . ' 23:59:59';
         
         $day_query = "SELECT 
-                        COUNT(*) as total_volume,
-                        SUM(bt.amount_paid) as total_amount_paid,
-                        SUM(bt.charge_to_partner + bt.charge_to_customer) as total_charge,
-                        COUNT(CASE WHEN bt.cancellation_date IS NULL THEN 1 END) as success_volume,
-                        COUNT(CASE WHEN bt.cancellation_date IS NOT NULL THEN 1 END) as cancelled_volume,
+                        COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as success_volume,
+                        COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancelled_volume,
+                        SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as success_amount,
+                        SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancelled_amount,
+                        SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as success_charge,
+                        SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancelled_charge,
                         -- NET volume (success - cancelled)
-                        (COUNT(CASE WHEN bt.cancellation_date IS NULL THEN 1 END) - COUNT(CASE WHEN bt.cancellation_date IS NOT NULL THEN 1 END)) as net_volume
+                        (COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) - 
+                         COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as net_volume,
+                        (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) + 
+                         SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as net_amount,
+                        (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
+                         SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge
                       FROM mldb.billspayment_transaction bt
                       WHERE (bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
         
@@ -174,8 +220,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
             'date' => $date_from,
             'day_number' => 1,
             'total_volume' => $day_data['net_volume'] ?? 0,
-            'total_amount_paid' => $day_data['total_amount_paid'] ?? 0,
-            'total_charge' => $day_data['total_charge'] ?? 0,
+            'total_amount_paid' => $day_data['net_amount'] ?? 0,
+            'total_charge' => $day_data['net_charge'] ?? 0,
             'success_volume' => $day_data['success_volume'] ?? 0,
             'cancelled_volume' => $day_data['cancelled_volume'] ?? 0
         ];
@@ -193,13 +239,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
             $end_datetime = $current_date . ' 23:59:59';
             
             $day_query = "SELECT 
-                            COUNT(*) as total_volume,
-                            SUM(bt.amount_paid) as total_amount_paid,
-                            SUM(bt.charge_to_partner + bt.charge_to_customer) as total_charge,
-                            COUNT(CASE WHEN bt.cancellation_date IS NULL THEN 1 END) as success_volume,
-                            COUNT(CASE WHEN bt.cancellation_date IS NOT NULL THEN 1 END) as cancelled_volume,
+                            COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as success_volume,
+                            COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancelled_volume,
+                            SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as success_amount,
+                            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancelled_amount,
+                            SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as success_charge,
+                            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancelled_charge,
                             -- NET volume (success - cancelled)
-                            (COUNT(CASE WHEN bt.cancellation_date IS NULL THEN 1 END) - COUNT(CASE WHEN bt.cancellation_date IS NOT NULL THEN 1 END)) as net_volume
+                            (COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) - 
+                             COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as net_volume,
+                            (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) + 
+                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as net_amount,
+                            (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
+                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge
                           FROM mldb.billspayment_transaction bt
                           WHERE (bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
             
@@ -214,8 +266,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                 'date' => $current_date,
                 'day_number' => $day_counter,
                 'total_volume' => $day_data['net_volume'] ?? 0,
-                'total_amount_paid' => $day_data['total_amount_paid'] ?? 0,
-                'total_charge' => $day_data['total_charge'] ?? 0,
+                'total_amount_paid' => $day_data['net_amount'] ?? 0,
+                'total_charge' => $day_data['net_charge'] ?? 0,
                 'success_volume' => $day_data['success_volume'] ?? 0,
                 'cancelled_volume' => $day_data['cancelled_volume'] ?? 0
             ];
@@ -237,13 +289,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
             $end_datetime = date('Y-m-t 23:59:59', strtotime($current_month . '-01'));
             
             $month_query = "SELECT 
-                            COUNT(*) as total_volume,
-                            SUM(bt.amount_paid) as total_amount_paid,
-                            SUM(bt.charge_to_partner + bt.charge_to_customer) as total_charge,
-                            COUNT(CASE WHEN bt.cancellation_date IS NULL THEN 1 END) as success_volume,
-                            COUNT(CASE WHEN bt.cancellation_date IS NOT NULL THEN 1 END) as cancelled_volume,
+                            COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as success_volume,
+                            COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancelled_volume,
+                            SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as success_amount,
+                            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancelled_amount,
+                            SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as success_charge,
+                            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancelled_charge,
                             -- NET volume (success - cancelled)
-                            (COUNT(CASE WHEN bt.cancellation_date IS NULL THEN 1 END) - COUNT(CASE WHEN bt.cancellation_date IS NOT NULL THEN 1 END)) as net_volume
+                            (COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) - 
+                             COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as net_volume,
+                            (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) + 
+                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as net_amount,
+                            (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
+                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge
                           FROM mldb.billspayment_transaction bt
                           WHERE (bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
             
@@ -259,8 +317,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                 'month_number' => $month_counter,
                 'month_name' => date('M Y', strtotime($current_month . '-01')),
                 'total_volume' => $month_data['net_volume'] ?? 0,
-                'total_amount_paid' => $month_data['total_amount_paid'] ?? 0,
-                'total_charge' => $month_data['total_charge'] ?? 0,
+                'total_amount_paid' => $month_data['net_amount'] ?? 0,
+                'total_charge' => $month_data['net_charge'] ?? 0,
                 'success_volume' => $month_data['success_volume'] ?? 0,
                 'cancelled_volume' => $month_data['cancelled_volume'] ?? 0
             ];
@@ -555,7 +613,7 @@ if (!empty($partner_id)) {
                                         <td><?php echo number_format($row['cancellation_volume']); ?></td>
                                         <td style="text-align: right;">₱ <?php echo number_format(abs($row['cancellation_amount_paid']), 2); ?></td>
                                         <td style="text-align: right;">₱ <?php echo number_format(abs($row['cancellation_charge']), 2); ?></td>
-                                        <!-- FIX: Display NET values (datetime - cancellation) - still subtraction -->
+                                        <!-- FIX: Display NET values (datetime - cancellation) -->
                                         <td><strong><?php echo number_format($row['total_volume']); ?></strong></td>
                                         <td><strong>₱ <?php echo number_format($row['total_amount_paid'], 2); ?></strong></td>
                                         <td><strong>₱ <?php echo number_format($row['total_charge'], 2); ?></strong></td>
@@ -576,7 +634,7 @@ if (!empty($partner_id)) {
                                     <td><?php echo number_format($total_cancellation_volume); ?></td>
                                     <td style="text-align: right;">₱ <?php echo number_format(abs($total_cancellation_amount), 2); ?></td>
                                     <td style="text-align: right;">₱ <?php echo number_format(abs($total_cancellation_charge), 2); ?></td>
-                                    <!-- FIX: TOTAL NET values (still subtraction) -->
+                                    <!-- FIX: TOTAL NET values -->
                                     <td><strong><?php echo number_format($total_volume); ?></strong></td>
                                     <td><strong>₱ <?php echo number_format($total_amount, 2); ?></strong></td>
                                     <td><strong>₱ <?php echo number_format($total_charge, 2); ?></strong></td>
@@ -676,22 +734,6 @@ if (!empty($partner_id)) {
                 sessionStorage.setItem('pageRefreshing', 'true');
             }
         });
-
-        // Check if page was refreshed and show loading
-        // if (sessionStorage.getItem('pageRefreshing') === 'true') {
-        //     // Show loading immediately
-        //     showLoading('Refreshing Report...');
-            
-        //     // Remove the flag after showing
-        //     sessionStorage.removeItem('pageRefreshing');
-            
-        //     // Hide loading after page is fully loaded
-        //     window.addEventListener('load', function() {
-        //         setTimeout(function() {
-        //             hideLoading();
-        //         }, 500);
-        //     });
-        // }
 
         // ============================================
         // FORM SUBMISSION WITH LOADING OVERLAY
