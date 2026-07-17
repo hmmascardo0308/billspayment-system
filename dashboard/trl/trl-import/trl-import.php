@@ -20,7 +20,7 @@ if (!function_exists('has_any_permission') || !has_any_permission(['TRL Import',
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>TRL - Import</title>
+    <title>Transaction Request Log - Import</title>
     <link rel="icon" href="../../../images/MLW%20logo.png" type="image/png">
     <link rel="stylesheet" href="../../../assets/css/templates/style.css?v=<?php echo time(); ?>">
     <link rel="stylesheet" href="trl-import.css?v=<?php echo time(); ?>">
@@ -33,7 +33,7 @@ if (!function_exists('has_any_permission') || !has_any_permission(['TRL Import',
         <?php include '../../../templates/header_ui.php'; ?>
         <?php include '../../../templates/sidebar.php'; ?>
 
-        <?php bp_section_header_html('fa-solid fa-file-import', 'TRL - Import', 'Transaction Request Log - Import'); ?>
+        <?php bp_section_header_html('fa-solid fa-file-import', 'Transaction Request Log - Import'); ?>
 
         <div id="loading-overlay" style="display:none;">
             <div class="loading-spinner"></div>
@@ -484,3 +484,4 @@ if (!function_exists('has_any_permission') || !has_any_permission(['TRL Import',
     </div>
 </body>
 </html>
+ 

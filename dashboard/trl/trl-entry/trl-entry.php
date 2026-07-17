@@ -21,7 +21,7 @@ unset($_SESSION['trl_entry_flash']);
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>TRL - Entry</title>
+    <title>Transaction Request Log - Entry</title>
     <link rel="icon" href="../../../images/MLW%20logo.png" type="image/png">
     <link rel="stylesheet" href="../../../assets/css/templates/style.css?v=<?php echo time(); ?>">
     <link rel="stylesheet" href="trl-entry.css?v=<?php echo time(); ?>">
@@ -37,7 +37,7 @@ unset($_SESSION['trl_entry_flash']);
         <?php include '../../../templates/header_ui.php'; ?>
         <?php include '../../../templates/sidebar.php'; ?>
 
-        <?php bp_section_header_html('fa-solid fa-pen-to-square', 'TRL - Entry', 'Transaction Request Log - Entry'); ?>
+        <?php bp_section_header_html('fa-solid fa-pen-to-square', 'Transaction Request Log - Entry'); ?>
 
         <div class="bp-card container-fluid mt-3 p-4">
             <div class="entry-toolbar">
@@ -46,24 +46,21 @@ unset($_SESSION['trl_entry_flash']);
                         <input type="radio" name="entryMode" value="auto" <?php echo $mode === 'auto' ? 'checked' : ''; ?>>
                         <div class="mode-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
                         <div class="mode-text">
-                            <p class="mode-label">AUTO</p>
-                            <small>Search by Reference No.</small>
+                            <p class="mode-label">Search by Reference No.</p>
                         </div>
                     </label>
                     <label class="mode-card <?php echo $mode === 'manual' ? 'selected' : ''; ?>" data-mode="manual">
                         <input type="radio" name="entryMode" value="manual" <?php echo $mode === 'manual' ? 'checked' : ''; ?>>
                         <div class="mode-icon"><i class="fa-solid fa-keyboard"></i></div>
                         <div class="mode-text">
-                            <p class="mode-label">MANUAL</p>
-                            <small>Input all fields directly</small>
+                            <p class="mode-label">Manual Input all fields directly</p>
                         </div>
                     </label>
                     <label class="mode-card <?php echo $mode === 'ticket' ? 'selected' : ''; ?>" data-mode="ticket">
                         <input type="radio" name="entryMode" value="ticket" <?php echo $mode === 'ticket' ? 'checked' : ''; ?>>
                         <div class="mode-icon"><i class="fa-solid fa-ticket"></i></div>
                         <div class="mode-text">
-                            <p class="mode-label">TICKET</p>
-                            <small>Load from Support Ticket</small>
+                            <p class="mode-label">Load from Support Ticket</p>
                         </div>
                     </label>
                 </div>

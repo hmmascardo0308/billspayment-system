@@ -18,7 +18,7 @@ if ($mode !== 'summary' && $mode !== 'refunded' && $mode !== 'subbillers') {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>TRL - Report</title>
+    <title>Transaction Request Log - Report</title>
     <link rel="icon" href="../../../images/MLW%20logo.png" type="image/png">
     <link rel="stylesheet" href="../../../assets/css/templates/style.css?v=<?php echo time(); ?>">
     <link rel="stylesheet" href="trl-report.css?v=<?php echo time(); ?>">
@@ -34,7 +34,7 @@ if ($mode !== 'summary' && $mode !== 'refunded' && $mode !== 'subbillers') {
         <?php include '../../../templates/header_ui.php'; ?>
         <?php include '../../../templates/sidebar.php'; ?>
 
-        <?php bp_section_header_html('fa-solid fa-chart-column', 'TRL - Report', 'Transaction Request Log - Report'); ?>
+        <?php bp_section_header_html('fa-solid fa-chart-column', 'Transaction Request Log - Report'); ?>
 
         <div class="bp-card container-fluid mt-3 p-4 trl-report-wrap">
             <div class="mode-cards" id="modeCards">

@@ -22,7 +22,7 @@ unset($_SESSION['trl_entry_flash']);
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>TRL - Ticket Entry</title>
+    <title>Transaction Request Log - Ticket Entry</title>
     <link rel="icon" href="../../../images/MLW%20logo.png" type="image/png">
     <link rel="stylesheet" href="../../../assets/css/templates/style.css?v=<?php echo time(); ?>">
     <link rel="stylesheet" href="trl-entry_ticket.css?v=<?php echo time(); ?>">
@@ -37,7 +37,7 @@ unset($_SESSION['trl_entry_flash']);
         <?php include '../../../templates/header_ui.php'; ?>
         <?php include '../../../templates/sidebar.php'; ?>
 
-        <?php bp_section_header_html('fa-solid fa-ticket', 'TRL - Ticket Entry', 'Transaction Request Log - Ticket Entry'); ?>
+        <?php bp_section_header_html('fa-solid fa-ticket', 'Transaction Request Log - Ticket Entry'); ?>
 
         <div class="bp-card container-fluid mt-3 p-4">
             <div class="entry-toolbar">

@@ -170,7 +170,7 @@ unset($_SESSION['trl_review_flash']);
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>TRL - Review</title>
+    <title>Transaction Request Log - Review</title>
     <link rel="icon" href="../../../images/MLW%20logo.png" type="image/png">
     <link rel="stylesheet" href="../../../assets/css/templates/style.css?v=<?php echo time(); ?>">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
@@ -181,7 +181,7 @@ unset($_SESSION['trl_review_flash']);
         <?php include '../../../templates/header_ui.php'; ?>
         <?php include '../../../templates/sidebar.php'; ?>
 
-        <?php bp_section_header_html('fa-solid fa-clipboard-check', 'TRL - Review', 'Review pending TRL refunds and confirm refund status'); ?>
+        <?php bp_section_header_html('fa-solid fa-clipboard-check', 'Transaction Request Log - Review'); ?>
 
         <div class="bp-card container-fluid mt-3 p-4 trl-review-wrap">
             <div class="trl-review-topbar">
