@@ -148,6 +148,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
     
     if (!empty($where_clause) && !empty($start_datetime) && !empty($end_datetime)) {
         // FIX: Updated query to properly separate normal and cancelled transactions
+        // ADDED: Settlement columns for settled transactions
         $query = "SELECT 
                     bt.partner_id_kpx,
                     CASE 
@@ -168,7 +169,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                     (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) + 
                      SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
                     (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
-                     SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge
+                     SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge,
+                    -- SETTLEMENT Transactions (settle_unsettle = 'Settled')
+                    COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL THEN 1 END) as settlement_volume,
+                    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) as settlement_amount_paid,
+                    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
                   FROM mldb.billspayment_transaction bt
                   $where_clause
                   GROUP BY bt.partner_id_kpx, 
@@ -188,6 +193,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
     }
     
     // FIX: Get daily summary for daily time frame with NET values
+    // ADDED: Settlement summary for daily
     if ($time_frame === 'daily' && !empty($date_from)) {
         $start_datetime = $date_from . ' 00:00:00';
         $end_datetime = $date_from . ' 23:59:59';
@@ -205,7 +211,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                         (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) + 
                          SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as net_amount,
                         (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
-                         SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge
+                         SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge,
+                        -- SETTLEMENT Summary
+                        COUNT(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as settlement_volume,
+                        SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as settlement_amount,
+                        SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
                       FROM mldb.billspayment_transaction bt
                       WHERE (bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
         
@@ -223,11 +233,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
             'total_amount_paid' => $day_data['net_amount'] ?? 0,
             'total_charge' => $day_data['net_charge'] ?? 0,
             'success_volume' => $day_data['success_volume'] ?? 0,
-            'cancelled_volume' => $day_data['cancelled_volume'] ?? 0
+            'cancelled_volume' => $day_data['cancelled_volume'] ?? 0,
+            'settlement_volume' => $day_data['settlement_volume'] ?? 0,
+            'settlement_amount' => $day_data['settlement_amount'] ?? 0,
+            'settlement_charge' => $day_data['settlement_charge'] ?? 0
         ];
     }
     
     // FIX: Get daily summary for the date range with NET values
+    // ADDED: Settlement summary for each day
     if ($time_frame === 'date_range' && !empty($date_from) && !empty($date_to)) {
         $start_date = $date_from;
         $end_date = $date_to;
@@ -251,7 +265,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                             (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) + 
                              SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as net_amount,
                             (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
-                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge
+                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge,
+                            -- SETTLEMENT Summary
+                            COUNT(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as settlement_volume,
+                            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as settlement_amount,
+                            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
                           FROM mldb.billspayment_transaction bt
                           WHERE (bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
             
@@ -269,7 +287,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                 'total_amount_paid' => $day_data['net_amount'] ?? 0,
                 'total_charge' => $day_data['net_charge'] ?? 0,
                 'success_volume' => $day_data['success_volume'] ?? 0,
-                'cancelled_volume' => $day_data['cancelled_volume'] ?? 0
+                'cancelled_volume' => $day_data['cancelled_volume'] ?? 0,
+                'settlement_volume' => $day_data['settlement_volume'] ?? 0,
+                'settlement_amount' => $day_data['settlement_amount'] ?? 0,
+                'settlement_charge' => $day_data['settlement_charge'] ?? 0
             ];
             
             $current_date = date('Y-m-d', strtotime($current_date . ' + 1 day'));
@@ -278,6 +299,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
     }
     
     // FIX: Get monthly summary for the month range with NET values
+    // ADDED: Settlement summary for each month
     if ($time_frame === 'monthly' && !empty($month_from) && !empty($month_to)) {
         $start_month = $month_from;
         $end_month = $month_to;
@@ -301,7 +323,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                             (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) + 
                              SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as net_amount,
                             (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
-                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge
+                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge,
+                            -- SETTLEMENT Summary
+                            COUNT(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as settlement_volume,
+                            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as settlement_amount,
+                            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
                           FROM mldb.billspayment_transaction bt
                           WHERE (bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
             
@@ -320,7 +346,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                 'total_amount_paid' => $month_data['net_amount'] ?? 0,
                 'total_charge' => $month_data['net_charge'] ?? 0,
                 'success_volume' => $month_data['success_volume'] ?? 0,
-                'cancelled_volume' => $month_data['cancelled_volume'] ?? 0
+                'cancelled_volume' => $month_data['cancelled_volume'] ?? 0,
+                'settlement_volume' => $month_data['settlement_volume'] ?? 0,
+                'settlement_amount' => $month_data['settlement_amount'] ?? 0,
+                'settlement_charge' => $month_data['settlement_charge'] ?? 0
             ];
             
             $current_month = date('Y-m', strtotime($current_month . ' + 1 month'));
@@ -525,6 +554,9 @@ if (!empty($partner_id)) {
                     $total_volume = 0;
                     $total_amount = 0;
                     $total_charge = 0;
+                    $total_settlement_volume = 0;
+                    $total_settlement_amount = 0;
+                    $total_settlement_charge = 0;
                     
                     $display_results = [];
                     while ($row = mysqli_fetch_assoc($results)) {
@@ -539,6 +571,10 @@ if (!empty($partner_id)) {
                         $total_volume += $row['total_volume'];
                         $total_amount += $row['total_amount_paid'];
                         $total_charge += $row['total_charge'];
+                        // Settlement totals
+                        $total_settlement_volume += $row['settlement_volume'];
+                        $total_settlement_amount += $row['settlement_amount_paid'];
+                        $total_settlement_charge += $row['settlement_charge'];
                     }
                 ?>
                     <!-- Summary Statistics -->
@@ -617,10 +653,10 @@ if (!empty($partner_id)) {
                                         <td><strong><?php echo number_format($row['total_volume']); ?></strong></td>
                                         <td><strong>₱ <?php echo number_format($row['total_amount_paid'], 2); ?></strong></td>
                                         <td><strong>₱ <?php echo number_format($row['total_charge'], 2); ?></strong></td>
-                                        <!-- Settlement Section - Empty for now -->
-                                        <td>-</td>
-                                        <td>-</td>
-                                        <td>-</td>
+                                        <!-- Settlement Section - Now populated with actual data -->
+                                        <td style="background: #fff8e1;"><?php echo number_format($row['settlement_volume']); ?></td>
+                                        <td style="background: #fff8e1; text-align: right;">₱ <?php echo number_format($row['settlement_amount_paid'], 2); ?></td>
+                                        <td style="background: #fff8e1; text-align: right;">₱ <?php echo number_format($row['settlement_charge'], 2); ?></td>
                                     </tr>
                                 <?php endforeach; ?>
                                 
@@ -638,10 +674,10 @@ if (!empty($partner_id)) {
                                     <td><strong><?php echo number_format($total_volume); ?></strong></td>
                                     <td><strong>₱ <?php echo number_format($total_amount, 2); ?></strong></td>
                                     <td><strong>₱ <?php echo number_format($total_charge, 2); ?></strong></td>
-                                    <!-- Settlement Total - Empty for now -->
-                                    <td>-</td>
-                                    <td>-</td>
-                                    <td>-</td>
+                                    <!-- Settlement Total - Now populated with actual data -->
+                                    <td style="background: #fff8e1;"><strong><?php echo number_format($total_settlement_volume); ?></strong></td>
+                                    <td style="background: #fff8e1; text-align: right;"><strong>₱ <?php echo number_format($total_settlement_amount, 2); ?></strong></td>
+                                    <td style="background: #fff8e1; text-align: right;"><strong>₱ <?php echo number_format($total_settlement_charge, 2); ?></strong></td>
                                 </tr>
                             </tbody>
                         </table>

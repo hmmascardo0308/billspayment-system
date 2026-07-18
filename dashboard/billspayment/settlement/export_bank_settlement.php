@@ -191,8 +191,8 @@ try {
                 pm.bank_accNumber,
                 pm.bank,
                 pm.settled_online_check as settlement_type,
-                pm.charge_to,
-                pm.serviceCharge,
+                COALESCE(pm.charge_to, '') as charge_to,
+                COALESCE(pm.serviceCharge, '') as serviceCharge,
                 COUNT(*) as txn_count,
                 SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
                 (SUM(bt.charge_to_customer) + SUM(bt.charge_to_partner)) as total_charge,
@@ -216,7 +216,11 @@ try {
                     WHEN pm.charge_to = 'PARTNER' AND pm.serviceCharge = 'WEEKLY' THEN 4
                     WHEN pm.charge_to = 'PARTNER' AND pm.serviceCharge = 'SEMI-MONTHLY' THEN 5
                     WHEN pm.charge_to = 'PARTNER' AND pm.serviceCharge = 'MONTHLY' THEN 6
-                    ELSE 7
+                    WHEN pm.charge_to = 'BOTH' AND pm.serviceCharge = 'DAILY' THEN 7
+                    WHEN pm.charge_to = 'BOTH' AND pm.serviceCharge = 'WEEKLY' THEN 8
+                    WHEN pm.charge_to = 'BOTH' AND pm.serviceCharge = 'MONTHLY' THEN 9
+                    WHEN pm.charge_to IS NULL OR pm.charge_to = '' THEN 10
+                    ELSE 11
                 END,
                 pm.partner_name";
     
@@ -233,7 +237,7 @@ try {
         $result = $conn->query($sql);
     }
     
-    // UPDATED GROUPING
+    // UPDATED GROUPING - Added BOTH and UNCATEGORIZED
     $groups = [
         'CHARGE BY CUSTOMER DAILY' => [
             'display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY',
@@ -264,6 +268,26 @@ try {
             'display_name' => 'NOTE: CHARGE BY PARTNER MONTHLY',
             'rows' => [],
             'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+        ],
+        'CHARGE BY BOTH DAILY' => [
+            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) DAILY',
+            'rows' => [],
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+        ],
+        'CHARGE BY BOTH WEEKLY' => [
+            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) WEEKLY',
+            'rows' => [],
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+        ],
+        'CHARGE BY BOTH MONTHLY' => [
+            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) MONTHLY',
+            'rows' => [],
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+        ],
+        'UNCATEGORIZED' => [
+            'display_name' => '⚠️ PARTNERS WITHOUT CHARGE TYPE (UNCATEGORIZED)',
+            'rows' => [],
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
         ]
     ];
     
@@ -275,16 +299,24 @@ try {
     
     if ($result && $result->num_rows > 0) {
         while ($row = $result->fetch_assoc()) {
-            $charge_to = strtoupper($row['charge_to'] ?? '');
-            $serviceCharge = strtoupper($row['serviceCharge'] ?? '');
+            $charge_to = strtoupper(trim($row['charge_to'] ?? ''));
+            $serviceCharge = strtoupper(trim($row['serviceCharge'] ?? ''));
             
-            // UPDATED GROUPING LOGIC
+            // UPDATED GROUPING LOGIC - Handle BOTH and UNCATEGORIZED
             $group_key = null;
-            if ($charge_to === 'CUSTOMER') {
+            
+            // Check if charge_to is empty or null
+            if (empty($charge_to)) {
+                // No charge_to defined - put in uncategorized
+                $group_key = 'UNCATEGORIZED';
+            } elseif ($charge_to === 'CUSTOMER') {
                 if ($serviceCharge === 'DAILY') {
                     $group_key = 'CHARGE BY CUSTOMER DAILY';
                 } elseif ($serviceCharge === 'WEEKLY') {
                     $group_key = 'CHARGE BY CUSTOMER WEEKLY';
+                } else {
+                    // CUSTOMER but no valid service charge - uncategorized
+                    $group_key = 'UNCATEGORIZED';
                 }
             } elseif ($charge_to === 'PARTNER') {
                 if ($serviceCharge === 'DAILY') {
@@ -295,7 +327,25 @@ try {
                     $group_key = 'CHARGE BY PARTNER SEMI MONTHLY';
                 } elseif ($serviceCharge === 'MONTHLY') {
                     $group_key = 'CHARGE BY PARTNER MONTHLY';
+                } else {
+                    // PARTNER but no valid service charge - uncategorized
+                    $group_key = 'UNCATEGORIZED';
                 }
+            } elseif ($charge_to === 'BOTH') {
+                // Handle BOTH charge_to
+                if ($serviceCharge === 'DAILY') {
+                    $group_key = 'CHARGE BY BOTH DAILY';
+                } elseif ($serviceCharge === 'WEEKLY') {
+                    $group_key = 'CHARGE BY BOTH WEEKLY';
+                } elseif ($serviceCharge === 'MONTHLY') {
+                    $group_key = 'CHARGE BY BOTH MONTHLY';
+                } else {
+                    // BOTH but no valid service charge - uncategorized
+                    $group_key = 'UNCATEGORIZED';
+                }
+            } else {
+                // Unknown charge_to value - uncategorized
+                $group_key = 'UNCATEGORIZED';
             }
             
             if ($group_key === null) {
@@ -362,6 +412,26 @@ try {
         ],
         'CHARGE BY PARTNER MONTHLY' => [
             'display_name' => 'NOTE: CHARGE BY PARTNER MONTHLY',
+            'rows' => [],
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+        ],
+        'CHARGE BY BOTH DAILY' => [
+            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) DAILY',
+            'rows' => [],
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+        ],
+        'CHARGE BY BOTH WEEKLY' => [
+            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) WEEKLY',
+            'rows' => [],
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+        ],
+        'CHARGE BY BOTH MONTHLY' => [
+            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) MONTHLY',
+            'rows' => [],
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+        ],
+        'UNCATEGORIZED' => [
+            'display_name' => '⚠️ PARTNERS WITHOUT CHARGE TYPE (UNCATEGORIZED)',
             'rows' => [],
             'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
         ]
@@ -439,6 +509,7 @@ use PhpOffice\PhpSpreadsheet\Style\Border;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 use PhpOffice\PhpSpreadsheet\Style\Font;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
+use PhpOffice\PhpSpreadsheet\Style\Color;
 
 $spreadsheet = new Spreadsheet();
 $sheet = $spreadsheet->getActiveSheet();
@@ -522,10 +593,24 @@ foreach ($groups as $group_key => $group_data) {
         continue;
     }
     
-    // Group header
+    // Check if this is the UNCATEGORIZED group
+    $is_uncategorized = ($group_key === 'UNCATEGORIZED');
+    $is_both = (strpos($group_key, 'BOTH') !== false);
+    
+    // Group header with styling
     $sheet->mergeCells('A' . $row . ':H' . $row);
     $sheet->setCellValue('A' . $row, $group_data['display_name']);
     $sheet->getStyle('A' . $row)->getFont()->setBold(true);
+    
+    // Apply group-specific styling
+    if ($is_uncategorized) {
+        $sheet->getStyle('A' . $row . ':H' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFF3CD');
+        $sheet->getStyle('A' . $row)->getFont()->getColor()->setARGB(Color::COLOR_DARKYELLOW);
+    } elseif ($is_both) {
+        $sheet->getStyle('A' . $row . ':H' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('D1ECF1');
+        $sheet->getStyle('A' . $row)->getFont()->getColor()->setARGB(Color::COLOR_DARKBLUE);
+    }
+    
     $sheet->getStyle('A' . $row . ':H' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
     $row++;
     
@@ -550,7 +635,7 @@ foreach ($groups as $group_key => $group_data) {
         $row++;
     }
     
-    // Group subtotal row
+    // Group subtotal row with styling
     $sheet->mergeCells('A' . $row . ':C' . $row);
     $sheet->setCellValue('A' . $row, 'Subtotal - ' . $group_data['display_name']);
     $sheet->getStyle('A' . $row . ':H' . $row)->getFont()->setBold(true);
@@ -562,7 +647,16 @@ foreach ($groups as $group_key => $group_data) {
     
     $sheet->getStyle('E' . $row . ':H' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('D' . $row)->getNumberFormat()->setFormatCode('#,##0');
-    $sheet->getStyle('A' . $row . ':H' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('E8F4FD');
+    
+    // Apply subtotal styling
+    if ($is_uncategorized) {
+        $sheet->getStyle('A' . $row . ':H' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFF3CD');
+    } elseif ($is_both) {
+        $sheet->getStyle('A' . $row . ':H' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('D1ECF1');
+    } else {
+        $sheet->getStyle('A' . $row . ':H' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('E8F4FD');
+    }
+    
     $sheet->getStyle('A' . $row . ':H' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
     $row++;
     

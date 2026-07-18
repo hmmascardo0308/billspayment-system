@@ -145,6 +145,7 @@ $where_clause = buildWhereClauseForExport($time_frame, $partner_id, $date_from, 
 
 // ============================================
 // FIX: Updated query to properly separate normal and cancelled transactions
+// ADDED: Settlement columns
 // ============================================
 $query = "SELECT 
             bt.partner_id_kpx,
@@ -166,7 +167,11 @@ $query = "SELECT
             (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) + 
              SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
             (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
-             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge
+             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge,
+            -- SETTLEMENT Transactions (settle_unsettle = 'Settled')
+            COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL THEN 1 END) as settlement_volume,
+            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL THEN bt.amount_paid ELSE 0 END) as settlement_amount_paid,
+            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
           FROM mldb.billspayment_transaction bt
           $where_clause
           GROUP BY bt.partner_id_kpx, 
@@ -197,6 +202,9 @@ $total_cancellation_charge = 0;
 $total_volume = 0;
 $total_amount = 0;
 $total_charge = 0;
+$total_settlement_volume = 0;
+$total_settlement_amount = 0;
+$total_settlement_charge = 0;
 
 while ($row = mysqli_fetch_assoc($results)) {
     $display_results[] = $row;
@@ -209,6 +217,9 @@ while ($row = mysqli_fetch_assoc($results)) {
     $total_volume += $row['total_volume'];
     $total_amount += $row['total_amount_paid'];
     $total_charge += $row['total_charge'];
+    $total_settlement_volume += $row['settlement_volume'];
+    $total_settlement_amount += $row['settlement_amount_paid'];
+    $total_settlement_charge += $row['settlement_charge'];
 }
 
 // Create new Spreadsheet
@@ -305,6 +316,10 @@ $sheet->mergeCells('G10:I10');
 $sheet->setCellValue('J10', 'Net');
 $sheet->mergeCells('J10:L10');
 
+// Columns M-O: Settlement group header (spans 3 columns)
+$sheet->setCellValue('M10', 'Settlement');
+$sheet->mergeCells('M10:O10');
+
 // ROW 11 - Sub-header row
 // Columns A-C: Leave empty (these will be merged from row 10)
 $sheet->setCellValue('A11', '');
@@ -325,6 +340,11 @@ $sheet->setCellValue('I11', 'Charge');
 $sheet->setCellValue('J11', 'Vol.');
 $sheet->setCellValue('K11', 'Principal');
 $sheet->setCellValue('L11', 'Charge');
+
+// Columns M-O: Settlement sub-headers
+$sheet->setCellValue('M11', 'Vol.');
+$sheet->setCellValue('N11', 'Principal');
+$sheet->setCellValue('O11', 'Charge');
 
 // MERGE cells for rowspan (A-C spanning rows 10-11)
 $sheet->mergeCells('A10:A11');
@@ -354,10 +374,10 @@ $headerStyle = [
 ];
 
 // Apply header style to both rows
-$sheet->getStyle('A10:L11')->applyFromArray($headerStyle);
+$sheet->getStyle('A10:O11')->applyFromArray($headerStyle);
 
 // Set auto-width for all columns
-foreach (range('A', 'L') as $column) {
+foreach (range('A', 'O') as $column) {
     $sheet->getColumnDimension($column)->setAutoSize(true);
 }
 
@@ -383,24 +403,39 @@ $dataStyle = [
     ],
 ];
 
-// Define column-specific styles
+// Define column-specific background colors
 $normalStyle = [
     'fill' => [
         'fillType' => Fill::FILL_SOLID,
+        'startColor' => ['rgb' => 'E6F4EA'], // Light green
     ],
 ];
 
 $cancelledStyle = [
     'fill' => [
         'fillType' => Fill::FILL_SOLID,
+        'startColor' => ['rgb' => 'FCE8E6'], // Light red
     ],
 ];
 
 $netStyle = [
     'fill' => [
         'fillType' => Fill::FILL_SOLID,
+        'startColor' => ['rgb' => 'E8F0FE'], // Light blue
     ],
 ];
+
+$settlementStyle = [
+    'fill' => [
+        'fillType' => Fill::FILL_SOLID,
+        'startColor' => ['rgb' => 'FFF3CD'], // Light yellow
+    ],
+];
+
+// Format for currency with PHP
+function formatCurrency(int|float $value): string {
+    return number_format($value, 2);
+}
 
 foreach ($display_results as $data) {
     $partner_name = $partner_names[$data['partner_id_kpx']] ?? $data['partner_id_kpx'];
@@ -424,13 +459,19 @@ foreach ($display_results as $data) {
     $sheet->setCellValue('K' . $row, $data['total_amount_paid']);
     $sheet->setCellValue('L' . $row, $data['total_charge']);
     
+    // SETTLEMENT columns (M, N, O)
+    $sheet->setCellValue('M' . $row, number_format($data['settlement_volume']));
+    $sheet->setCellValue('N' . $row, $data['settlement_amount_paid']);
+    $sheet->setCellValue('O' . $row, $data['settlement_charge']);
+    
     // Apply data style
-    $sheet->getStyle('A' . $row . ':L' . $row)->applyFromArray($dataStyle);
+    $sheet->getStyle('A' . $row . ':O' . $row)->applyFromArray($dataStyle);
     
     // Apply column-specific background colors
     $sheet->getStyle('D' . $row . ':F' . $row)->applyFromArray($normalStyle);
     $sheet->getStyle('G' . $row . ':I' . $row)->applyFromArray($cancelledStyle);
     $sheet->getStyle('J' . $row . ':L' . $row)->applyFromArray($netStyle);
+    $sheet->getStyle('M' . $row . ':O' . $row)->applyFromArray($settlementStyle);
     
     // Apply number formatting for currency columns
     $sheet->getStyle('E' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
@@ -439,6 +480,8 @@ foreach ($display_results as $data) {
     $sheet->getStyle('I' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('K' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('L' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('N' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('O' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     
     // Bold the NET columns
     $sheet->getStyle('J' . $row . ':L' . $row)->getFont()->setBold(true);
@@ -468,14 +511,18 @@ if (!empty($display_results)) {
     $sheet->setCellValue('J' . $row, number_format($total_volume));
     $sheet->setCellValue('K' . $row, $total_amount);
     $sheet->setCellValue('L' . $row, $total_charge);
+    $sheet->setCellValue('M' . $row, number_format($total_settlement_volume));
+    $sheet->setCellValue('N' . $row, $total_settlement_amount);
+    $sheet->setCellValue('O' . $row, $total_settlement_charge);
     
     // Apply data style to Total
-    $sheet->getStyle('A' . $row . ':L' . $row)->applyFromArray($dataStyle);
+    $sheet->getStyle('A' . $row . ':O' . $row)->applyFromArray($dataStyle);
     
     // Apply column-specific background colors to Total
     $sheet->getStyle('D' . $row . ':F' . $row)->applyFromArray($normalStyle);
     $sheet->getStyle('G' . $row . ':I' . $row)->applyFromArray($cancelledStyle);
     $sheet->getStyle('J' . $row . ':L' . $row)->applyFromArray($netStyle);
+    $sheet->getStyle('M' . $row . ':O' . $row)->applyFromArray($settlementStyle);
     
     // Apply number formatting for Total
     $sheet->getStyle('E' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
@@ -484,16 +531,18 @@ if (!empty($display_results)) {
     $sheet->getStyle('I' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('K' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('L' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('N' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('O' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     
     // Make Total row bold
-    $sheet->getStyle('C' . $row . ':L' . $row)->getFont()->setBold(true);
+    $sheet->getStyle('C' . $row . ':O' . $row)->getFont()->setBold(true);
     
     // Add double border on top of Total
-    $sheet->getStyle('A' . $row . ':L' . $row)->getBorders()->getTop()->setBorderStyle(Border::BORDER_DOUBLE);
+    $sheet->getStyle('A' . $row . ':O' . $row)->getBorders()->getTop()->setBorderStyle(Border::BORDER_DOUBLE);
 }
 
 // Auto-size columns for all columns
-foreach (range('A', 'L') as $column) {
+foreach (range('A', 'O') as $column) {
     $sheet->getColumnDimension($column)->setAutoSize(true);
 }
 
