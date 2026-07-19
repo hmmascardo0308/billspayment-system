@@ -312,6 +312,14 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
         .detail-row {
             font-size: 0.85rem;
         }
+
+        /* Settled row styling */
+        .table-settled {
+            background-color: #f0f9f0 !important;
+        }
+        .table-settled:hover {
+            background-color: #d4edda !important;
+        }
     </style>
 </head>
 <body>
@@ -374,7 +382,7 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                             <button type="submit" class="btn btn-danger w-100" id="searchBtn" <?php echo empty($_GET['partner_id_kpx']) ? 'disabled' : ''; ?>>
                                 <i class="fas fa-search"></i> Search
                             </button>
-                            <a href="adjustment-entry-per-branch.php" class="btn btn-secondary w-100 ms-2"><i class="fa-solid fa-rotate"></i>Clear</a>
+                            <a href="adjustment-entry-per-branch.php" class="btn btn-secondary w-100 ms-2"><i class="fa-solid fa-rotate"></i> Clear</a>
                         </div>
                     </div>
                 </form>
@@ -459,19 +467,36 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                             </thead>
                             <tbody>
                                 <?php 
-                                $hasCancelled = false;
+                                $hasDisabledTransactions = false;
                                 while ($row = mysqli_fetch_assoc($result)):
-                                    // Check if transaction is cancelled (status contains '*' or is 'cancelled')
+                                    // Check transaction statuses
                                     $status = $row['status'] ?? '';
+                                    $settleStatus = strtolower($row['settle_unsettle'] ?? '');
+                                    
+                                    // Check if cancelled
                                     $isCancelled = (strpos($status, '*') !== false) || 
                                                    (strtolower($status) === 'cancelled') ||
-                                                   (strtolower($row['settle_unsettle'] ?? '') === 'cancelled');
+                                                   ($settleStatus === 'cancelled');
                                     
+                                    // Check if settled
+                                    $isSettled = ($settleStatus === 'settled');
+                                    
+                                    // Combined condition - disable if cancelled OR settled
+                                    $disableAdjustment = $isCancelled || $isSettled;
+                                    
+                                    if ($disableAdjustment) {
+                                        $hasDisabledTransactions = true;
+                                    }
+                                    
+                                    // Determine row styling
+                                    $rowClass = '';
                                     if ($isCancelled) {
-                                        $hasCancelled = true;
+                                        $rowClass = 'table-danger';
+                                    } elseif ($isSettled) {
+                                        $rowClass = 'table-settled';
                                     }
                                 ?>
-                                    <tr class="<?php echo $isCancelled ? 'table-danger' : ''; ?>"
+                                    <tr class="<?php echo $rowClass; ?>"
                                         data-id="<?php echo $row['id']; ?>"
                                         title="Double-click to view full details">
                                         <td class="col-partner">
@@ -480,15 +505,18 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                                                 <?php if ($isCancelled): ?>
                                                     <span class="cancelled-indicator" title="This transaction is CANCELLED">*</span>
                                                 <?php endif; ?>
+                                                <?php if ($isSettled): ?>
+                                                    <span class="badge bg-success ms-1" style="font-size: 0.6rem;">SETTLED</span>
+                                                <?php endif; ?>
                                             </span>
                                         </td>
                                         <td class="col-ref">
-                                            <span class="fw-semibold <?php echo $isCancelled ? 'text-danger' : 'text-primary'; ?>">
+                                            <span class="fw-semibold <?php echo $isCancelled ? 'text-danger' : ($isSettled ? 'text-success' : 'text-primary'); ?>">
                                                 <?php echo htmlspecialchars($row['reference_no']); ?>
                                             </span>
                                         </td>
                                         <td class="col-amount">
-                                            <span class="amount <?php echo $isCancelled ? 'amount-negative' : 'amount-positive'; ?>">
+                                            <span class="amount <?php echo ($isCancelled || $isSettled) ? 'amount-negative' : 'amount-positive'; ?>">
                                                 ₱<?php echo number_format($row['amount_paid'] ?? 0, 2); ?>
                                             </span>
                                         </td>
@@ -504,7 +532,6 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                                         </td>
                                         <td class="col-status">
                                             <?php 
-                                            $settleStatus = strtolower($row['settle_unsettle'] ?? 'unsettled');
                                             $badgeClass = 'status-unsettled';
                                             if ($settleStatus === 'settled') {
                                                 $badgeClass = 'status-settled';
@@ -555,14 +582,15 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                                             <?php echo htmlspecialchars($row['report_date'] ?? '—'); ?>
                                         </td>
                                         <td class="col-action">
-                                            <?php if ($isCancelled): ?>
-                                                <!-- Disabled button for cancelled transactions -->
+                                            <?php if ($disableAdjustment): ?>
+                                                <!-- Disabled button for cancelled OR settled transactions -->
                                                 <button class="btn btn-sm btn-secondary settle-btn" disabled 
-                                                        title="This transaction is cancelled and cannot be adjusted">
-                                                    <i class="fas fa-ban"></i> Cancelled
+                                                        title="<?php echo $isSettled ? 'This transaction is SETTLED and cannot be adjusted' : 'This transaction is CANCELLED and cannot be adjusted'; ?>">
+                                                    <i class="fas fa-ban"></i> 
+                                                    <?php echo $isSettled ? 'Settled' : 'Cancelled'; ?>
                                                 </button>
                                             <?php else: ?>
-                                                <!-- Active button for non-cancelled transactions -->
+                                                <!-- Active button for non-cancelled and unsettled transactions -->
                                                 <button class="btn btn-sm btn-warning settle-btn" 
                                                         data-id="<?php echo $row['id']; ?>"
                                                         data-ref="<?php echo htmlspecialchars($row['reference_no']); ?>">
@@ -582,11 +610,12 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                                 &nbsp;|&nbsp;
                                 <i class="fas fa-mouse-pointer"></i> Double-click row to view full details
                             </div>
-                            <?php if ($hasCancelled): ?>
+                            <?php if ($hasDisabledTransactions): ?>
                                 <div class="legend-asterisk">
-                                    <i class="fas fa-asterisk"></i> 
-                                    <span class="text-danger fw-bold">*</span> 
-                                    <span class="text-muted">Adjustments not allowed for cancelled transactions.</span>
+                                    <i class="fas fa-info-circle"></i> 
+                                    <span class="text-success fw-bold">● Settled</span> &nbsp;
+                                    <span class="text-danger fw-bold">● Cancelled</span> &nbsp;
+                                    <span class="text-muted">Adjustments not allowed for settled or cancelled transactions.</span>
                                 </div>
                             <?php endif; ?>
                         </div>
@@ -656,11 +685,25 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                 $('#loadingOverlay').removeClass('active');
             });
 
-            // Settlement action - only for non-cancelled transactions
+            // Settlement action - only for non-cancelled AND non-settled transactions
             $('.settle-btn:not([disabled])').on('click', function(e) {
                 e.stopPropagation(); // prevent triggering row dblclick handler
                 const id = $(this).data('id');
                 const ref = $(this).data('ref');
+                
+                // Check if already settled - additional client-side check
+                const row = $(this).closest('tr');
+                const settleStatus = row.find('.col-status:first .status-badge').text().trim().toLowerCase();
+                
+                if (settleStatus === 'settled') {
+                    Swal.fire({
+                        icon: 'warning',
+                        title: 'Transaction Already Settled',
+                        text: 'This transaction has already been settled and cannot be adjusted.',
+                        confirmButtonColor: '#3085d6'
+                    });
+                    return;
+                }
                 
                 Swal.fire({
                     title: 'Reason For Adjustment',
@@ -668,7 +711,7 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                         <div class="text-start">
                             <p><strong>Reference:</strong> ${ref}</p>
                             <div class="mb-3">
-                                <label class="form-label fw-bold">Reason for Adjustment (Saving Disabled for now):</label>
+                                <label class="form-label fw-bold">Reason for Adjustment:</label>
                                 <select class="form-select" id="adjustmentReason">
                                     <option value="">Select reason...</option>
                                     <option value="late_posting">Late Posting</option>
@@ -755,12 +798,21 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                         const formatAmount = (val) => (val !== null && val !== '' && val !== undefined) ? '₱' + parseFloat(val).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—';
                         const formatDate = (val) => val ? new Date(val).toLocaleString() : '—';
                         const isCancelledRow = d.cancellation_date || (d.status && d.status.toLowerCase().includes('cancel'));
+                        const isSettledRow = d.settle_unsettle && d.settle_unsettle.toLowerCase() === 'settled';
+
+                        let titleText = 'Transaction Details';
+                        if (isCancelledRow) {
+                            titleText += ' <span class="text-danger">(CANCELLED)</span>';
+                        } else if (isSettledRow) {
+                            titleText += ' <span class="text-success">(SETTLED)</span>';
+                        }
 
                         const html = `
                             <div class="text-start" style="max-height: 60vh; overflow-y: auto;">
                                 <div class="detail-section-title">Transaction Info</div>
                                 <div class="row detail-row mb-2">
                                     <div class="col-6"><strong>Status:</strong> ${formatVal(d.status)}</div>
+                                    <div class="col-6"><strong>Settle/Unsettle:</strong> ${formatVal(d.settle_unsettle)}</div>
                                     <div class="col-6"><strong>Reference No:</strong> ${formatVal(d.reference_no)}</div>
                                     <div class="col-6"><strong>Control No:</strong> ${formatVal(d.control_no)}</div>
                                     <div class="col-6"><strong>Billing Invoice:</strong> ${formatVal(d.billing_invoice)}</div>
@@ -817,7 +869,6 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                                 <div class="row detail-row mb-2">
                                     <div class="col-6"><strong>Operator:</strong> ${formatVal(d.operator)}</div>
                                     <div class="col-6"><strong>2nd Approver:</strong> ${formatVal(d['2nd_approver'])}</div>
-                                    <div class="col-6"><strong>Settle/Unsettle:</strong> ${formatVal(d.settle_unsettle)}</div>
                                     <div class="col-6"><strong>Claim/Unclaim:</strong> ${formatVal(d.claim_unclaim)}</div>
                                     <div class="col-6"><strong>Hold Status:</strong> ${formatVal(d.hold_status)}</div>
                                     <div class="col-6"><strong>Post Transaction:</strong> ${formatVal(d.post_transaction)}</div>
@@ -840,7 +891,7 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                         `;
 
                         Swal.fire({
-                            title: `Transaction Details${isCancelledRow ? ' <span class="text-danger">(CANCELLED)</span>' : ''}`,
+                            title: titleText,
                             html: html,
                             width: '800px',
                             showCloseButton: true,
