@@ -1,0 +1,290 @@
+        /* Minimize layout shifts */
+        .main-container { min-height: 100vh; }
+        
+        /* Optimized filter form */
+        .filter-form { 
+            background: #f8f9fa; 
+            padding: 1.25rem; 
+            border-radius: 8px; 
+            margin-bottom: 1.5rem;
+            border: 1px solid #dee2e6;
+        }
+        
+        /* Table styling - improved for many columns */
+        .table {
+            font-size: 0.85rem;
+            margin-bottom: 0;
+            width: 100%;
+            min-width: 1200px;
+        }
+        .table thead th { 
+            background: #343a40; 
+            color: white;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            white-space: nowrap;
+            padding: 0.6rem 0.5rem;
+            font-size: 0.8rem;
+            text-align: center;
+            vertical-align: middle;
+        }
+        .table td { 
+            vertical-align: middle;
+            padding: 0.4rem 0.5rem;
+            text-align: center;
+        }
+        .table td:first-child,
+        .table th:first-child {
+            padding-left: 0.75rem;
+        }
+        .table td:last-child,
+        .table th:last-child {
+            padding-right: 0.75rem;
+        }
+        
+        /* Status badges */
+        .status-badge {
+            padding: 0.2rem 0.6rem;
+            border-radius: 20px;
+            display: inline-block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .status-settled { 
+            color: #198754; 
+            background: #d1e7dd;
+        }
+        .status-unsettled { 
+            color: #774100; 
+            background: #fff3cd;
+        }
+        .status-cancelled {
+            color: #dc3545;
+            background: #f8d7da;
+        }
+        
+        /* Cancelled indicator - asterisk */
+        .cancelled-indicator {
+            color: #dc3545;
+            font-weight: 900;
+            font-size: 1.2rem;
+            margin-left: 0.25rem;
+            animation: pulse-asterisk 1.5s ease-in-out infinite;
+        }
+        
+        @keyframes pulse-asterisk {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        
+        /* Empty states */
+        .no-results { 
+            text-align: center; 
+            padding: 3rem 1.5rem; 
+            color: #6c757d; 
+        }
+        .no-results i { 
+            font-size: 3rem; 
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+        
+        /* Reference input state */
+        .reference-disabled { 
+            opacity: 0.6; 
+            cursor: not-allowed;
+            background-color: #e9ecef;
+        }
+        
+        /* Button optimization */
+        .settle-btn {
+            white-space: nowrap;
+            padding: 0.2rem 0.6rem;
+            font-size: 0.75rem;
+        }
+        .settle-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .settle-btn .cancelled-tag {
+            font-size: 0.65rem;
+            opacity: 0.7;
+        }
+        
+        /* Responsive table wrapper */
+        .table-responsive {
+            overflow-x: auto;
+            /* -webkit-overflow-scrolling: touch; */
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+            position: relative;
+        }
+        
+        /* Select2 customization */
+        .select2-container--default .select2-selection--single {
+            height: 38px;
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+        }
+        .select2-container--default .select2-selection--single .select2-selection__rendered {
+            line-height: 36px;
+            padding-left: 12px;
+        }
+        .select2-container--default .select2-selection--single .select2-selection__arrow {
+            height: 36px;
+        }
+        
+        /* Page header */
+        .bp-section-header {
+            padding: 1rem 0 0.5rem 0;
+            margin-bottom: 1.5rem;
+            border-bottom: 2px solid #dee2e6;
+        }
+        .bp-section-title {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .bp-section-title i {
+            font-size: 1.75rem;
+            color: #0d6efd;
+        }
+        .bp-section-title h2 {
+            margin: 0;
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+        
+        /* Loading state */
+        .loading-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255,255,255,0.8);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+        }
+        .loading-overlay.active {
+            display: flex;
+        }
+        .spinner-border {
+            width: 3rem;
+            height: 3rem;
+        }
+        
+        /* Amount formatting */
+        .amount {
+            font-weight: 600;
+            font-family: 'Courier New', monospace;
+            white-space: nowrap;
+        }
+        .amount-positive {
+            color: #198754;
+        }
+        .amount-negative {
+            color: #dc3545;
+        }
+        
+        /* Text truncation for long content */
+        .text-truncate-custom {
+            max-width: 120px;
+            display: inline-block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            vertical-align: middle;
+        }
+        
+        /* Mobile optimizations */
+        @media (max-width: 768px) {
+            .filter-form {
+                padding: 1rem;
+            }
+            .bp-section-title h2 {
+                font-size: 1.25rem;
+            }
+            .table {
+                font-size: 0.75rem;
+            }
+            .table td, .table th {
+                padding: 0.3rem 0.4rem;
+            }
+            .settle-btn {
+                font-size: 0.7rem;
+                padding: 0.1rem 0.4rem;
+            }
+            .status-badge {
+                font-size: 0.65rem;
+                padding: 0.15rem 0.4rem;
+            }
+            .text-truncate-custom {
+                max-width: 80px;
+            }
+            .cancelled-indicator {
+                font-size: 1rem;
+            }
+        }
+        
+        @media print {
+            .filter-form, .settle-btn, .bp-section-header {
+                display: none !important;
+            }
+        }
+        
+        /* Column width hints for better display */
+        .col-partner { min-width: 150px; max-width: 200px; }
+        .col-ref { min-width: 120px; }
+        .col-amount { min-width: 100px; }
+        .col-status { min-width: 80px; }
+        .col-date { min-width: 100px; }
+        .col-action { min-width: 100px; }
+        .col-charge { min-width: 100px; }
+        .col-details { min-width: 150px; max-width: 200px; }
+        
+        /* Legend for asterisk */
+        .legend-asterisk {
+            font-size: 0.8rem;
+            color: #6c757d;
+            padding: 0.5rem 0;
+            border-top: 1px solid #dee2e6;
+            margin-top: 0.5rem;
+        }
+        .legend-asterisk i {
+            color: #dc3545;
+        }
+
+        /* Clickable row for details modal */
+        tbody tr {
+            cursor: pointer;
+        }
+        tbody tr:hover {
+            outline: 2px dashed #0d6efd44;
+            outline-offset: -2px;
+        }
+        .detail-section-title {
+            color: #dc3545;
+            border-bottom: 1px solid #dee2e6;
+            padding-bottom: 0.25rem;
+            margin-bottom: 0.5rem;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+            font-weight: 700;
+        }
+        .detail-row {
+            font-size: 0.85rem;
+        }
+
+        /* Settled row styling */
+        .table-settled {
+            background-color: #f0f9f0 !important;
+        }
+        .table-settled:hover {
+            background-color: #d4edda !important;
+        }

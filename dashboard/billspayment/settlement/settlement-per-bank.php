@@ -85,7 +85,7 @@ if (!empty($selected_date_from) && !empty($selected_date_to)) {
 
 // Function to get daily breakdown for a partner with status
 // Removed strict int type hint to handle null values gracefully
-function getDailyBreakdown( mysqli $conn, $partner_id, string $bank, string $settlement_type, string $date_from, string $date_to) {
+function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, string $settlement_type, string $date_from, string $date_to) {
     // Return empty array if partner_id is invalid
     if (empty($partner_id)) {
         return [];
@@ -114,7 +114,9 @@ function getDailyBreakdown( mysqli $conn, $partner_id, string $bank, string $set
         $types .= "s";
     }
     
-    // Date range filters - Use datetime only
+    // Date range filters - Use datetime only (NOT cancellation_date)
+    // This ensures all transactions within the date range are included
+    // regardless of cancellation status
     if (!empty($date_from) && !empty($date_to)) {
         $where_conditions[] = "bt.datetime BETWEEN ? AND ?";
         $params[] = $date_from . ' 00:00:00';
@@ -130,8 +132,9 @@ function getDailyBreakdown( mysqli $conn, $partner_id, string $bank, string $set
         $types .= "s";
     }
     
-    // ADD THIS: Filter by status - exclude cancelled/voided transactions
-    $where_conditions[] = "(bt.status IS NULL OR bt.status = '')";
+    // REMOVED: Status filter - do NOT exclude cancelled/voided transactions
+    // Settlement is based on datetime column, not cancellation status
+    // Transactions with cancellation_date should still be included
     
     // Build the daily breakdown query - include settle_unsettle status
     $sql = "SELECT 
@@ -315,194 +318,7 @@ if (isset($_SESSION['user_type'])) {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js"></script>
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="css/settlement_bank.css?v=<?= time(); ?>">
-    <style>
-        /* Additional styles for uncategorized partners */
-        .group-header-row.uncategorized {
-            background-color: #fff3cd !important;
-            border-left: 4px solid #ffc107;
-        }
-        .group-header-row.uncategorized td {
-            color: #856404 !important;
-        }
-        .group-header-row.uncategorized i {
-            color: #ffc107 !important;
-        }
-        .group-header-row.both {
-            background-color: #d1ecf1 !important;
-            border-left: 4px solid #17a2b8;
-        }
-        .group-header-row.both td {
-            color: #0c5460 !important;
-        }
-        .group-header-row.both i {
-            color: #17a2b8 !important;
-        }
-        .alert-warning-custom {
-            background-color: #fff3cd;
-            border: 1px solid #ffeaa7;
-            padding: 12px 20px;
-            margin-bottom: 15px;
-            border-radius: 4px;
-            color: #856404;
-        }
-        .alert-warning-custom i {
-            margin-right: 8px;
-        }
-        .alert-warning-custom strong {
-            color: #856404;
-        }
-        .alert-info-custom {
-            background-color: #d1ecf1;
-            border: 1px solid #bee5eb;
-            padding: 12px 20px;
-            margin-bottom: 15px;
-            border-radius: 4px;
-            color: #0c5460;
-        }
-        .alert-info-custom i {
-            margin-right: 8px;
-        }
-        .alert-info-custom strong {
-            color: #0c5460;
-        }
-        .both-subtotal {
-            background-color: #d1ecf1 !important;
-        }
-        .both-subtotal td {
-            color: #0c5460 !important;
-        }
-        .uncategorized-subtotal {
-            background-color: #fff3cd !important;
-        }
-        .uncategorized-subtotal td {
-            color: #856404 !important;
-        }
-        .btn-export.settle {
-            background-color: #28a745;
-            border: none;
-            padding: 8px 20px;
-            color: white;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: background-color 0.2s, transform 0.1s;
-        }
-        .btn-export.settle:hover {
-            background-color: #218838;
-        }
-        .btn-export.settle:active {
-            transform: scale(0.97);
-        }
-        .btn-export.settle i {
-            margin-right: 8px;
-        }
-        .excluded-row {
-            opacity: 0.6;
-            background-color: #f8f9fa !important;
-        }
-        .excluded-row td {
-            text-decoration: line-through;
-            color: #6c757d !important;
-        }
-        .excluded-row .settlement-amount {
-            color: #dc3545 !important;
-        }
-        .checkbox-controls {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            margin: 10px 0;
-        }
-        .checkbox-label {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            cursor: pointer;
-            font-size: 14px;
-            color: #495057;
-        }
-        .checkbox-label input[type="checkbox"] {
-            width: 16px;
-            height: 16px;
-            cursor: pointer;
-        }
-        .btn-recalculate {
-            padding: 6px 15px;
-            background-color: #880000;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 13px;
-            transition: background-color 0.2s;
-        }
-        .btn-recalculate:hover {
-            background-color: #ce1b1b;
-        }
-        .btn-recalculate i {
-            margin-right: 5px;
-        }
-        .checkbox-cell {
-            width: 40px;
-            text-align: center;
-        }
-        .checkbox-cell input[type="checkbox"] {
-            width: 16px;
-            height: 16px;
-            cursor: pointer;
-        }
-        .table-controls {
-            padding: 10px 0;
-            border-bottom: 1px solid #dee2e6;
-            margin-bottom: 10px;
-        }
-        #selectAllHeader {
-            width: 16px;
-            height: 16px;
-            cursor: pointer;
-        }
-        .daily-breakdown-table {
-            background-color: #fff;
-            border-radius: 4px;
-            overflow: hidden;
-        }
-        .daily-breakdown-table td, .daily-breakdown-table th {
-            border: 1px solid #dee2e6;
-        }
-        .settled-status {
-            color: #28a745;
-            font-weight: 600;
-        }
-        .unsettled-status {
-            color: #dc3545;
-            font-weight: 600;
-        }
-        .settled-row td {
-            background-color: #f0fff0 !important;
-        }
-        .unsettled-row td {
-            background-color: #fff0f0 !important;
-        }
-        .status-badge {
-            display: inline-block;
-            padding: 2px 10px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        .status-badge.settled {
-            background-color: #d4edda;
-            color: #155724;
-        }
-        .status-badge.unsettled {
-            background-color: #f8d7da;
-            color: #721c24;
-        }
-        .status-badge.partial {
-            background-color: #fff3cd;
-            color: #856404;
-        }
-    </style>
+
 </head>
 <body>
     <!-- Loading Modal - Visible by default -->
@@ -644,7 +460,8 @@ if (isset($_SESSION['user_type'])) {
         if ($has_filters) {
             try {
                 // Build the WHERE clause for the main query
-                // REMOVED the filter for settle_unsettle to show ALL records including settled ones
+                // REMOVED the status filter - show ALL transactions based on datetime
+                // regardless of cancellation status
                 $where_conditions = [];
                 $params = [];
                 $types = "";
@@ -670,7 +487,8 @@ if (isset($_SESSION['user_type'])) {
                     $types .= "s";
                 }
                 
-                // Date range filters - Use datetime only (not cancellation_date)
+                // Date range filters - Use datetime only (NOT cancellation_date)
+                // This ensures all transactions within the date range are included
                 if (!empty($selected_date_from) && !empty($selected_date_to)) {
                     // When both dates are provided
                     $where_conditions[] = "bt.datetime BETWEEN ? AND ?";
@@ -689,9 +507,9 @@ if (isset($_SESSION['user_type'])) {
                     $types .= "s";
                 }
                 
-                // REMOVED: Filter for settle_unsettle - show ALL records
-                // Only filter by status - exclude cancelled/voided transactions
-                $where_conditions[] = "(bt.status IS NULL OR bt.status = '')";
+                // REMOVED: Status filter - do NOT exclude cancelled/voided transactions
+                // Settlement is based on datetime column, not cancellation status
+                // Transactions with cancellation_date should still be included
                 
                 // Build the full query with JOIN to get all partner data from partner_masterfile
                 $sql = "SELECT 
