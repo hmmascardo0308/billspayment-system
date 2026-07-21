@@ -318,27 +318,251 @@ if (!empty($from_date) && !empty($to_date)) {
         }
     }
     
-    // NEW: Check if SOA already exists for partner and date range
-    if ($_GET['action'] == 'check_existing_soa') {
+    // NEW: Fetch partner details by name (for partners without ID)
+    if ($_GET['action'] == 'get_partner_by_name') {
         try {
-            $partner_id = mysqli_real_escape_string($conn, $_GET['partner_id']);
-            $from_date = mysqli_real_escape_string($conn, $_GET['from_date']);
-            $to_date = mysqli_real_escape_string($conn, $_GET['to_date']);
+            $partner_name = mysqli_real_escape_string($conn, $_GET['partner_name'] ?? '');
+            $from_date = mysqli_real_escape_string($conn, $_GET['from_date'] ?? '');
+            $to_date = mysqli_real_escape_string($conn, $_GET['to_date'] ?? '');
             
-            error_log("Checking existing SOA - Partner: $partner_id, From: $from_date, To: $to_date");
-            
-            // Get partner abbreviation
-            $abbrev_query = "SELECT abbreviation, partner_name FROM masterdata.partner_masterfile WHERE partner_id_kpx = '$partner_id'";
-            $abbrev_result = mysqli_query($conn, $abbrev_query);
-            
-            if (!$abbrev_result || mysqli_num_rows($abbrev_result) == 0) {
-                echo json_encode(['exists' => false, 'error' => 'Partner not found']);
+            if (empty($partner_name)) {
+                echo json_encode(['error' => 'Partner name is required']);
                 exit;
             }
             
-            $abbrev_data = mysqli_fetch_assoc($abbrev_result);
-            $abbreviation = trim($abbrev_data['abbreviation'] ?? '');
-            $partner_name = $abbrev_data['partner_name'] ?? '';
+            error_log("Fetching partner by name: " . $partner_name);
+            
+            // Query partner_masterfile by name
+            $partner_query = "SELECT partner_id_kpx, partner_name, soa_status, abbreviation, series_number, 
+                              partner_accName, partnerTin, address, businessStyle, serviceCharge, inc_exc, withheld 
+                              FROM masterdata.partner_masterfile 
+                              WHERE partner_name = '$partner_name'";
+            
+            error_log("Partner Query (by name): " . $partner_query);
+            
+            $partner_result = mysqli_query($conn, $partner_query);
+            
+            if (!$partner_result) {
+                error_log("MySQL Error (by name): " . mysqli_error($conn));
+                echo json_encode(['error' => 'Database error: ' . mysqli_error($conn)]);
+                exit;
+            }
+            
+            if (mysqli_num_rows($partner_result) == 0) {
+                error_log("Partner not found by name: " . $partner_name);
+                echo json_encode(['error' => 'Partner not found']);
+                exit;
+            }
+            
+            $partner_data = mysqli_fetch_assoc($partner_result);
+            error_log("Partner Data (by name): " . print_r($partner_data, true));
+            
+            $abbreviation = trim($partner_data['abbreviation'] ?? '');
+            
+            // Generate control number based on existing records in soa_transaction
+            $control_number = '';
+            $next_series = 1;
+            
+            if (!empty($abbreviation)) {
+                // Check if soa_transaction table exists
+                $check_soa_table = "SHOW TABLES LIKE 'soa_transaction'";
+                $check_soa_result = mysqli_query($conn, $check_soa_table);
+                $soa_table_exists = mysqli_num_rows($check_soa_result) > 0;
+                
+                if ($soa_table_exists) {
+                    // Check if reference_number column exists
+                    $check_ref_column = "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'reference_number'";
+                    $check_ref_result = mysqli_query($conn, $check_ref_column);
+                    $ref_column_exists = mysqli_num_rows($check_ref_result) > 0;
+                    
+                    if ($ref_column_exists) {
+                        // Query to get the latest reference number for this abbreviation
+                        // This will work regardless of whether partner has ID or not
+                        $ref_query = "SELECT reference_number 
+                                      FROM mldb.soa_transaction 
+                                      WHERE reference_number LIKE '$abbreviation-%' 
+                                      ORDER BY id DESC LIMIT 1";
+                        
+                        error_log("Reference Number Query (by name): " . $ref_query);
+                        
+                        $ref_result = mysqli_query($conn, $ref_query);
+                        
+                        if ($ref_result && mysqli_num_rows($ref_result) > 0) {
+                            $ref_data = mysqli_fetch_assoc($ref_result);
+                            $latest_ref = $ref_data['reference_number'];
+                            
+                            // Extract the series number from the reference number
+                            // Format: ABBREVIATION-NUMBER
+                            $parts = explode('-', $latest_ref);
+                            if (count($parts) == 2) {
+                                $latest_series = intval($parts[1]);
+                                $next_series = $latest_series + 1;
+                            }
+                            
+                            error_log("Latest reference: $latest_ref, Next series: $next_series");
+                        } else {
+                            // No existing reference number found, start from 1
+                            $next_series = 1;
+                            error_log("No existing reference number found for abbreviation: $abbreviation. Starting from 1.");
+                        }
+                    } else {
+                        error_log("Column 'reference_number' does not exist in soa_transaction table");
+                        // Fallback: use series_number from partner_masterfile
+                        $series_number = intval($partner_data['series_number'] ?? 0);
+                        $next_series = $series_number + 1;
+                    }
+                } else {
+                    error_log("Table 'soa_transaction' does not exist in database 'mldb'");
+                    // Fallback: use series_number from partner_masterfile
+                    $series_number = intval($partner_data['series_number'] ?? 0);
+                    $next_series = $series_number + 1;
+                }
+                
+                // Generate control number with the next series
+                $control_number = $abbreviation . '-' . $next_series;
+            } else {
+                // No abbreviation - use fallback with partner_name
+                $control_number = 'SC-' . md5($partner_name) . '-1';
+                error_log("Warning: Abbreviation missing for partner $partner_name. Using fallback control number: " . $control_number);
+            }
+            
+            // Determine inc_exc value
+            $inc_exc_value = trim($partner_data['inc_exc'] ?? '');
+            if (empty($inc_exc_value) && strtoupper(trim($partner_data['soa_status'] ?? '')) == 'WITH SOA') {
+                $inc_exc_value = 'NON-VAT';
+            }
+            
+            // Get transaction summary for date range
+            $trans_data = [];
+            if (!empty($from_date) && !empty($to_date)) {
+                // Validate dates
+                if (!strtotime($from_date) || !strtotime($to_date)) {
+                    echo json_encode(['error' => 'Invalid date format']);
+                    exit;
+                }
+                
+                // Check if billspayment_transaction table has partner_name column
+                $check_partner_name_col = "SHOW COLUMNS FROM mldb.billspayment_transaction LIKE 'partner_name'";
+                $check_col_result = mysqli_query($conn, $check_partner_name_col);
+                $partner_name_col_exists = mysqli_num_rows($check_col_result) > 0;
+                
+                if ($partner_name_col_exists) {
+                    // Query by partner_name instead of partner_id_kpx
+                    $trans_query = "SELECT 
+                                        SUM(amount_paid) AS total_amount_paid,
+                                        SUM(charge_to_partner + charge_to_customer) AS total_charge,
+                                        COUNT(*) AS transaction_count
+                                    FROM mldb.billspayment_transaction
+                                    WHERE partner_name = '$partner_name'
+                                    AND DATE(`datetime`) BETWEEN '$from_date' AND '$to_date'
+                                    AND (status is null or STATUS = '')";
+                    
+                    error_log("Transaction Query (by name): " . $trans_query);
+                    
+                    $trans_result = mysqli_query($conn, $trans_query);
+                    
+                    if (!$trans_result) {
+                        error_log("Transaction Query Error (by name): " . mysqli_error($conn));
+                        $trans_data = [
+                            'total_amount_paid' => 0,
+                            'total_charge' => 0,
+                            'transaction_count' => 0
+                        ];
+                    } else {
+                        $trans_data = mysqli_fetch_assoc($trans_result);
+                        error_log("Transaction Data (by name): " . print_r($trans_data, true));
+                    }
+                } else {
+                    // If partner_name column doesn't exist, try using partner_id_kpx
+                    // But since this partner has no ID, we can't query by it
+                    error_log("Warning: partner_name column not found in billspayment_transaction. Cannot fetch transactions for partner without ID.");
+                    $trans_data = [
+                        'total_amount_paid' => 0,
+                        'total_charge' => 0,
+                        'transaction_count' => 0
+                    ];
+                }
+            } else {
+                // No dates provided, return empty transaction data
+                $trans_data = [
+                    'total_amount_paid' => 0,
+                    'total_charge' => 0,
+                    'transaction_count' => 0
+                ];
+                error_log("No date range provided. Returning empty transaction data.");
+            }
+            
+            // Partner without ID cannot be 434 (hardcoded check)
+            $is_partner_434 = false;
+            $po_number = '';
+            $po_year_error = '';
+            
+            $response = array_merge($partner_data, [
+                'control_number' => $control_number,
+                'next_series' => $next_series,
+                'inc_exc_display' => $inc_exc_value,
+                'transaction_data' => $trans_data,
+                'is_partner_434' => $is_partner_434,
+                'po_number' => $po_number,
+                'po_year_error' => $po_year_error,
+                'from_date' => $from_date,
+                'to_date' => $to_date,
+                'has_partner_id' => false,
+                'debug_info' => [
+                    'partner_name' => $partner_name,
+                    'abbreviation' => $abbreviation,
+                    'next_series' => $next_series,
+                    'fetched_by' => 'name',
+                    'partner_name_col_exists' => isset($partner_name_col_exists) ? $partner_name_col_exists : false
+                ]
+            ]);
+            
+            error_log("Final Response (by name): " . json_encode($response));
+            
+            echo json_encode($response);
+            exit;
+            
+        } catch (Exception $e) {
+            error_log("Exception in get_partner_by_name: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
+            echo json_encode(['error' => 'An error occurred: ' . $e->getMessage()]);
+            exit;
+        }
+    }
+    
+    // NEW: Check if SOA already exists for partner and date range
+    if ($_GET['action'] == 'check_existing_soa') {
+        try {
+            $partner_id = mysqli_real_escape_string($conn, $_GET['partner_id'] ?? '');
+            $partner_name = mysqli_real_escape_string($conn, $_GET['partner_name'] ?? '');
+            $from_date = mysqli_real_escape_string($conn, $_GET['from_date'] ?? '');
+            $to_date = mysqli_real_escape_string($conn, $_GET['to_date'] ?? '');
+            
+            error_log("Checking existing SOA - Partner ID: $partner_id, Name: $partner_name, From: $from_date, To: $to_date");
+            
+            // Get partner abbreviation - try by ID first, then by name
+            $abbreviation = '';
+            $abbrev_data = null;
+            
+            // Try by ID first (if provided and not a no-id placeholder)
+            if (!empty($partner_id) && !str_starts_with($partner_id, 'no-id-')) {
+                $abbrev_query = "SELECT abbreviation, partner_name FROM masterdata.partner_masterfile WHERE partner_id_kpx = '$partner_id'";
+                $abbrev_result = mysqli_query($conn, $abbrev_query);
+                if ($abbrev_result && mysqli_num_rows($abbrev_result) > 0) {
+                    $abbrev_data = mysqli_fetch_assoc($abbrev_result);
+                    $abbreviation = trim($abbrev_data['abbreviation'] ?? '');
+                }
+            }
+            
+            // If not found by ID or no ID provided, try by name
+            if (empty($abbreviation) && !empty($partner_name)) {
+                $abbrev_query = "SELECT abbreviation, partner_name FROM masterdata.partner_masterfile WHERE partner_name = '$partner_name'";
+                $abbrev_result = mysqli_query($conn, $abbrev_query);
+                if ($abbrev_result && mysqli_num_rows($abbrev_result) > 0) {
+                    $abbrev_data = mysqli_fetch_assoc($abbrev_result);
+                    $abbreviation = trim($abbrev_data['abbreviation'] ?? '');
+                }
+            }
             
             if (empty($abbreviation)) {
                 echo json_encode(['exists' => false, 'error' => 'No abbreviation found for this partner']);
@@ -412,7 +636,7 @@ if (!empty($from_date) && !empty($to_date)) {
                     'partner_Name' => $existing_soa['partner_Name']
                 ]);
             } else {
-                error_log("No existing SOA found for partner $partner_id with abbreviation $abbreviation");
+                error_log("No existing SOA found for partner with abbreviation $abbreviation");
                 echo json_encode(['exists' => false]);
             }
             
@@ -586,16 +810,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
         $new_id = mysqli_insert_id($conn);
 
-        $update_series_query = "UPDATE masterdata.partner_masterfile 
-                                 SET series_number = $next_series_to_store 
-                                 WHERE partner_id_kpx = '$partner_id'";
-
-        if (!mysqli_query($conn, $update_series_query)) {
-            $series_error = mysqli_error($conn);
-            error_log("Save Invoice - Series Update Error: " . $series_error . " | Query: " . $update_series_query);
-            mysqli_rollback($conn);
-            echo json_encode(['success' => false, 'message' => 'Failed to update series number: ' . $series_error]);
-            exit;
+        // ---- Update series number - handle both ID-based and name-based partners ----
+        // Check if the partner_id is in 'no-id-' format (meaning no partner_id_kpx)
+        if (str_starts_with($partner_id, 'no-id-')) {
+            // For partners without ID, update by partner_name
+            // First, get the partner_name from the partner_acc_name field
+            $partner_name_clean = mysqli_real_escape_string($conn, $partner_acc_name);
+            $update_series_query = "UPDATE masterdata.partner_masterfile 
+                                     SET series_number = $next_series_to_store 
+                                     WHERE partner_accName = '$partner_name_clean'";
+            
+            error_log("Save Invoice - Series Update by Name: " . $update_series_query);
+            
+            if (!mysqli_query($conn, $update_series_query)) {
+                $series_error = mysqli_error($conn);
+                error_log("Save Invoice - Series Update Error (by name): " . $series_error);
+                // Don't rollback for name-based updates, just log the error
+                // The invoice is already saved
+            }
+        } else {
+            // Normal update by ID
+            $update_series_query = "UPDATE masterdata.partner_masterfile 
+                                     SET series_number = $next_series_to_store 
+                                     WHERE partner_id_kpx = '$partner_id'";
+            
+            error_log("Save Invoice - Series Update Query: " . $update_series_query);
+            
+            if (!mysqli_query($conn, $update_series_query)) {
+                $series_error = mysqli_error($conn);
+                error_log("Save Invoice - Series Update Error: " . $series_error);
+                mysqli_rollback($conn);
+                echo json_encode(['success' => false, 'message' => 'Failed to update series number: ' . $series_error]);
+                exit;
+            }
         }
 
         mysqli_commit($conn);
@@ -703,7 +950,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             <div class="bp-section-title">
                 <i class="fa-solid fa-file-invoice" aria-hidden="true"></i>
                 <div>
-                    <h2>Billing Invoice - Service Charge</h2> <!--  <span class="development-badge">DEV MODE</span> -->
+                    <h2>Billing Invoice - Service Charge <span class="manual-badge">MANUAL</span></h2>
                     <p class="bp-section-sub">Automated billing Invoice generation</p>
                 </div>
             </div>
@@ -969,6 +1216,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         // Holds the fully-computed invoice payload built by generateInvoicePreview(),
         // consumed by the Save Invoice button.
         let currentInvoiceData = null;
+
+        // Store partner name for later use (for partners without ID)
+        window._currentPartnerName = '';
 
         // Helper function to format numbers with commas
         function formatNumberWithCommas(number) {
@@ -1264,22 +1514,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 }
                 // Check if this partner has an ID or not
                 var hasId = selectedOption.data('has-id') === true || selectedOption.data('has-id') === 'true';
+                var partnerName = selectedOption.data('partner-name') || '';
+                var partnerAccName = selectedOption.data('partner-accname') || '';
+                
+                // Store the partner name for later use
+                window._currentPartnerName = partnerName;
+                
                 if (!hasId) {
-                    // For partners without ID, we need to handle differently
-                    // The value might be 'no-id-xxxxx' format
-                    var partnerName = selectedOption.data('partner-name') || '';
-                    var partnerAccName = selectedOption.data('partner-accname') || '';
-                    
-                    // For partners without ID, we can't use the standard fetch by ID
-                    // We need to fetch by name instead
-                    showAlert('This partner does not have a Partner ID. Please check the partner configuration.', 'warning');
-                    // Still try to fetch using the value if it's not in the 'no-id-' format
-                    if (partnerId && !partnerId.startsWith('no-id-')) {
-                        fetchPartnerDetails(partnerId);
-                    } else {
-                        // For no-id partners, we need a different approach - fallback to fetching by name
-                        fetchPartnerByName(partnerName);
-                    }
+                    // For partners without ID, we need to fetch by name
+                    showAlert('This partner does not have a Partner ID. Fetching by name.', 'info');
+                    fetchPartnerByName(partnerName);
                     return;
                 }
                 fetchPartnerDetails(partnerId);
@@ -1287,31 +1531,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 clearForm();
                 $('#dateRestrictionInfo').removeClass('active');
                 $('#soaExistsWarning').hide();
+                window._currentPartnerName = '';
                 updateCreateInvoiceButton(false);
             }
         });
         
         // NEW: Fetch partner by name for partners without ID
         function fetchPartnerByName(partnerName) {
-            // This would need a new backend endpoint to fetch by name
-            // For now, show a message and use the existing data from the option
-            showAlert('Partner without ID selected. Some features may be limited and may not pick up transactions.', 'warning');
+            const fromDate = $('#fromDate').val();
+            const toDate = $('#toDate').val();
             
-            // Populate fields from the selected option data
-            var selectedOption = $('#partnerSelect').find('option:selected');
-            var partnerAccName = selectedOption.data('partner-accname') || '';
-            var abbreviation = selectedOption.data('abbreviation') || '';
-            var serviceCharge = selectedOption.data('service-charge') || '';
-            
-            $('#partnerAccName').val(partnerAccName);
-            $('#partnerAbbreviation').val(abbreviation);
-            $('#serviceCharge').val(serviceCharge);
-            
-            // Try to generate a control number using abbreviation
-            if (abbreviation) {
-                var controlNumber = abbreviation + '-1'; // Start with 1 for no-ID partners
-                $('#controlNumber').val(controlNumber);
+            if (!fromDate || !toDate) {
+                hideLoadingModal();
+                showAlert('Please select transaction dates first.', 'warning');
+                return;
             }
+            
+            showLoadingModal('Fetching Data', 'Please wait while we retrieve partner details and transaction summary...');
+            
+            $.ajax({
+                url: window.location.href,
+                method: 'GET',
+                data: {
+                    action: 'get_partner_by_name',
+                    partner_name: partnerName,
+                    from_date: fromDate,
+                    to_date: toDate
+                },
+                success: function(response) {
+                    hideLoadingModal();
+                    try {
+                        if (typeof response === 'string') {
+                            response = JSON.parse(response);
+                        }
+                        if (response.error) {
+                            showAlert('Error: ' + response.error, 'error');
+                            return;
+                        }
+                        // Store the partner name for later use
+                        window._currentPartnerName = partnerName;
+                        populateForm(response);
+                        // Update date restriction info after populating form
+                        updateDateRestrictionInfo();
+                        // Validate dates again
+                        validateDateRange();
+                    } catch (e) {
+                        showAlert('Error parsing response. Please check the console for details.', 'error');
+                        console.error('Response:', response);
+                        console.error('Error:', e);
+                    }
+                },
+                error: function(xhr, status, error) {
+                    hideLoadingModal();
+                    let errorMsg = 'Error fetching partner details. ';
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response.error) {
+                            errorMsg += response.error;
+                        } else {
+                            errorMsg += 'Please try again.';
+                        }
+                    } catch (e) {
+                        errorMsg += 'Status: ' + status + ', Error: ' + error;
+                        console.error('Full error response:', xhr.responseText);
+                    }
+                    showAlert(errorMsg, 'error');
+                    console.error('AJAX Error Details:', {
+                        status: xhr.status,
+                        statusText: xhr.statusText,
+                        responseText: xhr.responseText,
+                        error: error,
+                        partnerName: partnerName
+                    });
+                }
+            });
         }
         
         // =============================================
@@ -1320,35 +1613,70 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         
         function checkExistingSOA(partnerId, fromDate, toDate) {
             return new Promise((resolve, reject) => {
-                // For partners without ID, skip the check or use a different approach
+                // For partners without ID, use partner_name
                 if (partnerId && partnerId.startsWith('no-id-')) {
-                    resolve({ exists: false });
-                    return;
-                }
-                
-                $.ajax({
-                    url: window.location.href,
-                    method: 'GET',
-                    data: {
-                        action: 'check_existing_soa',
-                        partner_id: partnerId,
-                        from_date: fromDate,
-                        to_date: toDate
-                    },
-                    success: function(response) {
-                        try {
-                            if (typeof response === 'string') {
-                                response = JSON.parse(response);
-                            }
-                            resolve(response);
-                        } catch (e) {
-                            reject(e);
-                        }
-                    },
-                    error: function(xhr, status, error) {
-                        reject(error);
+                    // Get the partner name from the stored value or from the selected option
+                    var partnerName = window._currentPartnerName || '';
+                    
+                    if (!partnerName) {
+                        var selectedOption = $('#partnerSelect').find('option:selected');
+                        partnerName = selectedOption.data('partner-name') || '';
                     }
-                });
+                    
+                    if (!partnerName) {
+                        resolve({ exists: false });
+                        return;
+                    }
+                    
+                    $.ajax({
+                        url: window.location.href,
+                        method: 'GET',
+                        data: {
+                            action: 'check_existing_soa',
+                            partner_name: partnerName,
+                            from_date: fromDate,
+                            to_date: toDate
+                        },
+                        success: function(response) {
+                            try {
+                                if (typeof response === 'string') {
+                                    response = JSON.parse(response);
+                                }
+                                resolve(response);
+                            } catch (e) {
+                                reject(e);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            reject(error);
+                        }
+                    });
+                } else {
+                    // Original logic for partners with ID
+                    $.ajax({
+                        url: window.location.href,
+                        method: 'GET',
+                        data: {
+                            action: 'check_existing_soa',
+                            partner_id: partnerId,
+                            from_date: fromDate,
+                            to_date: toDate
+                        },
+                        success: function(response) {
+                            try {
+                                if (typeof response === 'string') {
+                                    response = JSON.parse(response);
+                                }
+                                resolve(response);
+                            } catch (e) {
+                                reject(e);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            reject(error);
+                        }
+                    });
+                }
             });
         }
         
@@ -1388,10 +1716,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             
             // Check if this is a partner without ID
             if (partnerId.startsWith('no-id-')) {
-                showAlert('This partner does not have a Partner ID. Please configure the partner properly.', 'warning');
-                // Still try to fetch some data
                 var selectedOption = $('#partnerSelect').find('option:selected');
                 var partnerName = selectedOption.data('partner-name') || '';
+                window._currentPartnerName = partnerName;
                 fetchPartnerByName(partnerName);
                 return;
             }
@@ -1465,6 +1792,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                         if (partnerId.startsWith('no-id-')) {
                             var selectedOption = $('#partnerSelect').find('option:selected');
                             var partnerName = selectedOption.data('partner-name') || '';
+                            window._currentPartnerName = partnerName;
                             fetchPartnerByName(partnerName);
                             return;
                         }
@@ -1836,7 +2164,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             let serviceChargeAmount = parseFloat(transData.total_charge) || 0;
             $('#serviceChargeAmount').text('₱ ' + formatNumberWithCommas(serviceChargeAmount.toFixed(2)));
             
-            if (data.is_partner_434) {
+            // Check if this partner has an ID (from the response)
+            if (data.has_partner_id === false) {
+                // This is a partner without ID, check if they should have additional fields
+                // Partner 434 is hardcoded with ID '434', so partners without ID won't be 434
+                $('#additionalFields').removeClass('active');
+                $('#numberOfDays').val('');
+                $('#addAmount').val('500');
+                $('#poNumber').val('');
+                $('#poError').text('');
+                $('#poNumber').css('border-color', '');
+            } else if (data.is_partner_434) {
                 $('#additionalFields').addClass('active');
                 $('#poNumber').val(data.po_number || '');
                 if (data.po_number && data.po_number.length === 10 && /^\d{10}$/.test(data.po_number)) {
@@ -1899,6 +2237,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $('#fromDate, #toDate').css('border-color', '');
             $('#soaExistsWarning').hide();
             currentInvoiceData = null;
+            window._currentPartnerName = '';
             updateCreateInvoiceButton(false);
         }
         

@@ -190,7 +190,7 @@ $query = "SELECT
     -- NET values (datetime - cancellation)
     (COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) - 
      COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as total_volume,
-    (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) - 
+    (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) + 
      SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
     (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) - 
      SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge,

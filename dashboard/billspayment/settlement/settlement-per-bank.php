@@ -83,83 +83,140 @@ if (!empty($selected_date_from) && !empty($selected_date_to)) {
     $has_date_range = false;
 }
 
-// Function to get daily breakdown for a partner with status
-// Removed strict int type hint to handle null values gracefully
+// Function to get daily breakdown for a partner
+// MODIFIED: Separate logic for regular transactions and adjustments
 function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, string $settlement_type, string $date_from, string $date_to) {
     // Return empty array if partner_id is invalid
     if (empty($partner_id)) {
         return [];
     }
     
-    $where_conditions = [];
-    $params = [];
-    $types = "";
+    // Separate conditions for regular and adjustment
+    $where_conditions_regular = [];
+    $where_conditions_adjustment = [];
+    $params_regular = [];
+    $params_adjustment = [];
+    $types_regular = "";
+    $types_adjustment = "";
     
-    // Partner filter - required
-    $where_conditions[] = "bt.partner_id_kpx = ?";
-    $params[] = $partner_id;
-    $types .= "s";
+    // Partner filter - required for both
+    $where_conditions_regular[] = "bt.partner_id_kpx = ?";
+    $params_regular[] = $partner_id;
+    $types_regular .= "s";
+    
+    $where_conditions_adjustment[] = "bt.partner_id_kpx = ?";
+    $params_adjustment[] = $partner_id;
+    $types_adjustment .= "s";
     
     // Bank filter - join with partner_masterfile
     if (!empty($bank)) {
-        $where_conditions[] = "pm.bank = ?";
-        $params[] = $bank;
-        $types .= "s";
+        $where_conditions_regular[] = "pm.bank = ?";
+        $params_regular[] = $bank;
+        $types_regular .= "s";
+        
+        $where_conditions_adjustment[] = "pm.bank = ?";
+        $params_adjustment[] = $bank;
+        $types_adjustment .= "s";
     }
     
     // Settlement type filter - from partner_masterfile
     if (!empty($settlement_type)) {
-        $where_conditions[] = "pm.settled_online_check = ?";
-        $params[] = $settlement_type;
-        $types .= "s";
+        $where_conditions_regular[] = "pm.settled_online_check = ?";
+        $params_regular[] = $settlement_type;
+        $types_regular .= "s";
+        
+        $where_conditions_adjustment[] = "pm.settled_online_check = ?";
+        $params_adjustment[] = $settlement_type;
+        $types_adjustment .= "s";
     }
     
-    // Date range filters - Use datetime only (NOT cancellation_date)
-    // This ensures all transactions within the date range are included
-    // regardless of cancellation status
+    // Regular transactions: based on datetime AND NOT cancelled
     if (!empty($date_from) && !empty($date_to)) {
-        $where_conditions[] = "bt.datetime BETWEEN ? AND ?";
-        $params[] = $date_from . ' 00:00:00';
-        $params[] = $date_to . ' 23:59:59';
-        $types .= "ss";
+        $where_conditions_regular[] = "bt.datetime BETWEEN ? AND ?";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $params_regular[] = $date_to . ' 23:59:59';
+        $types_regular .= "ss";
     } elseif (!empty($date_from)) {
-        $where_conditions[] = "bt.datetime >= ?";
-        $params[] = $date_from . ' 00:00:00';
-        $types .= "s";
+        $where_conditions_regular[] = "bt.datetime >= ?";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $types_regular .= "s";
     } elseif (!empty($date_to)) {
-        $where_conditions[] = "bt.datetime <= ?";
-        $params[] = $date_to . ' 23:59:59';
-        $types .= "s";
+        $where_conditions_regular[] = "bt.datetime <= ?";
+        $params_regular[] = $date_to . ' 23:59:59';
+        $types_regular .= "s";
     }
     
-    // REMOVED: Status filter - do NOT exclude cancelled/voided transactions
-    // Settlement is based on datetime column, not cancellation status
-    // Transactions with cancellation_date should still be included
+    // Regular transactions: EXCLUDE cancelled/voided
+    $where_conditions_regular[] = "(bt.status IS NULL OR bt.status = '')";
     
-    // Build the daily breakdown query - include settle_unsettle status
+    // Adjustments: based on cancellation_date
+    if (!empty($date_from) && !empty($date_to)) {
+        $where_conditions_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
+        $params_adjustment[] = $date_from . ' 00:00:00';
+        $params_adjustment[] = $date_to . ' 23:59:59';
+        $types_adjustment .= "ss";
+    } elseif (!empty($date_from)) {
+        $where_conditions_adjustment[] = "bt.cancellation_date >= ?";
+        $params_adjustment[] = $date_from . ' 00:00:00';
+        $types_adjustment .= "s";
+    } elseif (!empty($date_to)) {
+        $where_conditions_adjustment[] = "bt.cancellation_date <= ?";
+        $params_adjustment[] = $date_to . ' 23:59:59';
+        $types_adjustment .= "s";
+    }
+    
+    // Adjustments: ONLY cancelled/voided
+    $where_conditions_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
+    
+    // Build the daily breakdown query using UNION ALL
     $sql = "SELECT 
-                DATE(bt.datetime) as transaction_date,
-                COUNT(*) as txn_count,
-                SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
-                (SUM(bt.charge_to_customer) + SUM(bt.charge_to_partner)) as total_charge,
-                SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment,
-                SUM(bt.amount_paid) + (SUM(bt.charge_to_customer) + SUM(bt.charge_to_partner)) as amount_for_settlement,
-                MAX(bt.settle_unsettle) as settle_status
-            FROM mldb.billspayment_transaction bt
-            LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx";
-    
-    if (!empty($where_conditions)) {
-        $sql .= " WHERE " . implode(" AND ", $where_conditions);
-    }
-    
-    $sql .= " GROUP BY DATE(bt.datetime)
-              ORDER BY transaction_date ASC";
+                transaction_date,
+                SUM(txn_count) as txn_count,
+                SUM(total_principal) as total_principal,
+                SUM(total_charge) as total_charge,
+                SUM(total_adjustment) as total_adjustment,
+                SUM(total_principal + total_charge + total_adjustment) as amount_for_settlement,
+                MAX(settle_status) as settle_status
+            FROM (
+                -- Regular transactions (not cancelled)
+                SELECT 
+                    DATE(bt.datetime) as transaction_date,
+                    COUNT(*) as txn_count,
+                    SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
+                    (SUM(bt.charge_to_customer) + SUM(bt.charge_to_partner)) as total_charge,
+                    0 as total_adjustment,
+                    MAX(bt.settle_unsettle) as settle_status
+                FROM mldb.billspayment_transaction bt
+                LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+                WHERE " . implode(" AND ", $where_conditions_regular) . "
+                GROUP BY DATE(bt.datetime)
+                
+                UNION ALL
+                
+                -- Adjustments (cancelled transactions)
+                SELECT 
+                    DATE(bt.cancellation_date) as transaction_date,
+                    0 as txn_count,
+                    0 as total_principal,
+                    0 as total_charge,
+                    SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment,
+                    '' as settle_status
+                FROM mldb.billspayment_transaction bt
+                LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+                WHERE " . implode(" AND ", $where_conditions_adjustment) . "
+                GROUP BY DATE(bt.cancellation_date)
+            ) combined
+            GROUP BY transaction_date
+            ORDER BY transaction_date ASC";
     
     // Execute with prepared statement
-    if (!empty($params)) {
+    $all_params = array_merge($params_regular, $params_adjustment);
+    $all_types = $types_regular . $types_adjustment;
+    
+    if (!empty($all_params)) {
         $stmt = $conn->prepare($sql);
         if ($stmt) {
-            $stmt->bind_param($types, ...$params);
+            $stmt->bind_param($all_types, ...$all_params);
             $stmt->execute();
             $result = $stmt->get_result();
             $data = [];
@@ -459,118 +516,292 @@ if (isset($_SESSION['user_type'])) {
         // Process the filters and display results
         if ($has_filters) {
             try {
-                // Build the WHERE clause for the main query
-                // REMOVED the status filter - show ALL transactions based on datetime
-                // regardless of cancellation status
-                $where_conditions = [];
-                $params = [];
-                $types = "";
+                // ============================================
+                // BUILD SEPARATE WHERE CONDITIONS FOR REGULAR AND ADJUSTMENT
+                // ============================================
+                $where_conditions_regular = [];
+                $where_conditions_adjustment = [];
+                $params_regular = [];
+                $params_adjustment = [];
+                $types_regular = "";
+                $types_adjustment = "";
                 
-                // Partner filter
+                // Partner filter - applies to both
                 if (!empty($selected_partner)) {
-                    $where_conditions[] = "bt.partner_id_kpx = ?";
-                    $params[] = $selected_partner;
-                    $types .= "s";
+                    $where_conditions_regular[] = "bt.partner_id_kpx = ?";
+                    $params_regular[] = $selected_partner;
+                    $types_regular .= "s";
+                    
+                    $where_conditions_adjustment[] = "bt.partner_id_kpx = ?";
+                    $params_adjustment[] = $selected_partner;
+                    $types_adjustment .= "s";
                 }
                 
-                // Bank filter - join with partner_masterfile
+                // Bank filter - applies to both
                 if (!empty($selected_bank)) {
-                    $where_conditions[] = "pm.bank = ?";
-                    $params[] = $selected_bank;
-                    $types .= "s";
+                    $where_conditions_regular[] = "pm.bank = ?";
+                    $params_regular[] = $selected_bank;
+                    $types_regular .= "s";
+                    
+                    $where_conditions_adjustment[] = "pm.bank = ?";
+                    $params_adjustment[] = $selected_bank;
+                    $types_adjustment .= "s";
                 }
                 
-                // Settlement type filter - from partner_masterfile
+                // Settlement type filter - applies to both
                 if (!empty($selected_settlement_type)) {
-                    $where_conditions[] = "pm.settled_online_check = ?";
-                    $params[] = $selected_settlement_type;
-                    $types .= "s";
+                    $where_conditions_regular[] = "pm.settled_online_check = ?";
+                    $params_regular[] = $selected_settlement_type;
+                    $types_regular .= "s";
+                    
+                    $where_conditions_adjustment[] = "pm.settled_online_check = ?";
+                    $params_adjustment[] = $selected_settlement_type;
+                    $types_adjustment .= "s";
                 }
                 
-                // Date range filters - Use datetime only (NOT cancellation_date)
-                // This ensures all transactions within the date range are included
+                // ============================================
+                // REGULAR TRANSACTIONS: Based on datetime, NOT cancelled
+                // ============================================
                 if (!empty($selected_date_from) && !empty($selected_date_to)) {
-                    // When both dates are provided
-                    $where_conditions[] = "bt.datetime BETWEEN ? AND ?";
-                    $params[] = $selected_date_from . ' 00:00:00';
-                    $params[] = $selected_date_to . ' 23:59:59';
-                    $types .= "ss";
+                    $where_conditions_regular[] = "bt.datetime BETWEEN ? AND ?";
+                    $params_regular[] = $selected_date_from . ' 00:00:00';
+                    $params_regular[] = $selected_date_to . ' 23:59:59';
+                    $types_regular .= "ss";
                 } elseif (!empty($selected_date_from)) {
-                    // Only from date provided
-                    $where_conditions[] = "bt.datetime >= ?";
-                    $params[] = $selected_date_from . ' 00:00:00';
-                    $types .= "s";
+                    $where_conditions_regular[] = "bt.datetime >= ?";
+                    $params_regular[] = $selected_date_from . ' 00:00:00';
+                    $types_regular .= "s";
                 } elseif (!empty($selected_date_to)) {
-                    // Only to date provided
-                    $where_conditions[] = "bt.datetime <= ?";
-                    $params[] = $selected_date_to . ' 23:59:59';
-                    $types .= "s";
+                    $where_conditions_regular[] = "bt.datetime <= ?";
+                    $params_regular[] = $selected_date_to . ' 23:59:59';
+                    $types_regular .= "s";
                 }
                 
-                // REMOVED: Status filter - do NOT exclude cancelled/voided transactions
-                // Settlement is based on datetime column, not cancellation status
-                // Transactions with cancellation_date should still be included
+                // Regular transactions: EXCLUDE cancelled/voided
+                $where_conditions_regular[] = "(bt.status IS NULL OR bt.status = '')";
                 
-                // Build the full query with JOIN to get all partner data from partner_masterfile
-                $sql = "SELECT 
-                            bt.partner_id_kpx,
-                            pm.partner_name,
-                            pm.partner_accName,
-                            pm.bank_accNumber,
-                            pm.bank,
-                            pm.settled_online_check as settlement_type,
-                            COALESCE(pm.charge_to, '') as charge_to,
-                            COALESCE(pm.serviceCharge, '') as serviceCharge,
-                            bt.settle_unsettle,
-                            COUNT(*) as txn_count,
-                            SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
-                            (SUM(bt.charge_to_customer) + SUM(bt.charge_to_partner)) as total_charge,
-                            SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment,
-                            SUM(bt.amount_paid) + (SUM(bt.charge_to_customer) + SUM(bt.charge_to_partner)) as amount_for_settlement,
-                            MAX(bt.datetime) as last_transaction_date,
-                            MIN(bt.datetime) as first_transaction_date,
-                            SUM(CASE WHEN bt.settle_unsettle = 'Settled' THEN 1 ELSE 0 END) as settled_count,
-                            SUM(CASE WHEN bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR bt.settle_unsettle != 'Settled' THEN 1 ELSE 0 END) as unsettled_count
-                        FROM mldb.billspayment_transaction bt
-                        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx";
-                
-                if (!empty($where_conditions)) {
-                    $sql .= " WHERE " . implode(" AND ", $where_conditions);
+                // ============================================
+                // ADJUSTMENTS: Based on cancellation_date, ONLY cancelled
+                // ============================================
+                if (!empty($selected_date_from) && !empty($selected_date_to)) {
+                    $where_conditions_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
+                    $params_adjustment[] = $selected_date_from . ' 00:00:00';
+                    $params_adjustment[] = $selected_date_to . ' 23:59:59';
+                    $types_adjustment .= "ss";
+                } elseif (!empty($selected_date_from)) {
+                    $where_conditions_adjustment[] = "bt.cancellation_date >= ?";
+                    $params_adjustment[] = $selected_date_from . ' 00:00:00';
+                    $types_adjustment .= "s";
+                } elseif (!empty($selected_date_to)) {
+                    $where_conditions_adjustment[] = "bt.cancellation_date <= ?";
+                    $params_adjustment[] = $selected_date_to . ' 23:59:59';
+                    $types_adjustment .= "s";
                 }
                 
-                $sql .= " GROUP BY bt.partner_id_kpx, pm.partner_name, pm.partner_accName, pm.bank_accNumber, pm.bank, pm.settled_online_check, pm.charge_to, pm.serviceCharge, bt.settle_unsettle 
-                          ORDER BY 
-                            CASE 
-                                WHEN pm.charge_to = 'CUSTOMER' AND pm.serviceCharge = 'DAILY' THEN 1
-                                WHEN pm.charge_to = 'CUSTOMER' AND pm.serviceCharge = 'WEEKLY' THEN 2
-                                WHEN pm.charge_to = 'PARTNER' AND pm.serviceCharge = 'DAILY' THEN 3
-                                WHEN pm.charge_to = 'PARTNER' AND pm.serviceCharge = 'WEEKLY' THEN 4
-                                WHEN pm.charge_to = 'PARTNER' AND pm.serviceCharge = 'SEMI-MONTHLY' THEN 5
-                                WHEN pm.charge_to = 'PARTNER' AND pm.serviceCharge = 'MONTHLY' THEN 6
-                                WHEN pm.charge_to = 'BOTH' AND pm.serviceCharge = 'DAILY' THEN 7
-                                WHEN pm.charge_to = 'BOTH' AND pm.serviceCharge = 'WEEKLY' THEN 8
-                                WHEN pm.charge_to = 'BOTH' AND pm.serviceCharge = 'MONTHLY' THEN 9
-                                WHEN pm.charge_to IS NULL OR pm.charge_to = '' THEN 10
-                                ELSE 11
-                            END,
-                            pm.partner_name";
+                // Adjustments: ONLY cancelled/voided
+                $where_conditions_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
                 
-                // Execute with prepared statement
-                if (!empty($params)) {
-                    $stmt = $conn->prepare($sql);
+                // ============================================
+                // QUERY 1: Regular transactions (not cancelled)
+                // ============================================
+                $regular_sql = "SELECT 
+                    bt.partner_id_kpx,
+                    pm.partner_name,
+                    pm.partner_accName,
+                    pm.bank_accNumber,
+                    pm.bank,
+                    pm.settled_online_check as settlement_type,
+                    COALESCE(pm.charge_to, '') as charge_to,
+                    COALESCE(pm.serviceCharge, '') as serviceCharge,
+                    COUNT(*) as txn_count,
+                    SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
+                    (SUM(bt.charge_to_customer) + SUM(bt.charge_to_partner)) as total_charge,
+                    SUM(CASE WHEN bt.settle_unsettle = 'Settled' THEN 1 ELSE 0 END) as settled_count,
+                    SUM(CASE WHEN bt.settle_unsettle IS NULL 
+                              OR bt.settle_unsettle = '' 
+                              OR bt.settle_unsettle != 'Settled' 
+                         THEN 1 ELSE 0 END) as unsettled_count,
+                    MAX(bt.datetime) as last_transaction_date,
+                    MIN(bt.datetime) as first_transaction_date
+                FROM mldb.billspayment_transaction bt
+                LEFT JOIN masterdata.partner_masterfile pm 
+                    ON bt.partner_id_kpx = pm.partner_id_kpx
+                WHERE " . implode(" AND ", $where_conditions_regular) . "
+                GROUP BY bt.partner_id_kpx, 
+                         pm.partner_name, 
+                         pm.partner_accName, 
+                         pm.bank_accNumber, 
+                         pm.bank, 
+                         pm.settled_online_check, 
+                         pm.charge_to, 
+                         pm.serviceCharge";
+                
+                // ============================================
+                // QUERY 2: Adjustments (cancelled transactions)
+                // ============================================
+                $adjustment_sql = "SELECT 
+                                        bt.partner_id_kpx,
+                                        SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment
+                                    FROM mldb.billspayment_transaction bt
+                                    LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+                                    WHERE " . implode(" AND ", $where_conditions_adjustment) . "
+                                    GROUP BY bt.partner_id_kpx";
+                
+                // ============================================
+                // EXECUTE QUERIES
+                // ============================================
+                
+                // Execute regular query
+                $regular_result = null;
+                if (!empty($params_regular)) {
+                    $stmt = $conn->prepare($regular_sql);
                     if ($stmt) {
-                        $stmt->bind_param($types, ...$params);
+                        $stmt->bind_param($types_regular, ...$params_regular);
                         $stmt->execute();
-                        $result = $stmt->get_result();
+                        $regular_result = $stmt->get_result();
                     } else {
-                        error_log("Settlement - Prepare failed: " . $conn->error);
-                        $result = false;
+                        error_log("Settlement - Regular query prepare failed: " . $conn->error);
+                        $regular_result = false;
                     }
                 } else {
-                    $result = $conn->query($sql);
+                    $regular_result = $conn->query($regular_sql);
                 }
                 
-                if ($result && $result->num_rows > 0) {
+                // Execute adjustment query
+                $adjustment_result = null;
+                if (!empty($params_adjustment)) {
+                    $stmt = $conn->prepare($adjustment_sql);
+                    if ($stmt) {
+                        $stmt->bind_param($types_adjustment, ...$params_adjustment);
+                        $stmt->execute();
+                        $adjustment_result = $stmt->get_result();
+                    } else {
+                        error_log("Settlement - Adjustment query prepare failed: " . $conn->error);
+                        $adjustment_result = false;
+                    }
+                } else {
+                    $adjustment_result = $conn->query($adjustment_sql);
+                }
+                
+                // ============================================
+                // COMBINE RESULTS IN PHP
+                // ============================================
+                $combined_data = [];
+                
+                if ($regular_result && $regular_result->num_rows > 0) {
+                    while ($row = $regular_result->fetch_assoc()) {
+                        $partner_id = $row['partner_id_kpx'];
+                        $combined_data[$partner_id] = [
+                            'partner_id_kpx' => $partner_id,
+                            'partner_name' => $row['partner_name'] ?? $partner_id,
+                            'partner_accName' => $row['partner_accName'] ?? 'N/A',
+                            'bank_accNumber' => $row['bank_accNumber'] ?? 'N/A',
+                            'bank' => $row['bank'] ?? '',
+                            'settlement_type' => $row['settlement_type'] ?? '',
+                            'charge_to' => $row['charge_to'] ?? '',
+                            'serviceCharge' => $row['serviceCharge'] ?? '',
+                            'settle_unsettle' => $row['settle_unsettle'] ?? '',
+                            'txn_count' => (int)($row['txn_count'] ?? 0),
+                            'total_principal' => (float)($row['total_principal'] ?? 0),
+                            'total_charge' => (float)($row['total_charge'] ?? 0),
+                            'total_adjustment' => 0, // Will be updated from adjustment query
+                            'settled_count' => (int)($row['settled_count'] ?? 0),
+                            'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
+                            'last_transaction_date' => $row['last_transaction_date'] ?? null,
+                            'first_transaction_date' => $row['first_transaction_date'] ?? null
+                        ];
+                    }
+                }
+                
+                if ($adjustment_result && $adjustment_result->num_rows > 0) {
+                    while ($row = $adjustment_result->fetch_assoc()) {
+                        $partner_id = $row['partner_id_kpx'];
+                        if (isset($combined_data[$partner_id])) {
+                            $combined_data[$partner_id]['total_adjustment'] = (float)($row['total_adjustment'] ?? 0);
+                        } else {
+                            // Partner has only adjustments, no regular transactions
+                            // Fetch partner details separately
+                            $partner_details_sql = "SELECT 
+                                                        partner_name,
+                                                        partner_accName,
+                                                        bank_accNumber,
+                                                        bank,
+                                                        settled_online_check as settlement_type,
+                                                        COALESCE(charge_to, '') as charge_to,
+                                                        COALESCE(serviceCharge, '') as serviceCharge
+                                                    FROM masterdata.partner_masterfile 
+                                                    WHERE partner_id_kpx = ?";
+                            $stmt = $conn->prepare($partner_details_sql);
+                            if ($stmt) {
+                                $stmt->bind_param("s", $partner_id);
+                                $stmt->execute();
+                                $details_result = $stmt->get_result();
+                                if ($details_result && $details_result->num_rows > 0) {
+                                    $details = $details_result->fetch_assoc();
+                                    $combined_data[$partner_id] = [
+                                        'partner_id_kpx' => $partner_id,
+                                        'partner_name' => $details['partner_name'] ?? $partner_id,
+                                        'partner_accName' => $details['partner_accName'] ?? 'N/A',
+                                        'bank_accNumber' => $details['bank_accNumber'] ?? 'N/A',
+                                        'bank' => $details['bank'] ?? '',
+                                        'settlement_type' => $details['settlement_type'] ?? '',
+                                        'charge_to' => $details['charge_to'] ?? '',
+                                        'serviceCharge' => $details['serviceCharge'] ?? '',
+                                        'settle_unsettle' => '',
+                                        'txn_count' => 0,
+                                        'total_principal' => 0,
+                                        'total_charge' => 0,
+                                        'total_adjustment' => (float)($row['total_adjustment'] ?? 0),
+                                        'settled_count' => 0,
+                                        'unsettled_count' => 0,
+                                        'last_transaction_date' => null,
+                                        'first_transaction_date' => null
+                                    ];
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // ============================================
+                // PROCESS COMBINED DATA
+                // ============================================
+                if (!empty($combined_data)) {
+                    // Convert to array for processing
+                    $data_array = array_values($combined_data);
+                    
+                    // Sort by charge_to and serviceCharge
+                    usort($data_array, function($a, $b) {
+                        $order = [
+                            'CUSTOMER_DAILY' => 1,
+                            'CUSTOMER_WEEKLY' => 2,
+                            'PARTNER_DAILY' => 3,
+                            'PARTNER_WEEKLY' => 4,
+                            'PARTNER_SEMI-MONTHLY' => 5,
+                            'PARTNER_MONTHLY' => 6,
+                            'BOTH_DAILY' => 7,
+                            'BOTH_WEEKLY' => 8,
+                            'BOTH_MONTHLY' => 9,
+                            'UNCATEGORIZED' => 10
+                        ];
+                        
+                        $charge_to = strtoupper(trim($a['charge_to'] ?? ''));
+                        $serviceCharge = strtoupper(trim($a['serviceCharge'] ?? ''));
+                        $key_a = $charge_to . '_' . $serviceCharge;
+                        
+                        $charge_to_b = strtoupper(trim($b['charge_to'] ?? ''));
+                        $serviceCharge_b = strtoupper(trim($b['serviceCharge'] ?? ''));
+                        $key_b = $charge_to_b . '_' . $serviceCharge_b;
+                        
+                        $order_a = $order[$key_a] ?? 11;
+                        $order_b = $order[$key_b] ?? 11;
+                        
+                        if ($order_a == $order_b) {
+                            return strcmp($a['partner_name'] ?? '', $b['partner_name'] ?? '');
+                        }
+                        return $order_a - $order_b;
+                    });
+                    
                     // Initialize arrays for grouping
                     $groups = [
                         'CHARGE BY CUSTOMER DAILY' => [
@@ -646,16 +877,14 @@ if (isset($_SESSION['user_type'])) {
                     // Pre-fetch daily breakdown data for all partners (only if date range is selected AND dates are different)
                     $daily_breakdown_cache = [];
                     if ($has_date_range) {
-                        // First pass: collect all valid partner IDs
+                        // Collect all valid partner IDs from combined data
                         $valid_partners = [];
-                        while ($row = $result->fetch_assoc()) {
+                        foreach ($data_array as $row) {
                             $partner_id = $row['partner_id_kpx'];
-                            if (!empty($partner_id) && is_numeric($partner_id)) {
+                            if (!empty($partner_id)) {
                                 $valid_partners[] = $partner_id;
                             }
                         }
-                        // Reset the result pointer
-                        $result->data_seek(0);
                         
                         // Now fetch daily breakdown for each valid partner
                         foreach ($valid_partners as $partner_id) {
@@ -671,11 +900,9 @@ if (isset($_SESSION['user_type'])) {
                                 $daily_breakdown_cache[$partner_id] = $daily_data;
                             }
                         }
-                        // Reset the result pointer again for the main display
-                        $result->data_seek(0);
                     }
                     
-                    while ($row = $result->fetch_assoc()) {
+                    foreach ($data_array as $row) {
                         $charge_to = strtoupper(trim($row['charge_to'] ?? ''));
                         $serviceCharge = strtoupper(trim($row['serviceCharge'] ?? ''));
                         
@@ -726,7 +953,7 @@ if (isset($_SESSION['user_type'])) {
                         $principal = (float)($row['total_principal'] ?? 0);
                         $charge = (float)($row['total_charge'] ?? 0);
                         $adjustment = (float)($row['total_adjustment'] ?? 0);
-                        $settlement_amount = (float)($row['amount_for_settlement'] ?? 0);
+                        $settlement_amount = $principal + $charge + $adjustment;
                         $settled_count = (int)($row['settled_count'] ?? 0);
                         $unsettled_count = (int)($row['unsettled_count'] ?? 0);
                         $settle_status = $row['settle_unsettle'] ?? '';
@@ -978,7 +1205,7 @@ if (isset($_SESSION['user_type'])) {
                                                     <?php elseif ($is_partial): ?>
                                                         <i class="fas fa-clock"></i> Partial
                                                         <span style="font-size: 10px; display: block; color: #666;">
-                                                            <?php echo $row_data['settled_count']; ?> settled / <?php echo $row_data['unsettled_count']; ?> unsettled
+                                                            <?php echo $row_data['settled_count']; ?> settled and <?php echo $row_data['unsettled_count']; ?> unsettled
                                                         </span>
                                                     <?php else: ?>
                                                         <i class="fas fa-clock"></i> Unsettled
