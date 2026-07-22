@@ -91,3 +91,29 @@
     transform: translateY(-1px);
 }
 .partner-list .partner-item:focus-visible { outline: 3px solid rgba(220,38,38,0.12); outline-offset: 2px; }
+.partner-list .partner-item[hidden] { display: none; }
+
+.partner-search-wrap {
+    position: sticky;
+    top: -10px;
+    z-index: 1;
+    margin: -10px -10px 6px;
+    padding: 10px;
+    background: #fff;
+    border-bottom: 1px solid #e5e7eb;
+}
+.partner-search {
+    width: 100%;
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 7px;
+    background: #fff;
+    color: #111827;
+    font: inherit;
+    font-size: 13px;
+}
+.partner-search:focus {
+    outline: 3px solid rgba(220, 38, 38, 0.12);
+    border-color: #ef4444;
+}

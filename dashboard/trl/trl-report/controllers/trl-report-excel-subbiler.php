@@ -21,17 +21,25 @@ if (!function_exists('has_any_permission') || !has_any_permission(['TRL Report',
     exit('Forbidden');
 }
 
-$partnerId = trim((string) ($_GET['partner_id'] ?? ''));
-if ($partnerId === '') {
+$partnerKey = trim((string) ($_GET['partner_id'] ?? ''));
+if ($partnerKey === '') {
     http_response_code(400);
     exit('Missing partner_id');
 }
 
+$isPartnerMasterfile = strpos($partnerKey, 'masterfile:') === 0 || strpos($partnerKey, 'directbiller:') === 0;
+$partnerId = preg_replace('/^(masterfile|directbiller|subbiller):/', '', $partnerKey);
+$partnerTable = $isPartnerMasterfile ? 'masterdata.partner_masterfile' : 'masterdata.subbiller';
+$partnerIdExpression = $isPartnerMasterfile
+    ? "CASE WHEN COALESCE(TRIM(partner_id_kpx), '') <> '' THEN CONVERT(TRIM(partner_id_kpx) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ELSE CONVERT(TRIM(COALESCE(partner_id, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci END"
+    : "TRIM(COALESCE(partner_id_kpx, ''))";
+$partnerIdSExpression = "CASE WHEN COALESCE(TRIM(s.partner_id_kpx), '') <> '' THEN CONVERT(TRIM(s.partner_id_kpx) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ELSE CONVERT(TRIM(COALESCE(s.partner_id, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci END";
+
 $partnerName = '';
 $partnerStmt = $conn->prepare(
     "SELECT TRIM(COALESCE(partner_name, '')) AS partner_name
-     FROM mldb.subbiller
-     WHERE TRIM(COALESCE(partner_id_kpx, '')) = ?
+     FROM {$partnerTable}
+     WHERE {$partnerIdExpression} = ?
        AND TRIM(COALESCE(partner_name, '')) <> ''
      LIMIT 1"
 );
@@ -102,7 +110,19 @@ foreach ($selected as $s) {
 
 $inList = "'" . implode("','", $placeholders) . "'";
 
-$mapSql = "SELECT TRIM(COALESCE(sub_billers_id, '')) AS id, COALESCE(NULLIF(TRIM(sub_billers_name), ''), 'UNKNOWN BILLER') AS name FROM mldb.subbiller WHERE TRIM(COALESCE(partner_id_kpx, '')) = ? AND sub_billers_id IN ($inList) ORDER BY sub_billers_name ASC";
+$mapSql = $isPartnerMasterfile
+    ? "SELECT " . $partnerIdExpression . " AS id,
+              COALESCE(NULLIF(TRIM(partner_name), ''), 'UNKNOWN BILLER') AS name
+       FROM masterdata.partner_masterfile
+       WHERE " . $partnerIdExpression . " = CONVERT(? USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+         AND " . $partnerIdExpression . " IN ($inList)
+       ORDER BY partner_name ASC"
+    : "SELECT TRIM(COALESCE(sub_billers_id, '')) AS id,
+              COALESCE(NULLIF(TRIM(sub_billers_name), ''), 'UNKNOWN BILLER') AS name
+       FROM masterdata.subbiller
+       WHERE TRIM(COALESCE(partner_id_kpx, '')) = ?
+         AND sub_billers_id IN ($inList)
+       ORDER BY sub_billers_name ASC";
 $mapStmt = $conn->prepare($mapSql);
 if ($mapStmt) {
     $mapStmt->bind_param('s', $partnerId);
@@ -122,15 +142,25 @@ if ($includeSummary) {
     $totalsByYear = [];
     $grandTotal = 0.0;
 
+    $summaryJoin = $isPartnerMasterfile
+        ? "INNER JOIN masterdata.partner_masterfile s
+            ON CONVERT(TRIM(CAST(t.wrong_biller_id AS CHAR)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = " . $partnerIdSExpression . "
+            OR (TRIM(COALESCE(t.biller_name, '')) <> '' AND CONVERT(UPPER(TRIM(t.biller_name)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = CONVERT(UPPER(TRIM(s.partner_name)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci)"
+        : "INNER JOIN masterdata.subbiller s ON BINARY TRIM(CAST(t.wrong_biller_id AS CHAR)) = BINARY TRIM(CAST(s.sub_billers_id AS CHAR))";
+    $summaryName = $isPartnerMasterfile ? 's.partner_name' : 's.sub_billers_name';
+    $summaryId = $isPartnerMasterfile ? $partnerIdSExpression : 's.sub_billers_id';
+    $summaryPartnerId = $isPartnerMasterfile
+        ? $partnerIdSExpression
+        : 's.partner_id_kpx';
     $summarySql = "
-        SELECT COALESCE(NULLIF(TRIM(s.sub_billers_name), ''), 'UNKNOWN BILLER') AS sub_biller_name, YEAR(t.transfer_datetime) AS report_year, SUM(COALESCE(t.amount,0)) AS total_amount
+        SELECT COALESCE(NULLIF(TRIM({$summaryName}), ''), 'UNKNOWN BILLER') AS sub_biller_name, YEAR(t.transfer_datetime) AS report_year, SUM(COALESCE(t.amount,0)) AS total_amount
         FROM mldb.trl t
-        INNER JOIN mldb.subbiller s ON CAST(t.wrong_biller_id AS CHAR) = CAST(s.sub_billers_id AS CHAR)
-        WHERE s.partner_id_kpx = ?
+        {$summaryJoin}
+        WHERE {$summaryPartnerId} = ?
           AND t.transfer_datetime IS NOT NULL
           AND t.status IS NULL
-          AND s.sub_billers_id IN ($inList)
-        GROUP BY COALESCE(NULLIF(TRIM(s.sub_billers_name), ''), 'UNKNOWN BILLER'), YEAR(t.transfer_datetime)
+          AND {$summaryId} IN ($inList)
+        GROUP BY COALESCE(NULLIF(TRIM({$summaryName}), ''), 'UNKNOWN BILLER'), YEAR(t.transfer_datetime)
         ORDER BY sub_biller_name ASC, report_year ASC
     ";
 
@@ -160,7 +190,7 @@ if ($includeSummary) {
 
     $sheet = $spreadsheet->getActiveSheet();
     $sheet->setTitle('SUMMARY');
-    $firstHeader = strtoupper((string)$partnerName) . "\nSUB BILLERS";
+    $firstHeader = strtoupper((string)$partnerName) . "\n" . ($isPartnerMasterfile ? 'BILLER' : 'SUB BILLERS');
     $summaryHeaders = [$firstHeader];
     foreach ($yearColumns as $y) $summaryHeaders[] = (string)$y;
     $summaryHeaders[] = 'TOTAL AMOUNT';
@@ -218,7 +248,11 @@ if ($includeSummary) {
 
 $dynHeaders = ['TRL NO.','TRANS. DATE/TIME','REF. NO.','WRONG BILLER ID','BILLER NAME','ACCOUNT NO.','NAME','PAYMENT BRANCH ID','PAYMENT BRANCH','AMOUNT','TYPE OF REQUEST','CORRECT BILLER ID','CORRECT BILLER NAME','WRONG AMOUNT','CORRECT AMOUNT','DIFFERENCE','REASON'];
 
-$dynSql = "SELECT t.trl_no, t.transfer_datetime, t.ref_no, t.wrong_biller_id, t.biller_name, t.account_no, t.name, t.payment_branch_id, t.amount, t.type_of_request, t.reason, wb.correct_biller_id, wb.correct_biller_name, oa.wrong_amount AS oa_wrong_amount, oa.correct_amount AS oa_correct_amount, oa.difference AS oa_difference, ct.wrong_amount AS ct_wrong_amount, ct.correct_amount AS ct_correct_amount FROM mldb.trl t LEFT JOIN mldb.trl_wrongbiller wb ON wb.trl_no = t.trl_no LEFT JOIN mldb.trl_overstatedamount oa ON oa.trl_no = t.trl_no LEFT JOIN mldb.trl_cancelledtransaction ct ON ct.trl_no = t.trl_no WHERE CAST(t.wrong_biller_id AS CHAR) = CAST(? AS CHAR) AND t.status IS NULL ORDER BY t.transfer_datetime DESC, t.trl_no DESC";
+$dynFilter = $isPartnerMasterfile
+    ? "(CAST(t.wrong_biller_id AS CHAR) = CAST(? AS CHAR)
+        OR (TRIM(COALESCE(t.biller_name, '')) <> '' AND TRIM(t.biller_name) = TRIM(?)))"
+    : "CAST(t.wrong_biller_id AS CHAR) = CAST(? AS CHAR)";
+$dynSql = "SELECT t.trl_no, t.transfer_datetime, t.ref_no, t.wrong_biller_id, t.biller_name, t.account_no, t.name, t.payment_branch_id, t.amount, t.type_of_request, t.reason, wb.correct_biller_id, wb.correct_biller_name, oa.wrong_amount AS oa_wrong_amount, oa.correct_amount AS oa_correct_amount, oa.difference AS oa_difference, ct.wrong_amount AS ct_wrong_amount, ct.correct_amount AS ct_correct_amount FROM mldb.trl t LEFT JOIN mldb.trl_wrongbiller wb ON wb.trl_no = t.trl_no LEFT JOIN mldb.trl_overstatedamount oa ON oa.trl_no = t.trl_no LEFT JOIN mldb.trl_cancelledtransaction ct ON ct.trl_no = t.trl_no WHERE {$dynFilter} AND t.status IS NULL ORDER BY t.transfer_datetime DESC, t.trl_no DESC";
 
 $dynStmt = $conn->prepare($dynSql);
 $firstSubUsed = false;
@@ -243,7 +277,11 @@ foreach ($selected as $sid) {
     $dynRows = [];
     $totalAmount = 0.0;
     if ($dynStmt) {
-        $dynStmt->bind_param('s', $sid);
+        if ($isPartnerMasterfile) {
+            $dynStmt->bind_param('ss', $sid, $sname);
+        } else {
+            $dynStmt->bind_param('s', $sid);
+        }
         if ($dynStmt->execute()) {
             $res = $dynStmt->get_result();
             while ($r = $res->fetch_assoc()) {

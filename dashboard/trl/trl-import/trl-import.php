@@ -20,7 +20,7 @@ if (!function_exists('has_any_permission') || !has_any_permission(['TRL Import',
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>TRL - Import</title>
+    <title>Transaction Request Log - Import</title>
     <link rel="icon" href="../../../images/MLW%20logo.png" type="image/png">
     <link rel="stylesheet" href="../../../assets/css/templates/style.css?v=<?php echo time(); ?>">
     <link rel="stylesheet" href="trl-import.css?v=<?php echo time(); ?>">
@@ -33,7 +33,7 @@ if (!function_exists('has_any_permission') || !has_any_permission(['TRL Import',
         <?php include '../../../templates/header_ui.php'; ?>
         <?php include '../../../templates/sidebar.php'; ?>
 
-        <?php bp_section_header_html('fa-solid fa-file-import', 'TRL - Import', 'Transaction Request Log - Import'); ?>
+        <?php bp_section_header_html('fa-solid fa-file-import', 'Transaction Request Log - Import'); ?>
 
         <div id="loading-overlay" style="display:none;">
             <div class="loading-spinner"></div>
@@ -43,7 +43,7 @@ if (!function_exists('has_any_permission') || !has_any_permission(['TRL Import',
             <div class="trl-toolbar">
                 <div>
                     <h3 class="trl-title">Import Files</h3>
-                    <p class="trl-subtitle">Upload TRL Excel files and run duplicate pre-check before processing.</p>
+                    <p class="trl-subtitle">Upload TRL Excel files and process every worksheet with a valid TRL header.</p>
                 </div>
                 <div class="trl-toolbar-actions">
                     <button id="resetBtn" type="button" class="btn btn-outline-secondary">Reset</button>
@@ -116,7 +116,11 @@ if (!function_exists('has_any_permission') || !has_any_permission(['TRL Import',
 
                 uploadedFiles.forEach(function(item) {
                     var statusHtml = '';
+                    var workbookMeta = '';
                     if (item.precheck) {
+                        if (Number(item.precheck.sheetCount || 0) > 0) {
+                            workbookMeta = ' &bull; ' + Number(item.precheck.processedSheetCount || 0) + ' of ' + Number(item.precheck.sheetCount) + ' worksheets processed';
+                        }
                         if (item.precheck.error) {
                             statusHtml = '<span class="chip chip-error">Error</span>';
                         } else if (item.precheck.isUnique === true) {
@@ -134,7 +138,7 @@ if (!function_exists('has_any_permission') || !has_any_permission(['TRL Import',
                         '<div class="file-card-header">' +
                             '<div class="file-card-title">' +
                                 '<div class="file-name">' + item.name + '</div>' +
-                                '<div class="file-meta">' + formatBytes(item.size) + '</div>' +
+                                '<div class="file-meta">' + formatBytes(item.size) + workbookMeta + '</div>' +
                             '</div>' +
                             '<button class="file-remove" data-id="' + item.id + '" type="button" aria-label="Remove"><i class="fa-solid fa-xmark"></i></button>' +
                         '</div>' +

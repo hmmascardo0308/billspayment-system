@@ -78,13 +78,13 @@
         "BP Report Transaction Details",
         "BP Report Transaction Summary",
         "BP Report Volume",
-        "BP Settlement Adjustment Entry",
-        "BP Settlement Per Bank",
         "Invoice Review",
-        "Masterfiles View Bank List",
         "Masterfiles View Partner List",
         "Profile Signature",
-        "Profile View"
+        "Profile View",
+        "TRL Entry",
+        "TRL Report",
+        "TRL Review"
     ],
     "20217237": [
         "BP Import Cancellation",

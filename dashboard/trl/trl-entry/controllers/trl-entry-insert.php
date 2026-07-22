@@ -35,6 +35,140 @@ function trl_required_any($keys) {
     return '';
 }
 
+function trl_entry_uploaded_files($fieldName) {
+    if (!isset($_FILES[$fieldName])) {
+        return [];
+    }
+
+    $upload = $_FILES[$fieldName];
+    if (!is_array($upload['name'])) {
+        return [$upload];
+    }
+
+    $files = [];
+    $count = count($upload['name']);
+    for ($index = 0; $index < $count; $index++) {
+        $files[] = [
+            'name' => $upload['name'][$index] ?? '',
+            'type' => $upload['type'][$index] ?? '',
+            'tmp_name' => $upload['tmp_name'][$index] ?? '',
+            'error' => $upload['error'][$index] ?? UPLOAD_ERR_NO_FILE,
+            'size' => $upload['size'][$index] ?? 0
+        ];
+    }
+    return $files;
+}
+
+function trl_entry_validate_attachments($files) {
+    $allowedExtensions = ['png', 'jpeg', 'jpg', 'gif', 'webp', 'pdf', 'docx', 'txt', 'xlsx', 'csv', 'ods'];
+    if (count($files) > 10) {
+        throw new Exception('A maximum of 10 attachments is allowed.');
+    }
+
+    $validated = [];
+    foreach ($files as $file) {
+        $error = (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE);
+        if ($error === UPLOAD_ERR_NO_FILE) {
+            continue;
+        }
+        if ($error !== UPLOAD_ERR_OK) {
+            throw new Exception('One of the attachments could not be uploaded.');
+        }
+
+        $name = basename((string) ($file['name'] ?? ''));
+        $extension = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        $size = (int) ($file['size'] ?? 0);
+        $tmpName = (string) ($file['tmp_name'] ?? '');
+        if ($name === '' || !in_array($extension, $allowedExtensions, true)) {
+            throw new Exception('An attachment has an unsupported file type.');
+        }
+        if ($size <= 0 || $size > 10 * 1024 * 1024) {
+            throw new Exception($name . ' must be between 1 byte and 10 MB.');
+        }
+        if ($tmpName === '' || !is_uploaded_file($tmpName)) {
+            throw new Exception('Unable to verify uploaded attachment: ' . $name);
+        }
+
+        $fileInfo = new finfo(FILEINFO_MIME_TYPE);
+        $mimeType = (string) ($fileInfo->file($tmpName) ?: 'application/octet-stream');
+        $file['name'] = $name;
+        $file['mime_type'] = $mimeType;
+        $validated[] = $file;
+    }
+    return $validated;
+}
+
+function trl_entry_insert_attachment($conn, $trlNo, $createdBy, $file) {
+    $binary = file_get_contents($file['tmp_name']);
+    if ($binary === false) {
+        throw new Exception('Unable to read attachment: ' . $file['name']);
+    }
+
+    $sql = "INSERT INTO mldb.trl_attachments (trl_no, file_name, mime_type, file_size, file_data, created_by) VALUES (?, ?, ?, ?, ?, ?)";
+    $statement = $conn->prepare($sql);
+    if (!$statement) {
+        throw new Exception('Unable to prepare attachment insert.');
+    }
+
+    $fileName = (string) $file['name'];
+    $mimeType = (string) $file['mime_type'];
+    $fileSize = (int) $file['size'];
+    $createdByValue = (string) $createdBy;
+    $null = null;
+    $statement->bind_param('issibs', $trlNo, $fileName, $mimeType, $fileSize, $null, $createdByValue);
+    $statement->send_long_data(4, $binary);
+    if (!$statement->execute()) {
+        $statement->close();
+        throw new Exception('Unable to save attachment: ' . $fileName);
+    }
+    $statement->close();
+}
+
+$attachments = [];
+
+$requestCategory = trl_required('type_of_request');
+$adjustmentType = trl_required('adjustment_type');
+$changeDetailsType = trl_required('change_details_type');
+$allowedAdjustmentTypes = [
+    'NO PAYMENT RECEIVED',
+    'DOUBLE POSTING',
+    'MULTI POSTING',
+    'TRIPLE POSTING',
+    'WRONG BILLER',
+    'OVERSTATED AMOUNT',
+    'CANCELLED TRANSACTION',
+    'UNREFLECTED TRXN'
+];
+$allowedChangeDetailsTypes = [
+    'WRONG ACCOUNT NAME',
+    'WRONG ACCOUNT NUMBER',
+    'WRONG PAYMENT TYPE'
+];
+
+if (strcasecmp($requestCategory, 'Adjustment') === 0) {
+    $adjustmentType = strtoupper($adjustmentType);
+    if (!in_array($adjustmentType, $allowedAdjustmentTypes, true)) {
+        echo json_encode([
+            'success' => false,
+            'message' => 'Please select a valid adjustment type.'
+        ]);
+        exit;
+    }
+    $effectiveRequestType = $adjustmentType;
+} elseif (strcasecmp($requestCategory, 'Change Details') === 0) {
+    $changeDetailsType = strtoupper($changeDetailsType);
+    if (!in_array($changeDetailsType, $allowedChangeDetailsTypes, true)) {
+        echo json_encode([
+            'success' => false,
+            'message' => 'Please select a valid change details type.'
+        ]);
+        exit;
+    }
+    $effectiveRequestType = $changeDetailsType;
+} else {
+    $effectiveRequestType = $requestCategory;
+}
+
 $payload = [
     'transfer_datetime' => trl_required('transfer_datetime'),
     'ref_no' => trl_required('ref_no'),
@@ -49,18 +183,21 @@ $payload = [
     'payment_branch_name' => trl_required('payment_branch_name'),
     'payment_branch' => trl_required('payment_branch'),
     'amount' => trl_required('amount'),
-    'type_of_request' => trl_required('type_of_request'),
+    'type_of_request' => $effectiveRequestType,
     'correct_biller_id' => trl_required('correct_biller_id'),
     'correct_biller_name' => trl_required('correct_biller_name'),
     // support new field names and fallback to old names for compatibility
     'wrong_amount' => trl_required_any(['wrong_amount', 'reported_value']),
     'correct_amount' => trl_required_any(['correct_amount', 'actual_value']),
     'difference_value' => trl_required('difference_value'),
+    'wrong_detail' => trl_required('wrong_detail'),
+    'correct_detail' => trl_required('correct_detail'),
     'reason' => trl_required('reason')
 ];
 
 $requiredKeys = [
-    'transfer_datetime', 'wrong_biller_id', 'biller_name', 'account_no', 'name',
+    // Original biller fields may be empty for direct biller or partner transactions.
+    'transfer_datetime', 'account_no', 'name',
     'payment_branch_id', 'payment_branch_name', 'amount', 'type_of_request', 'reason'
 ];
 
@@ -74,6 +211,11 @@ if (strcasecmp($payload['type_of_request'], 'WRONG BILLER') === 0) {
 if (strcasecmp($payload['type_of_request'], 'OVERSTATED AMOUNT') === 0 || strcasecmp($payload['type_of_request'], 'CANCELLED TRANSACTION') === 0) {
     $requiredKeys[] = 'wrong_amount';
     $requiredKeys[] = 'correct_amount';
+}
+
+if (in_array(strtoupper($payload['type_of_request']), $allowedChangeDetailsTypes, true)) {
+    $requiredKeys[] = 'wrong_detail';
+    $requiredKeys[] = 'correct_detail';
 }
 
 // Reference number is required for AUTO mode, or when manual includes it via the toggle
@@ -120,6 +262,17 @@ if (!$colCheck || mysqli_num_rows($colCheck) === 0) {
 }
 
 $paymentBranchValue = $payload['payment_branch_name'] !== '' ? $payload['payment_branch_name'] : $payload['payment_branch'];
+$wrongBillerIdValue = $payload['wrong_biller_id'] !== '' ? (int) $payload['wrong_biller_id'] : null;
+$billerNameValue = $payload['biller_name'] !== '' ? $payload['biller_name'] : null;
+
+try {
+    $attachments = trl_entry_validate_attachments(trl_entry_uploaded_files('attachments'));
+} catch (Exception $e) {
+    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    exit;
+}
+
+$trlStatus = empty($attachments) ? 'DRAFT' : null;
 
 // Duplicate check: ensure reference number isn't already present
 $refToCheck = trim((string) $payload['ref_no']);
@@ -160,8 +313,9 @@ $sql = "INSERT INTO mldb.trl (
     {$branchColumn},
     amount,
     type_of_request,
-    reason
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    reason,
+    status
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 $stmt = $conn->prepare($sql);
 if (!$stmt) {
@@ -173,18 +327,19 @@ if (!$stmt) {
 }
 
 $stmt->bind_param(
-    'ssssssssdss',
+    'ssisssssdsss',
     $payload['transfer_datetime'],
     $payload['ref_no'],
-    $payload['wrong_biller_id'],
-    $payload['biller_name'],
+    $wrongBillerIdValue,
+    $billerNameValue,
     $payload['account_no'],
     $payload['name'],
     $payload['payment_branch_id'],
     $paymentBranchValue,
     $amount,
     $payload['type_of_request'],
-    $payload['reason']
+    $payload['reason'],
+    $trlStatus
 );
 
 $conn->autocommit(false);
@@ -271,6 +426,10 @@ try {
         $ctStmt->close();
     }
 
+    foreach ($attachments as $attachment) {
+        trl_entry_insert_attachment($conn, $trlNo, $id, $attachment);
+    }
+
     // If reason is empty, attempt to auto-build it for certain request types
     if (trim((string)$payload['reason']) === '') {
         $tor = strtoupper(trim((string)$payload['type_of_request']));
@@ -296,7 +455,13 @@ try {
 
     echo json_encode([
         'success' => true,
-        'message' => 'Transaction Request Log has been submitted successfully!'
+        'title' => empty($attachments) ? 'Draft Saved' : 'Transaction Request Log',
+        'message' => empty($attachments)
+            ? 'No attachment was provided, so the transaction was saved as a draft.'
+            : 'Transaction Request Log has been submitted for review successfully!',
+        'redirect' => empty($attachments)
+            ? 'trl-entry.php?mode=draft'
+            : '../trl-review/trl-review.php'
     ]);
     exit;
 } catch (Exception $e) {
