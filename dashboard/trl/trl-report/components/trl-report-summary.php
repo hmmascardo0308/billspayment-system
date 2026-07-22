@@ -1,68 +1,128 @@
 <?php
-$partners = [];
+$masterfileIdSql = "CASE WHEN COALESCE(TRIM(partner_id_kpx), '') <> '' THEN CONVERT(TRIM(partner_id_kpx) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ELSE CONVERT(TRIM(COALESCE(partner_id, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci END";
+$masterfileIdDSql = "CASE WHEN COALESCE(TRIM(d.partner_id_kpx), '') <> '' THEN CONVERT(TRIM(d.partner_id_kpx) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ELSE CONVERT(TRIM(COALESCE(d.partner_id, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci END";
+$masterfileIdSSql = "CASE WHEN COALESCE(TRIM(s.partner_id_kpx), '') <> '' THEN CONVERT(TRIM(s.partner_id_kpx) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ELSE CONVERT(TRIM(COALESCE(s.partner_id, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci END";
+$partners = [
+    'all' => ['id' => '', 'name' => 'All', 'source' => 'all', 'label' => 'All']
+];
 $partnersSql = "
     SELECT DISTINCT
-        TRIM(COALESCE(partner_id_kpx, '')) AS partner_id_kpx,
-        TRIM(COALESCE(partner_name, '')) AS partner_name
+        CONVERT(CONCAT('subbiller:', TRIM(COALESCE(partner_id_kpx, ''))) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_key,
+        CONVERT(TRIM(COALESCE(partner_id_kpx, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_identifier,
+        CONVERT(TRIM(COALESCE(partner_name, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_name,
+        'subbiller' AS partner_source
     FROM mldb.subbiller
     WHERE COALESCE(TRIM(partner_id_kpx), '') <> ''
       AND COALESCE(TRIM(partner_name), '') <> ''
+    UNION
+    SELECT DISTINCT
+        CONCAT('masterfile:', " . $masterfileIdSql . ") AS partner_key,
+        " . $masterfileIdSql . " AS partner_identifier,
+        CONVERT(TRIM(COALESCE(partner_name, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_name,
+        'masterfile' AS partner_source
+    FROM masterdata.partner_masterfile d
+    WHERE " . $masterfileIdSql . " <> ''
+      AND COALESCE(TRIM(partner_name), '') <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM mldb.subbiller sb
+          WHERE COALESCE(TRIM(sb.sub_billers_id), '') <> ''
+            AND (
+                CONVERT(TRIM(COALESCE(sb.partner_id_kpx, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = " . $masterfileIdDSql . "
+                OR CONVERT(UPPER(TRIM(COALESCE(sb.partner_name, ''))) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = CONVERT(UPPER(TRIM(COALESCE(d.partner_name, ''))) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+            )
+      )
     ORDER BY partner_name ASC
 ";
 
 $partnersRes = mysqli_query($conn, $partnersSql);
 if ($partnersRes) {
     while ($p = mysqli_fetch_assoc($partnersRes)) {
-        $pid = (string) ($p['partner_id_kpx'] ?? '');
+        $key = (string) ($p['partner_key'] ?? '');
+        $pid = (string) ($p['partner_identifier'] ?? '');
         $pname = (string) ($p['partner_name'] ?? '');
-        if ($pid !== '' && $pname !== '') {
-            $partners[$pid] = $pname;
+        $source = (string) ($p['partner_source'] ?? 'subbiller');
+        if (strcasecmp($pname, 'METROBANK RTA') === 0) {
+            $pname = 'METROBANK REMIT TO ACCOUNT';
+        }
+        if ($key !== '' && $pid !== '' && $pname !== '') {
+            $partners[$key] = [
+                'id' => $pid,
+                'name' => $pname,
+                'source' => $source,
+                'label' => $pname
+            ];
         }
     }
 }
 
 $selectedPartnerId = isset($_GET['partner_id']) ? trim((string) $_GET['partner_id']) : '';
+if ($selectedPartnerId !== '' && !isset($partners[$selectedPartnerId]) && isset($partners['subbiller:' . $selectedPartnerId])) {
+    $selectedPartnerId = 'subbiller:' . $selectedPartnerId;
+}
 if ($selectedPartnerId !== '' && !isset($partners[$selectedPartnerId])) {
     $selectedPartnerId = '';
 }
 
-$selectedPartnerName = $selectedPartnerId !== '' ? (string) $partners[$selectedPartnerId] : '';
+$selectedPartner = $selectedPartnerId !== '' ? $partners[$selectedPartnerId] : null;
+$selectedPartnerName = $selectedPartner ? (string) $selectedPartner['label'] : '';
 $yearColumns = [];
 $rowsBySubBiller = [];
 $totalsByYear = [];
 $grandTotal = 0.0;
 $exportUrl = '';
-if ($selectedPartnerId !== '') {
+if ($selectedPartnerId !== '' && $selectedPartnerId !== 'all') {
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
     $baseDir = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\');
     $exportUrl = $scheme . '://' . $_SERVER['HTTP_HOST'] . $baseDir . '/controllers/trl-report-excel.php?partner_id=' . rawurlencode($selectedPartnerId);
 }
 
 if ($selectedPartnerId !== '') {
+    $selectedPartnerValue = (string) ($selectedPartner['id'] ?? '');
+    $isAllPartners = (($selectedPartner['source'] ?? '') === 'all');
+    $isPartnerMasterfile = (($selectedPartner['source'] ?? '') === 'masterfile');
+    $summaryJoin = $isAllPartners
+        ? ''
+        : ($isPartnerMasterfile
+        ? "INNER JOIN masterdata.partner_masterfile s
+            ON CONVERT(TRIM(CAST(t.wrong_biller_id AS CHAR)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = " . $masterfileIdSSql . "
+            OR (TRIM(COALESCE(t.biller_name, '')) <> '' AND CONVERT(UPPER(TRIM(t.biller_name)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = CONVERT(UPPER(TRIM(s.partner_name)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci)"
+        : "INNER JOIN mldb.subbiller s
+            ON CAST(t.wrong_biller_id AS CHAR) = CAST(s.sub_billers_id AS CHAR)");
+    $summaryId = $isAllPartners ? 't.wrong_biller_id' : ($isPartnerMasterfile ? $masterfileIdSSql : 's.sub_billers_id');
+    $summaryName = $isAllPartners ? 't.biller_name' : ($isPartnerMasterfile ? 's.partner_name' : 's.sub_billers_name');
+    $partnerWhere = $isAllPartners ? '1 = 1' : ($isPartnerMasterfile
+        ? $masterfileIdSSql . " = CONVERT(? USING utf8mb4) COLLATE utf8mb4_0900_ai_ci"
+        : 's.partner_id_kpx = ?');
+
     $sql = "
         SELECT
-            TRIM(COALESCE(s.sub_billers_id, '')) AS sub_biller_id,
-            COALESCE(NULLIF(TRIM(s.sub_billers_name), ''), 'UNKNOWN BILLER') AS sub_biller_name,
+            TRIM(COALESCE(" . $summaryId . ", '')) AS sub_biller_id,
+            COALESCE(NULLIF(TRIM(" . $summaryName . "), ''), 'UNKNOWN BILLER') AS sub_biller_name,
             YEAR(t.transfer_datetime) AS report_year,
             SUM(COALESCE(t.amount, 0)) AS total_amount
         FROM mldb.trl t
-        INNER JOIN mldb.subbiller s
-            ON CAST(t.wrong_biller_id AS CHAR) = CAST(s.sub_billers_id AS CHAR)
-                WHERE s.partner_id_kpx = ?
+        " . $summaryJoin . "
+                WHERE " . $partnerWhere . "
                     AND t.transfer_datetime IS NOT NULL
                     AND t.status IS NULL
-        GROUP BY TRIM(COALESCE(s.sub_billers_id, '')), COALESCE(NULLIF(TRIM(s.sub_billers_name), ''), 'UNKNOWN BILLER'), YEAR(t.transfer_datetime)
+        GROUP BY TRIM(COALESCE(" . $summaryId . ", '')), COALESCE(NULLIF(TRIM(" . $summaryName . "), ''), 'UNKNOWN BILLER'), YEAR(t.transfer_datetime)
         ORDER BY sub_biller_name ASC, report_year ASC
     ";
 
     $stmt = $conn->prepare($sql);
     if ($stmt) {
-        $stmt->bind_param('s', $selectedPartnerId);
+        if (!$isAllPartners) {
+            $stmt->bind_param('s', $selectedPartnerValue);
+        }
         if ($stmt->execute()) {
             $result = $stmt->get_result();
             while ($r = $result->fetch_assoc()) {
                 $subBillerId = trim((string) ($r['sub_biller_id'] ?? ''));
                 $subBiller = (string) ($r['sub_biller_name'] ?? 'UNKNOWN BILLER');
+                $subBillerDetailId = ($isAllPartners && $subBillerId === '')
+                    ? 'name:' . $subBiller
+                    : $subBillerId;
                 $year = (int) ($r['report_year'] ?? 0);
                 $amount = (float) ($r['total_amount'] ?? 0);
 
@@ -76,7 +136,7 @@ if ($selectedPartnerId !== '') {
 
                 if (!isset($rowsBySubBiller[$subBillerKey])) {
                     $rowsBySubBiller[$subBillerKey] = [
-                        'id' => $subBillerId,
+                        'id' => $subBillerDetailId,
                         'name' => $subBiller,
                         'years' => [],
                         'total' => 0.0
@@ -100,6 +160,8 @@ if ($selectedPartnerId !== '') {
 $yearColumns = array_keys($yearColumns);
 sort($yearColumns);
 ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
+$reportEntityLabel = !empty($isPartnerMasterfile) ? 'BILLER' : 'SUB BILLERS';
+$reportEntitySingular = !empty($isPartnerMasterfile) ? 'Biller' : 'Subbiller';
 ?>
 
 <div class="trl-summary-card">
@@ -115,8 +177,11 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
             <div class="subbiller-dropdown partner-dropdown" id="partnerDropdownSummary">
                 <button type="button" id="partnerToggleSummary" class="subbiller-toggle partner-toggle"><?php echo $selectedPartnerName !== '' ? htmlspecialchars($selectedPartnerName) : 'Select Partner'; ?> <i class="fa-solid fa-caret-down" aria-hidden="true"></i></button>
                 <div class="subbiller-list partner-list" id="partnerListSummary" aria-hidden="true">
-                    <?php foreach ($partners as $pid => $pname): ?>
-                        <button type="button" class="partner-item" data-value="<?php echo htmlspecialchars($pid); ?>"><?php echo htmlspecialchars($pname); ?></button>
+                    <div class="partner-search-wrap">
+                        <input type="search" id="partnerSearchSummary" class="partner-search" placeholder="Search partner..." aria-label="Search partners" autocomplete="off">
+                    </div>
+                    <?php foreach ($partners as $partnerKey => $partner): ?>
+                        <button type="button" class="partner-item" data-value="<?php echo htmlspecialchars($partnerKey); ?>"><?php echo htmlspecialchars((string) $partner['label']); ?></button>
                     <?php endforeach; ?>
                 </div>
             </div>
@@ -127,7 +192,7 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
             <a
                 href="<?php echo htmlspecialchars($exportUrl !== '' ? $exportUrl : '#'); ?>"
                 id="trlExportBtn"
-                class="btn btn-danger trl-export-btn <?php echo $selectedPartnerId === '' ? 'is-disabled' : ''; ?>"
+                class="btn btn-danger trl-export-btn <?php echo ($selectedPartnerId === '' || $selectedPartnerId === 'all') ? 'is-disabled' : ''; ?>"
                 data-partner="<?php echo htmlspecialchars($selectedPartnerId); ?>"
                 data-partner-name="<?php echo htmlspecialchars($selectedPartnerName); ?>"
             >Export Excel</a>
@@ -140,7 +205,7 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
         <div class="trl-summary-empty">No TRL rows found for the selected partner.</div>
     <?php else: ?>
         <div class="trl-summary-title">
-            <?php echo htmlspecialchars(strtoupper($selectedPartnerName) . ' SUB BILLERS'); ?>
+            <?php echo htmlspecialchars(strtoupper($selectedPartnerName) . ' ' . $reportEntityLabel); ?>
         </div>
 
         <div class="trl-summary-table-wrap">
@@ -157,7 +222,7 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
                     <tr>
                         <th class="partner-col-head">
                             <?php echo htmlspecialchars(strtoupper((string) $selectedPartnerName)); ?><br>
-                            <span>SUB BILLERS</span>
+                            <span><?php echo htmlspecialchars($reportEntityLabel); ?></span>
                         </th>
                         <?php foreach ($yearColumns as $year): ?>
                             <th><?php echo htmlspecialchars((string) $year); ?></th>
@@ -173,7 +238,7 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
                             tabindex="0"
                             data-subbiller-id="<?php echo htmlspecialchars((string) ($row['id'] ?? '')); ?>"
                             data-subbiller-name="<?php echo htmlspecialchars((string) $row['name']); ?>"
-                            title="View full subbiller details"
+                            title="View full <?php echo htmlspecialchars(strtolower($reportEntitySingular)); ?> details"
                         >
                             <td><?php echo htmlspecialchars((string) $row['name']); ?></td>
                             <?php foreach ($yearColumns as $year): ?>
@@ -209,10 +274,10 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
         </div>
 
         <div class="trl-subbiller-modal-overlay" id="trlSummarySubbillerModal" aria-hidden="true">
-            <div class="trl-subbiller-modal" role="dialog" aria-modal="true" aria-label="Subbiller details modal">
+            <div class="trl-subbiller-modal" role="dialog" aria-modal="true" aria-label="<?php echo htmlspecialchars($reportEntitySingular); ?> details modal">
                 <div class="trl-subbiller-modal-head">
                     <div class="trl-subbiller-modal-title-wrap">
-                        <h4 id="trlSubbillerModalTitle">Subbiller Details</h4>
+                        <h4 id="trlSubbillerModalTitle"><?php echo htmlspecialchars($reportEntitySingular); ?> Details</h4>
                         <p id="trlSubbillerModalSubtitle">Loading data...</p>
                     </div>
                     <div class="trl-subbiller-modal-actions">
@@ -225,7 +290,7 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
                 </div>
 
                 <div class="trl-subbiller-modal-body" id="trlSubbillerModalBody">
-                    <div class="trl-sub-loader">Select a subbiller row to view details.</div>
+                    <div class="trl-sub-loader">Select a <?php echo htmlspecialchars(strtolower($reportEntitySingular)); ?> row to view details.</div>
                 </div>
             </div>
         </div>
@@ -239,10 +304,16 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
     var pList = document.getElementById('partnerListSummary');
     var pInput = document.getElementById('partner_id_summary');
     var pForm = document.getElementById('summaryFilterForm');
+    var pSearch = document.getElementById('partnerSearchSummary');
 
     if (pToggle && pList && pInput) {
         pToggle.addEventListener('click', function(e) {
             pList.classList.toggle('open');
+            if (pList.classList.contains('open') && pSearch) {
+                pSearch.value = '';
+                pList.querySelectorAll('.partner-item').forEach(function(item) { item.hidden = false; });
+                window.setTimeout(function() { pSearch.focus(); }, 0);
+            }
             e.stopPropagation();
         });
         document.addEventListener('click', function(ev) {
@@ -251,6 +322,19 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
             }
         });
         var pItems = pList.querySelectorAll('.partner-item');
+        if (pSearch) {
+            pSearch.addEventListener('click', function(e) { e.stopPropagation(); });
+            pSearch.addEventListener('input', function() {
+                var term = pSearch.value.trim().toLowerCase();
+                pItems.forEach(function(item) {
+                    item.hidden = item.textContent.toLowerCase().indexOf(term) === -1;
+                });
+            });
+            pSearch.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') e.preventDefault();
+                if (e.key === 'Escape') { pList.classList.remove('open'); pToggle.focus(); }
+            });
+        }
         pItems.forEach(function(it) {
             it.addEventListener('click', function() {
                 var val = it.getAttribute('data-value') || '';
@@ -305,6 +389,7 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
 
     var selectedPartnerId = <?php echo json_encode($selectedPartnerId); ?>;
     var selectedPartnerName = <?php echo json_encode($selectedPartnerName); ?>;
+    var reportEntitySingular = <?php echo json_encode($reportEntitySingular); ?>;
     var modalOverlay = document.getElementById('trlSummarySubbillerModal');
     var modalBody = document.getElementById('trlSubbillerModalBody');
     var modalTitle = document.getElementById('trlSubbillerModalTitle');
@@ -365,7 +450,7 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
 
     function buildSummaryTable(summaryYears, summaryByYear, summaryTotal) {
         if (!summaryYears.length) {
-            return '<div class="trl-sub-empty">No yearly summary found for this subbiller.</div>';
+            return '<div class="trl-sub-empty">No yearly summary found for this ' + reportEntitySingular.toLowerCase() + '.</div>';
         }
 
         var yearHead = summaryYears.map(function (year) {
@@ -382,8 +467,8 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
                 '<div class="trl-sub-section-title">Yearly Summary</div>' +
                 '<div class="trl-sub-table-wrap">' +
                     '<table class="trl-sub-table trl-sub-table--summary">' +
-                        '<thead><tr><th>Subbiller</th>' + yearHead + '<th>Total Receivable</th></tr></thead>' +
-                        '<tbody><tr><td>' + escapeHtml(modalTitle ? modalTitle.textContent : 'Subbiller') + '</td>' + yearValues + '<td class="amt total">' + formatAmount(summaryTotal) + '</td></tr></tbody>' +
+                        '<thead><tr><th>' + escapeHtml(reportEntitySingular) + '</th>' + yearHead + '<th>Total Receivable</th></tr></thead>' +
+                        '<tbody><tr><td>' + escapeHtml(modalTitle ? modalTitle.textContent : reportEntitySingular) + '</td>' + yearValues + '<td class="amt total">' + formatAmount(summaryTotal) + '</td></tr></tbody>' +
                     '</table>' +
                 '</div>' +
             '</div>';
@@ -391,7 +476,7 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
 
     function buildTransactionRows(rows) {
         if (!rows.length) {
-            return '<tr><td colspan="16" class="trl-sub-empty-cell">No transactions found for this subbiller.</td></tr>';
+            return '<tr><td colspan="16" class="trl-sub-empty-cell">No transactions found for this ' + reportEntitySingular.toLowerCase() + '.</td></tr>';
         }
 
         return rows.map(function (row) {
@@ -483,10 +568,15 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
         var detailsUrl = 'controllers/trl-report-subbiller-details.php?partner_id=' + encodeURIComponent(selectedPartnerId) + '&subbiller_id=' + encodeURIComponent(subbillerId);
         var exportUrl = 'controllers/trl-report-excel-subbiler.php?partner_id=' + encodeURIComponent(selectedPartnerId) + '&subbiller_ids=' + encodeURIComponent(subbillerId) + '&include_summary=1';
         if (modalDownloadBtn) {
-            modalDownloadBtn.setAttribute('href', exportUrl);
+            if (selectedPartnerId === 'all') {
+                modalDownloadBtn.style.display = 'none';
+            } else {
+                modalDownloadBtn.style.display = '';
+                modalDownloadBtn.setAttribute('href', exportUrl);
+            }
         }
 
-        modalBody.innerHTML = '<div class="trl-sub-loader">Loading subbiller data...</div>';
+        modalBody.innerHTML = '<div class="trl-sub-loader">Loading ' + reportEntitySingular.toLowerCase() + ' data...</div>';
         openSubbillerModal();
 
         fetch(detailsUrl, {
@@ -498,14 +588,14 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
         })
         .then(function (payload) {
             if (!payload || payload.ok !== true) {
-                throw new Error(payload && payload.message ? payload.message : 'Unable to load subbiller details.');
+                throw new Error(payload && payload.message ? payload.message : 'Unable to load ' + reportEntitySingular.toLowerCase() + ' details.');
             }
             modalSubtitle.textContent = (payload.partner_name || selectedPartnerName || '') + ' | ' + (payload.rows ? payload.rows.length : 0) + ' row(s)';
             renderDetails(payload);
         })
         .catch(function (err) {
             modalSubtitle.textContent = (selectedPartnerName || 'Selected Partner') + ' | Error loading details';
-            modalBody.innerHTML = '<div class="trl-sub-empty">' + escapeHtml(err && err.message ? err.message : 'Unable to load subbiller details.') + '</div>';
+            modalBody.innerHTML = '<div class="trl-sub-empty">' + escapeHtml(err && err.message ? err.message : 'Unable to load ' + reportEntitySingular.toLowerCase() + ' details.') + '</div>';
         });
     }
 
@@ -541,7 +631,7 @@ ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
     clickableRows.forEach(function (row) {
         function openRowDetails() {
             var subbillerId = (row.getAttribute('data-subbiller-id') || '').trim();
-            var subbillerName = (row.getAttribute('data-subbiller-name') || 'Subbiller').trim();
+            var subbillerName = (row.getAttribute('data-subbiller-name') || reportEntitySingular).trim();
             if (!selectedPartnerId || !subbillerId) {
                 return;
             }

@@ -2,6 +2,7 @@
 // Load branches and subbillers for dropdowns when available
 $branches = [];
 $subbillers = [];
+$correctBillers = [];
 if (isset($conn)) {
     $branchSql = "SELECT branch_id, branch_name FROM masterdata.branch_profile WHERE branch_name IS NOT NULL AND TRIM(branch_name) <> '' ORDER BY branch_name ASC";
     $branchRes = $conn->query($branchSql);
@@ -16,8 +17,35 @@ if (isset($conn)) {
     if ($subRes) {
         while ($sb = $subRes->fetch_assoc()) {
             $subbillers[] = $sb;
+            $name = trim((string) ($sb['subbiller_name'] ?? ''));
+            if ($name !== '') {
+                $correctBillers[strtolower($name)] = [
+                    'biller_id' => (string) ($sb['subbiller_ext_id'] ?? ''),
+                    'biller_name' => $name
+                ];
+            }
         }
     }
+
+    $directSql = "SELECT partner_id_kpx, partner_name FROM mldb.directbiller WHERE TRIM(COALESCE(partner_name, '')) <> '' ORDER BY partner_name ASC";
+    $directRes = $conn->query($directSql);
+    if ($directRes) {
+        while ($direct = $directRes->fetch_assoc()) {
+            $name = trim((string) ($direct['partner_name'] ?? ''));
+            $key = strtolower($name);
+            // Keep the subbiller match when the same name exists in both tables.
+            if ($name !== '' && !isset($correctBillers[$key])) {
+                $correctBillers[$key] = [
+                    'biller_id' => (string) ($direct['partner_id_kpx'] ?? ''),
+                    'biller_name' => $name
+                ];
+            }
+        }
+    }
+
+    uasort($correctBillers, static function ($left, $right) {
+        return strcasecmp((string) $left['biller_name'], (string) $right['biller_name']);
+    });
 }
 ?>
 <section class="entry-block" id="manualModeBlock">
@@ -141,6 +169,15 @@ if (isset($conn)) {
                         <label for="mTypeRequest"><span class="material-icons">category</span> Type of Request</label>
                         <select id="mTypeRequest" name="type_of_request" class="field-input required-field" required>
                             <option value="">Select request type</option>
+                            <option>Adjustment</option>
+                            <option>Change Details</option>
+                        </select>
+                    </div>
+
+                    <div class="field-group adjustment-type-group" style="display:none;">
+                        <label for="mAdjustmentType"><span class="material-icons">tune</span> Adjustment Type</label>
+                        <select id="mAdjustmentType" name="adjustment_type" class="field-input">
+                            <option value="">Select adjustment type</option>
                             <option>NO PAYMENT RECEIVED</option>
                             <option>DOUBLE POSTING</option>
                             <option>MULTI POSTING</option>
@@ -150,6 +187,27 @@ if (isset($conn)) {
                             <option>CANCELLED TRANSACTION</option>
                             <option>UNREFLECTED TRXN</option>
                         </select>
+                    </div>
+
+                    <div class="field-group change-details-type-group" style="display:none;">
+                        <label for="mChangeDetailsType"><span class="material-icons">manage_accounts</span> Change Details Type</label>
+                        <select id="mChangeDetailsType" name="change_details_type" class="field-input">
+                            <option value="">Select detail to change</option>
+                            <option>WRONG ACCOUNT NAME</option>
+                            <option>WRONG ACCOUNT NUMBER</option>
+                            <option>WRONG PAYMENT TYPE</option>
+                        </select>
+                    </div>
+
+                    <div class="change-detail-values" style="display:none;">
+                        <div class="field-group">
+                            <label for="mWrongDetail"><span class="material-icons">edit_off</span> <span class="change-wrong-label">Wrong Detail</span></label>
+                            <input id="mWrongDetail" name="wrong_detail" class="field-input" type="text" placeholder="Enter current value">
+                        </div>
+                        <div class="field-group">
+                            <label for="mCorrectDetail"><span class="material-icons">edit_note</span> <span class="change-correct-label">Correct Detail</span></label>
+                            <input id="mCorrectDetail" name="correct_detail" class="field-input" type="text" placeholder="Enter correct value">
+                        </div>
                     </div>
 
                     <!-- Biller info moved to Transaction Details (manual) -->
@@ -172,10 +230,10 @@ if (isset($conn)) {
 
                     <div class="field-group">
                         <label for="mCorrectBillerName"><span class="material-icons">business</span> Correct Biller Name</label>
-                        <input id="mCorrectBillerName" name="correct_biller_name" class="field-input required-field" type="text" list="mCorrectBillerDatalist" placeholder="Search subbiller or select..." required>
+                        <input id="mCorrectBillerName" name="correct_biller_name" class="field-input required-field" type="text" list="mCorrectBillerDatalist" placeholder="Search biller or select..." required>
                         <datalist id="mCorrectBillerDatalist">
-                            <?php foreach ($subbillers as $sb): ?>
-                                <option value="<?php echo htmlspecialchars((string) $sb['subbiller_name']); ?>"></option>
+                            <?php foreach ($correctBillers as $biller): ?>
+                                <option value="<?php echo htmlspecialchars((string) $biller['biller_name']); ?>"></option>
                             <?php endforeach; ?>
                         </datalist>
                     </div>
@@ -220,6 +278,18 @@ if (isset($conn)) {
             ];
         }
         echo json_encode($bm);
+    ?>;
+
+    var trlCorrectBillerMap = <?php
+        $correctBillerMap = [];
+        foreach ($correctBillers as $biller) {
+            $name = strtolower((string) ($biller['biller_name'] ?? ''));
+            if ($name === '') continue;
+            $correctBillerMap[$name] = [
+                'id' => (string) ($biller['biller_id'] ?? '')
+            ];
+        }
+        echo json_encode($correctBillerMap);
     ?>;
 
     // Branch input -> populate branch id
@@ -281,7 +351,7 @@ if (isset($conn)) {
     if (correctBillerName && correctBillerId) {
         function syncCorrectBiller() {
             var key = (correctBillerName.value || '').trim().toLowerCase();
-            var info = trlBillerMap[key] || null;
+            var info = trlCorrectBillerMap[key] || null;
             correctBillerId.value = info ? (info.id || '') : '';
         }
 

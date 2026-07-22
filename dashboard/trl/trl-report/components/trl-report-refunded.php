@@ -1,32 +1,72 @@
 <?php
-$partners = [];
+$masterfileIdSql = "CASE WHEN COALESCE(TRIM(partner_id_kpx), '') <> '' THEN CONVERT(TRIM(partner_id_kpx) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ELSE CONVERT(TRIM(COALESCE(partner_id, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci END";
+$masterfileIdDSql = "CASE WHEN COALESCE(TRIM(d.partner_id_kpx), '') <> '' THEN CONVERT(TRIM(d.partner_id_kpx) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ELSE CONVERT(TRIM(COALESCE(d.partner_id, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci END";
+$masterfileIdSSql = "CASE WHEN COALESCE(TRIM(s.partner_id_kpx), '') <> '' THEN CONVERT(TRIM(s.partner_id_kpx) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ELSE CONVERT(TRIM(COALESCE(s.partner_id, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci END";
+$partners = [
+    'all' => ['id' => '', 'name' => 'All', 'source' => 'all', 'label' => 'All']
+];
 $partnersSql = "
     SELECT DISTINCT
-        TRIM(COALESCE(partner_id_kpx, '')) AS partner_id_kpx,
-        TRIM(COALESCE(partner_name, '')) AS partner_name
+        CONVERT(CONCAT('subbiller:', TRIM(COALESCE(partner_id_kpx, ''))) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_key,
+        CONVERT(TRIM(COALESCE(partner_id_kpx, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_identifier,
+        CONVERT(TRIM(COALESCE(partner_name, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_name,
+        'subbiller' AS partner_source
     FROM mldb.subbiller
     WHERE COALESCE(TRIM(partner_id_kpx), '') <> ''
       AND COALESCE(TRIM(partner_name), '') <> ''
+    UNION
+    SELECT DISTINCT
+        CONCAT('masterfile:', " . $masterfileIdSql . ") AS partner_key,
+        " . $masterfileIdSql . " AS partner_identifier,
+        CONVERT(TRIM(COALESCE(partner_name, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_name,
+        'masterfile' AS partner_source
+    FROM masterdata.partner_masterfile d
+    WHERE " . $masterfileIdSql . " <> ''
+      AND COALESCE(TRIM(partner_name), '') <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM mldb.subbiller sb
+          WHERE COALESCE(TRIM(sb.sub_billers_id), '') <> ''
+            AND (
+                CONVERT(TRIM(COALESCE(sb.partner_id_kpx, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = " . $masterfileIdDSql . "
+                OR CONVERT(UPPER(TRIM(COALESCE(sb.partner_name, ''))) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = CONVERT(UPPER(TRIM(COALESCE(d.partner_name, ''))) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+            )
+      )
     ORDER BY partner_name ASC
 ";
 
 $partnersRes = mysqli_query($conn, $partnersSql);
 if ($partnersRes) {
     while ($p = mysqli_fetch_assoc($partnersRes)) {
-        $pid = (string) ($p['partner_id_kpx'] ?? '');
+        $key = (string) ($p['partner_key'] ?? '');
+        $pid = (string) ($p['partner_identifier'] ?? '');
         $pname = (string) ($p['partner_name'] ?? '');
-        if ($pid !== '' && $pname !== '') {
-            $partners[$pid] = $pname;
+        $source = (string) ($p['partner_source'] ?? 'subbiller');
+        if (strcasecmp($pname, 'METROBANK RTA') === 0) {
+            $pname = 'METROBANK REMIT TO ACCOUNT';
+        }
+        if ($key !== '' && $pid !== '' && $pname !== '') {
+            $partners[$key] = [
+                'id' => $pid,
+                'name' => $pname,
+                'source' => $source,
+                'label' => $pname
+            ];
         }
     }
 }
 
 $selectedPartnerId = isset($_GET['partner_id']) ? trim((string) $_GET['partner_id']) : '';
+// Preserve compatibility with older links that used an unprefixed subbiller partner ID.
+if ($selectedPartnerId !== '' && !isset($partners[$selectedPartnerId]) && isset($partners['subbiller:' . $selectedPartnerId])) {
+    $selectedPartnerId = 'subbiller:' . $selectedPartnerId;
+}
 if ($selectedPartnerId !== '' && !isset($partners[$selectedPartnerId])) {
     $selectedPartnerId = '';
 }
 
-$selectedPartnerName = $selectedPartnerId !== '' ? (string) $partners[$selectedPartnerId] : '';
+$selectedPartner = $selectedPartnerId !== '' ? $partners[$selectedPartnerId] : null;
+$selectedPartnerName = $selectedPartner ? (string) $selectedPartner['label'] : '';
 
 $rows = [];
 
@@ -49,6 +89,21 @@ if ($branchColumn !== null) {
 }
 
 if ($selectedPartnerId !== '') {
+    $selectedPartnerValue = (string) ($selectedPartner['id'] ?? '');
+    $isAllPartners = (($selectedPartner['source'] ?? '') === 'all');
+    $isPartnerMasterfile = (($selectedPartner['source'] ?? '') === 'masterfile');
+    $partnerJoin = $isAllPartners
+        ? ''
+        : ($isPartnerMasterfile
+        ? "INNER JOIN masterdata.partner_masterfile s
+                ON CONVERT(TRIM(CAST(t.wrong_biller_id AS CHAR)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = " . $masterfileIdSSql . "
+                OR (TRIM(COALESCE(t.biller_name, '')) <> '' AND CONVERT(UPPER(TRIM(t.biller_name)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = CONVERT(UPPER(TRIM(s.partner_name)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci)"
+        : "INNER JOIN mldb.subbiller s
+                ON CAST(t.wrong_biller_id AS CHAR) = CAST(s.sub_billers_id AS CHAR)");
+    $partnerWhere = $isAllPartners ? '' : ($isPartnerMasterfile
+        ? $masterfileIdSSql . " = CONVERT(? USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AND"
+        : 's.partner_id_kpx = ? AND');
+
     $sql = "SELECT
                 t.trl_no,
                 t.transfer_datetime,
@@ -71,18 +126,18 @@ if ($selectedPartnerId !== '') {
                 ct.wrong_amount AS ct_wrong_amount,
                 ct.correct_amount AS ct_correct_amount
             FROM mldb.trl t
-            INNER JOIN mldb.subbiller s
-                ON CAST(t.wrong_biller_id AS CHAR) = CAST(s.sub_billers_id AS CHAR)
+            " . $partnerJoin . "
             LEFT JOIN mldb.trl_wrongbiller wb ON wb.trl_no = t.trl_no
             LEFT JOIN mldb.trl_overstatedamount oa ON oa.trl_no = t.trl_no
             LEFT JOIN mldb.trl_cancelledtransaction ct ON ct.trl_no = t.trl_no
-            WHERE s.partner_id_kpx = ?
-              AND t.status IS NOT NULL
+            WHERE " . $partnerWhere . " t.status = 'REFUNDED'
             ORDER BY t.transfer_datetime DESC, t.trl_no DESC";
 
     $stmt = $conn->prepare($sql);
     if ($stmt) {
-        $stmt->bind_param('s', $selectedPartnerId);
+        if (!$isAllPartners) {
+            $stmt->bind_param('s', $selectedPartnerValue);
+        }
         if ($stmt->execute()) {
             $result = $stmt->get_result();
             while ($r = $result->fetch_assoc()) {
@@ -137,8 +192,11 @@ if ($selectedPartnerId !== '') {
         <div class="subbiller-dropdown partner-dropdown" id="partnerDropdownRefunded">
             <button type="button" id="partnerToggleRefunded" class="subbiller-toggle partner-toggle"><?php echo $selectedPartnerName !== '' ? htmlspecialchars($selectedPartnerName) : 'Select Partner'; ?> <i class="fa-solid fa-caret-down" aria-hidden="true"></i></button>
             <div class="subbiller-list partner-list" id="partnerListRefunded" aria-hidden="true">
-                <?php foreach ($partners as $pid => $pname): ?>
-                    <button type="button" class="partner-item" data-value="<?php echo htmlspecialchars($pid); ?>"><?php echo htmlspecialchars($pname); ?></button>
+                <div class="partner-search-wrap">
+                    <input type="search" id="partnerSearchRefunded" class="partner-search" placeholder="Search partner..." aria-label="Search partners" autocomplete="off">
+                </div>
+                <?php foreach ($partners as $partnerKey => $partner): ?>
+                    <button type="button" class="partner-item" data-value="<?php echo htmlspecialchars($partnerKey); ?>"><?php echo htmlspecialchars((string) $partner['label']); ?></button>
                 <?php endforeach; ?>
             </div>
         </div>
@@ -211,10 +269,16 @@ if ($selectedPartnerId !== '') {
     var pList = document.getElementById('partnerListRefunded');
     var pInput = document.getElementById('partner_id_refunded');
     var pForm = document.getElementById('refundedFilterForm');
+    var pSearch = document.getElementById('partnerSearchRefunded');
 
     if (pToggle && pList && pInput) {
         pToggle.addEventListener('click', function(e) {
             pList.classList.toggle('open');
+            if (pList.classList.contains('open') && pSearch) {
+                pSearch.value = '';
+                pList.querySelectorAll('.partner-item').forEach(function(item) { item.hidden = false; });
+                window.setTimeout(function() { pSearch.focus(); }, 0);
+            }
             e.stopPropagation();
         });
         document.addEventListener('click', function(ev) {
@@ -223,6 +287,19 @@ if ($selectedPartnerId !== '') {
             }
         });
         var pItems = pList.querySelectorAll('.partner-item');
+        if (pSearch) {
+            pSearch.addEventListener('click', function(e) { e.stopPropagation(); });
+            pSearch.addEventListener('input', function() {
+                var term = pSearch.value.trim().toLowerCase();
+                pItems.forEach(function(item) {
+                    item.hidden = item.textContent.toLowerCase().indexOf(term) === -1;
+                });
+            });
+            pSearch.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') e.preventDefault();
+                if (e.key === 'Escape') { pList.classList.remove('open'); pToggle.focus(); }
+            });
+        }
         pItems.forEach(function(it) {
             it.addEventListener('click', function() {
                 var val = it.getAttribute('data-value') || '';

@@ -1,0 +1,2 @@
+ALTER TABLE mldb.trl
+    ADD COLUMN IF NOT EXISTS remarks TEXT NULL AFTER reason;

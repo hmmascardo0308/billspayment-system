@@ -9,7 +9,7 @@ if (empty($id)) { header('Location: ../../../login_form.php'); exit; }
 if (!function_exists('has_any_permission') || !has_any_permission(['TRL Entry','Bills Payment'])) { header('Location: ../../home.php'); exit; }
 
 $mode = strtolower(trim((string) ($_GET['mode'] ?? 'auto')));
-if (!in_array($mode, ['auto', 'manual', 'ticket'], true)) {
+if (!in_array($mode, ['auto', 'manual', 'ticket', 'draft'], true)) {
     $mode = 'auto';
 }
 
@@ -63,6 +63,13 @@ unset($_SESSION['trl_entry_flash']);
                             <p class="mode-label">Load from Support Ticket</p>
                         </div>
                     </label>
+                    <label class="mode-card <?php echo $mode === 'draft' ? 'selected' : ''; ?>" data-mode="draft">
+                        <input type="radio" name="entryMode" value="draft" <?php echo $mode === 'draft' ? 'checked' : ''; ?>>
+                        <div class="mode-icon"><i class="fa-solid fa-file-pen"></i></div>
+                        <div class="mode-text">
+                            <p class="mode-label">Drafts</p>
+                        </div>
+                    </label>
                 </div>
 
                 <button id="entrySubmitBtn" class="btn btn-danger" type="submit" style="display:none;">Submit</button>
@@ -85,6 +92,10 @@ unset($_SESSION['trl_entry_flash']);
             <div id="ticketPanel" class="mode-panel <?php echo $mode === 'ticket' ? '' : 'hidden'; ?>">
                 <?php require __DIR__ . '/components/trl-entry-ticket.php'; ?>
             </div>
+
+            <div id="draftPanel" class="mode-panel <?php echo $mode === 'draft' ? '' : 'hidden'; ?>">
+                <?php require __DIR__ . '/components/trl-entry-drafts.php'; ?>
+            </div>
         </div>
 
         <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.js"></script>
@@ -95,6 +106,7 @@ unset($_SESSION['trl_entry_flash']);
             var autoPanel = document.getElementById('autoPanel');
             var manualPanel = document.getElementById('manualPanel');
             var ticketPanel = document.getElementById('ticketPanel');
+            var draftPanel = document.getElementById('draftPanel');
             var submitBtn = document.getElementById('entrySubmitBtn');
 
             function activeMode() {
@@ -110,7 +122,10 @@ unset($_SESSION['trl_entry_flash']);
                 if (mode === 'ticket') {
                     return document.getElementById('ticketEntryForm');
                 }
-                return document.getElementById('manualEntryForm');
+                if (mode === 'manual') {
+                    return document.getElementById('manualEntryForm');
+                }
+                return null;
             }
 
             function allRequiredFilled(form) {
@@ -147,6 +162,7 @@ unset($_SESSION['trl_entry_flash']);
                 autoPanel.classList.toggle('hidden', mode !== 'auto');
                 manualPanel.classList.toggle('hidden', mode !== 'manual');
                 ticketPanel.classList.toggle('hidden', mode !== 'ticket');
+                draftPanel.classList.toggle('hidden', mode !== 'draft');
                 updateSubmitVisibility();
             }
 
@@ -265,8 +281,9 @@ unset($_SESSION['trl_entry_flash']);
                     var value = getFieldDisplayValue(form, item.name);
                     if (value === '' || value == null) return '';
 
+                    var summaryLabel = (el.dataset && el.dataset.summaryLabel) ? el.dataset.summaryLabel : item.label;
                     return '<div class="trl-summary-row">' +
-                        '<div class="trl-summary-key">' + escapeHtml(item.label) + '</div>' +
+                        '<div class="trl-summary-key">' + escapeHtml(summaryLabel) + '</div>' +
                         '<div class="trl-summary-val">' + escapeHtml(value) + '</div>' +
                         '</div>';
                 }).filter(function(r) { return r && r !== ''; });
@@ -291,6 +308,10 @@ unset($_SESSION['trl_entry_flash']);
 
                 var requestFields = [
                     { name: 'type_of_request', label: 'TYPE OF REQUEST' },
+                    { name: 'adjustment_type', label: 'ADJUSTMENT TYPE' },
+                    { name: 'change_details_type', label: 'CHANGE DETAILS TYPE' },
+                    { name: 'wrong_detail', label: 'WRONG DETAIL' },
+                    { name: 'correct_detail', label: 'CORRECT DETAIL' },
                     { name: 'wrong_amount', label: 'WRONG AMOUNT' },
                     { name: 'correct_amount', label: 'CORRECT AMOUNT' },
                     { name: 'difference_value', label: 'DIFFERENCE' },
@@ -313,8 +334,20 @@ unset($_SESSION['trl_entry_flash']);
                     '.trl-summary-row:last-child{border-bottom:none}' +
                     '.trl-summary-key{font-size:12px;font-weight:700;color:#475569;line-height:1.35;justify-self:start;text-align:left;padding-left:6px}' +
                     '.trl-summary-val{font-size:13px;color:#0f172a;word-break:break-word;white-space:pre-wrap;line-height:1.4;justify-self:end;text-align:right;max-width:100%;padding-right:14px;box-sizing:border-box}' +
+                    '.trl-summary-attachments{margin-top:14px;border-left:6px solid #dc3545}' +
+                    '.trl-summary-attachments .trl-summary-head{background:#fff1f2;color:#9f1239}' +
+                    '.trl-summary-file{padding:7px 6px;border-bottom:1px solid #f1f5f9;color:#334155;text-align:left}' +
+                    '.trl-summary-file:last-child{border-bottom:none}' +
                     '@media (max-width:900px){.trl-summary-grid{grid-template-columns:1fr}.trl-summary-row{grid-template-columns:1fr}.trl-summary-key{margin-bottom:6px;justify-self:start;text-align:left}.trl-summary-val{justify-self:start;text-align:left;padding-right:0}}' +
                     '</style>';
+
+                var attachmentInput = form.querySelector('input[name="attachments[]"]');
+                var attachmentRows = '';
+                if (attachmentInput && attachmentInput.files && attachmentInput.files.length) {
+                    Array.prototype.forEach.call(attachmentInput.files, function(file) {
+                        attachmentRows += '<div class="trl-summary-file">' + escapeHtml(file.name) + '</div>';
+                    });
+                }
 
                 var html = '' +
                     '<div class="trl-summary-wrap">' +
@@ -328,6 +361,7 @@ unset($_SESSION['trl_entry_flash']);
                                 '<div class="trl-summary-body">' + buildSummaryRows(form, requestFields) + '</div>' +
                             '</section>' +
                         '</div>' +
+                        (attachmentRows ? '<section class="trl-summary-card trl-summary-attachments"><div class="trl-summary-head">ATTACHMENTS</div><div class="trl-summary-body">' + attachmentRows + '</div></section>' : '') +
                     '</div>';
 
                 return style + html;
@@ -363,8 +397,8 @@ unset($_SESSION['trl_entry_flash']);
                     if (data.success) {
                         Swal.fire({
                             icon: 'success',
-                            title: 'Transaction Request Log',
-                            text: 'Your submission has been recorded successfully!',
+                            title: data.title || 'Transaction Request Log',
+                            text: data.message || 'Your submission has been recorded successfully!',
                             confirmButtonColor: '#4caf50',
                             confirmButtonText: 'Acknowledged',
                             allowOutsideClick: false,
@@ -374,7 +408,7 @@ unset($_SESSION['trl_entry_flash']);
                             }
                         }).then(function(result) {
                             if (result.isConfirmed) {
-                                window.location.reload();
+                                window.location.href = data.redirect || window.location.href;
                             }
                         });
                     } else {
@@ -451,23 +485,148 @@ unset($_SESSION['trl_entry_flash']);
                         params.delete('search_ticket');
                     }
                     history.replaceState(null, '', window.location.pathname + '?' + params.toString());
+
+                    if (input.value === 'manual' || input.value === 'ticket') {
+                        Swal.fire({
+                            icon: 'info',
+                            text: 'This Section is for further discussions',
+                            confirmButtonText: 'OK',
+                            confirmButtonColor: '#dc3545'
+                        });
+                    }
                 });
             });
 
             document.addEventListener('input', updateSubmitVisibility);
             document.addEventListener('change', updateSubmitVisibility);
 
-            // Manage conditional visibility for correct biller fields
+            function getEffectiveRequestType(form) {
+                if (!form) return '';
+                var categorySelect = form.querySelector('[name="type_of_request"]');
+                var adjustmentSelect = form.querySelector('[name="adjustment_type"]');
+                var changeDetailsSelect = form.querySelector('[name="change_details_type"]');
+                var category = categorySelect ? (categorySelect.value || '') : '';
+                if (category.toUpperCase() === 'ADJUSTMENT') {
+                    return adjustmentSelect ? (adjustmentSelect.value || '') : '';
+                }
+                if (category.toUpperCase() === 'CHANGE DETAILS') {
+                    return changeDetailsSelect ? (changeDetailsSelect.value || '') : '';
+                }
+                return category;
+            }
+
+            function manageRequestSubtypeFields(form) {
+                if (!form) return;
+                var categorySelect = form.querySelector('[name="type_of_request"]');
+                var adjustmentSelect = form.querySelector('[name="adjustment_type"]');
+                var adjustmentGroup = adjustmentSelect ? adjustmentSelect.closest('.field-group') : null;
+                var changeDetailsSelect = form.querySelector('[name="change_details_type"]');
+                var changeDetailsGroup = changeDetailsSelect ? changeDetailsSelect.closest('.field-group') : null;
+                var category = categorySelect ? categorySelect.value.toUpperCase() : '';
+                var showAdjustmentTypes = category === 'ADJUSTMENT';
+                var showChangeDetailsTypes = category === 'CHANGE DETAILS';
+
+                if (adjustmentGroup) adjustmentGroup.style.display = showAdjustmentTypes ? '' : 'none';
+                if (adjustmentSelect) {
+                    adjustmentSelect.required = !!showAdjustmentTypes;
+                    adjustmentSelect.classList.toggle('required-field', !!showAdjustmentTypes);
+                }
+                if (changeDetailsGroup) changeDetailsGroup.style.display = showChangeDetailsTypes ? '' : 'none';
+                if (changeDetailsSelect) {
+                    changeDetailsSelect.required = !!showChangeDetailsTypes;
+                    changeDetailsSelect.classList.toggle('required-field', !!showChangeDetailsTypes);
+                }
+            }
+
+            function configureChangeDetailFields(form) {
+                if (!form) return;
+                var typeVal = getEffectiveRequestType(form);
+                var definitions = {
+                    'WRONG ACCOUNT NAME': { wrongLabel: 'Wrong Account Name', correctLabel: 'Correct Account Name', sourceName: 'name' },
+                    'WRONG ACCOUNT NUMBER': { wrongLabel: 'Wrong Account Number', correctLabel: 'Correct Account Number', sourceName: 'account_no' },
+                    'WRONG PAYMENT TYPE': { wrongLabel: 'Wrong Payment Type', correctLabel: 'Correct Payment Type', sourceName: '' }
+                };
+                var definition = definitions[typeVal] || null;
+                var valuesWrap = form.querySelector('.change-detail-values');
+                var wrongInput = form.querySelector('[name="wrong_detail"]');
+                var correctInput = form.querySelector('[name="correct_detail"]');
+                var wrongLabel = form.querySelector('.change-wrong-label');
+                var correctLabel = form.querySelector('.change-correct-label');
+                var typeChanged = wrongInput && wrongInput.dataset.changeType !== typeVal;
+
+                if (valuesWrap) valuesWrap.style.display = definition ? '' : 'none';
+                [wrongInput, correctInput].forEach(function(input) {
+                    if (!input) return;
+                    input.required = !!definition;
+                    input.classList.toggle('required-field', !!definition);
+                });
+                if (!definition) return;
+
+                if (wrongLabel) wrongLabel.textContent = definition.wrongLabel;
+                if (correctLabel) correctLabel.textContent = definition.correctLabel;
+                if (wrongInput) {
+                    wrongInput.dataset.summaryLabel = definition.wrongLabel.toUpperCase();
+                    wrongInput.placeholder = 'Enter ' + definition.wrongLabel.toLowerCase();
+                    wrongInput.readOnly = definition.sourceName !== '';
+                    if (typeChanged) {
+                        var source = definition.sourceName ? form.querySelector('[name="' + definition.sourceName + '"]') : null;
+                        wrongInput.value = source ? (source.value || '') : '';
+                        wrongInput.dataset.changeType = typeVal;
+                    }
+                }
+                if (correctInput) {
+                    correctInput.dataset.summaryLabel = definition.correctLabel.toUpperCase();
+                    correctInput.placeholder = 'Enter ' + definition.correctLabel.toLowerCase();
+                    if (typeChanged) correctInput.value = '';
+                }
+                if (typeChanged) {
+                    var reason = form.querySelector('[name="reason"]');
+                    if (reason) {
+                        reason.value = '';
+                        try { reason.removeAttribute('data-last-auto'); } catch (e) {}
+                    }
+                }
+            }
+
+            function computeChangeDetailsReason(form) {
+                if (!form) return;
+                var typeVal = getEffectiveRequestType(form);
+                var changeTypes = {
+                    'WRONG ACCOUNT NAME': 1,
+                    'WRONG ACCOUNT NUMBER': 1,
+                    'WRONG PAYMENT TYPE': 1
+                };
+                if (!(typeVal in changeTypes)) return;
+
+                var wrongInput = form.querySelector('[name="wrong_detail"]');
+                var correctInput = form.querySelector('[name="correct_detail"]');
+                var reason = form.querySelector('[name="reason"]');
+                var wrongValue = wrongInput ? (wrongInput.value || '').trim() : '';
+                var correctValue = correctInput ? (correctInput.value || '').trim() : '';
+                if (!reason || wrongValue === '' || correctValue === '') return;
+
+                var autoReason = typeVal + ' ' + wrongValue + ' INSTEAD OF ' + correctValue;
+                var lastAuto = reason.dataset.lastAuto || '';
+                var current = (reason.value || '').trim();
+                if (current === '' || current === lastAuto) {
+                    reason.value = autoReason;
+                    reason.dataset.lastAuto = autoReason;
+                }
+            }
+
+            // Manage conditional visibility for adjustment-specific fields
             function manageCorrectBillerFields(form) {
                 if (!form) return;
-                var typeSelect = form.querySelector('[name="type_of_request"]');
+                manageRequestSubtypeFields(form);
+                var typeVal = getEffectiveRequestType(form);
+                configureChangeDetailFields(form);
 
                 // Correct biller fields (only shown when WRONG BILLER is selected)
                 var correctId = form.querySelector('[name="correct_biller_id"]');
                 var correctName = form.querySelector('[name="correct_biller_name"]');
                 var correctIdGroup = correctId ? correctId.closest('.field-group') : null;
                 var correctNameGroup = correctName ? correctName.closest('.field-group') : null;
-                var showCorrect = typeSelect && typeSelect.value === 'WRONG BILLER';
+                var showCorrect = typeVal === 'WRONG BILLER';
                 if (correctIdGroup) correctIdGroup.style.display = showCorrect ? '' : 'none';
                 if (correctNameGroup) correctNameGroup.style.display = showCorrect ? '' : 'none';
                 if (correctId) { correctId.required = showCorrect; if (!showCorrect) correctId.value = ''; }
@@ -477,7 +636,7 @@ unset($_SESSION['trl_entry_flash']);
                 var reasonField = form.querySelector('[name="reason"]');
                 var reasonGroup = reasonField ? reasonField.closest('.field-group') : null;
 
-                var isEmptyType = !typeSelect || (typeSelect.value === '' || typeSelect.value === null);
+                var isEmptyType = typeVal === '';
 
                 if (reasonGroup) reasonGroup.style.display = isEmptyType ? 'none' : '';
                 if (reasonField) { reasonField.required = !isEmptyType; if (isEmptyType) reasonField.value = ''; }
@@ -489,8 +648,8 @@ unset($_SESSION['trl_entry_flash']);
                 var reportedGroup = reportedEl ? reportedEl.closest('.field-group') : null;
                 var actualGroup = actualEl ? actualEl.closest('.field-group') : null;
                 var diffGroup = diffEl ? diffEl.closest('.field-group') : null;
-                var isOverstated = typeSelect && typeSelect.value === 'OVERSTATED AMOUNT';
-                var isCancelled = typeSelect && typeSelect.value === 'CANCELLED TRANSACTION';
+                var isOverstated = typeVal === 'OVERSTATED AMOUNT';
+                var isCancelled = typeVal === 'CANCELLED TRANSACTION';
                 var showReportedActual = isOverstated || isCancelled;
                 if (reportedGroup) reportedGroup.style.display = showReportedActual ? '' : 'none';
                 if (actualGroup) actualGroup.style.display = showReportedActual ? '' : 'none';
@@ -523,8 +682,7 @@ unset($_SESSION['trl_entry_flash']);
                 var diffFmt = formatCurrencyNumber(d);
 
                 // Determine request type
-                var typeSelect = form.querySelector('[name="type_of_request"]');
-                var typeVal = typeSelect ? typeSelect.value : '';
+                var typeVal = getEffectiveRequestType(form);
 
                 if (typeVal === 'OVERSTATED AMOUNT') {
                     if (diffEl) diffEl.value = formatCurrencyNumber(d);
@@ -556,22 +714,23 @@ unset($_SESSION['trl_entry_flash']);
             [document.getElementById('autoEntryForm'), document.getElementById('manualEntryForm')].forEach(function(frm) {
                 if (!frm) return;
                 var sel = frm.querySelector('[name="type_of_request"]');
+                var adjustmentSel = frm.querySelector('[name="adjustment_type"]');
+                var changeDetailsSel = frm.querySelector('[name="change_details_type"]');
                 var reasonEl = frm.querySelector('[name="reason"]');
                 // initialize per-type storage on the reason field
                 if (reasonEl) {
                     if (!reasonEl._perType) reasonEl._perType = {};
                 }
 
-                if (sel) {
-                    // remember initial type
-                    sel._prevType = sel.value || '';
-                    sel.addEventListener('change', function() {
+                manageRequestSubtypeFields(frm);
+                var previousEffectiveType = getEffectiveRequestType(frm);
+
+                function handleRequestTypeChange() {
                         try {
-                            var prev = sel._prevType || '';
                             // store current reason value for previous type
                             if (reasonEl) {
                                 reasonEl._perType = reasonEl._perType || {};
-                                reasonEl._perType[prev] = reasonEl.value || '';
+                                reasonEl._perType[previousEffectiveType] = reasonEl.value || '';
                             }
                         } catch (e) {
                             // ignore
@@ -580,14 +739,18 @@ unset($_SESSION['trl_entry_flash']);
                         // update visibility and compute fields for the new type
                         manageCorrectBillerFields(frm);
                         computeOverstatedFields(frm);
+                        computeChangeDetailsReason(frm);
 
                         // restore stored reason for this newly selected type if present
                         try {
-                            var cur = sel.value || '';
+                            var cur = getEffectiveRequestType(frm);
                             // request types that auto-generate a reason
                             var autoTypes = {
                                 'OVERSTATED AMOUNT': 1,
-                                'CANCELLED TRANSACTION': 1
+                                'CANCELLED TRANSACTION': 1,
+                                'WRONG ACCOUNT NAME': 1,
+                                'WRONG ACCOUNT NUMBER': 1,
+                                'WRONG PAYMENT TYPE': 1
                             };
 
                             if (reasonEl && reasonEl._perType && Object.prototype.hasOwnProperty.call(reasonEl._perType, cur)) {
@@ -607,15 +770,32 @@ unset($_SESSION['trl_entry_flash']);
                             // ignore
                         }
 
-                        sel._prevType = sel.value || '';
+                        previousEffectiveType = getEffectiveRequestType(frm);
                         updateSubmitVisibility();
-                    });
+                }
+
+                if (sel) {
+                    sel.addEventListener('change', handleRequestTypeChange);
+                }
+                if (adjustmentSel) {
+                    adjustmentSel.addEventListener('change', handleRequestTypeChange);
+                }
+                if (changeDetailsSel) {
+                    changeDetailsSel.addEventListener('change', handleRequestTypeChange);
                 }
                 // set initial visibility
                 manageCorrectBillerFields(frm);
                 // Attach input listeners for overstated value calculation
                 var repField = frm.querySelector('[name="wrong_amount"]');
                 var actField = frm.querySelector('[name="correct_amount"]');
+                var wrongDetailField = frm.querySelector('[name="wrong_detail"]');
+                var correctDetailField = frm.querySelector('[name="correct_detail"]');
+                if (wrongDetailField) {
+                    wrongDetailField.addEventListener('input', function() { computeChangeDetailsReason(frm); updateSubmitVisibility(); });
+                }
+                if (correctDetailField) {
+                    correctDetailField.addEventListener('input', function() { computeChangeDetailsReason(frm); updateSubmitVisibility(); });
+                }
                 if (repField) {
                     // Compute on input, but format only on blur to avoid blocking typing
                     repField.addEventListener('input', function() { computeOverstatedFields(frm); updateSubmitVisibility(); });

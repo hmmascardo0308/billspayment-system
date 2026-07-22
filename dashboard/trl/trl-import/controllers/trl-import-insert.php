@@ -26,6 +26,7 @@ if (empty($rows)) {
 
 $inserted = 0;
 $failed = 0;
+$redirectUrl = '../trl-import-preview.php';
 
 $sql = "INSERT INTO mldb.trl (
     transfer_datetime,
@@ -38,8 +39,9 @@ $sql = "INSERT INTO mldb.trl (
     payment_branch,
     amount,
     type_of_request,
-    reason
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    reason,
+    remarks
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 $wrongSql = "INSERT INTO mldb.trl_wrongbiller (
     trl_no,
@@ -107,30 +109,35 @@ try {
         $transferDatetime = !empty($row['transfer_datetime']) ? $row['transfer_datetime'] : null;
         $refNo = trim((string) ($row['ref_no'] ?? ''));
         $wrongBillerId = trim((string) ($row['wrong_biller_id'] ?? ''));
+        $wrongBillerIdValue = preg_match('/^-?\d+$/', $wrongBillerId) ? (int) $wrongBillerId : null;
         $billerName = trim((string) ($row['biller_name'] ?? ''));
         $accountNo = trim((string) ($row['account_no'] ?? ''));
         $name = trim((string) ($row['name'] ?? ''));
         $paymentBranchId = trim((string) ($row['payment_branch_id'] ?? ''));
+        $paymentBranchIdValue = preg_match('/^-?\d+$/', $paymentBranchId) ? (int) $paymentBranchId : null;
         $paymentBranch = trim((string) ($row['payment_branch'] ?? ''));
         $amount = (float) ($row['amount'] ?? 0);
         $typeOfRequest = trim((string) ($row['type_of_request'] ?? ''));
         $correctBillerId = trim((string) ($row['correct_biller_id'] ?? ''));
         $correctBillerName = trim((string) ($row['correct_biller_name'] ?? ''));
         $reason = trim((string) ($row['reason'] ?? ''));
+        $remarks = 'data uploaded from excel file.';
+        $isLegacyFormat = (($row['source_format'] ?? '') === 'legacy');
 
         $stmt->bind_param(
-            'ssssssssdss',
+            'ssisssisdsss',
             $transferDatetime,
             $refNo,
-            $wrongBillerId,
+            $wrongBillerIdValue,
             $billerName,
             $accountNo,
             $name,
-            $paymentBranchId,
+            $paymentBranchIdValue,
             $paymentBranch,
             $amount,
             $typeOfRequest,
-            $reason
+            $reason,
+            $remarks
         );
 
         if (!$stmt->execute()) {
@@ -145,15 +152,21 @@ try {
         }
 
         if (strcasecmp($typeOfRequest, 'WRONG BILLER') === 0) {
-            if ($correctBillerId === '' || $correctBillerName === '') {
+            if (!$isLegacyFormat && ($correctBillerId === '' || $correctBillerName === '')) {
                 $failed++;
                 continue;
             }
 
-            $wrongStmt->bind_param('iss', $trlNo, $correctBillerId, $correctBillerName);
-            if (!$wrongStmt->execute()) {
-                $failed++;
-                continue;
+            // Legacy summary files may identify the intended biller by name only.
+            // Store an unresolved ID as SQL NULL because the database column is
+            // nullable integer; an empty string is invalid in strict SQL mode.
+            if ($correctBillerId !== '' || $correctBillerName !== '') {
+                $correctBillerIdValue = $correctBillerId !== '' ? (int) $correctBillerId : null;
+                $wrongStmt->bind_param('iis', $trlNo, $correctBillerIdValue, $correctBillerName);
+                if (!$wrongStmt->execute()) {
+                    $failed++;
+                    continue;
+                }
             }
         }
 
@@ -227,11 +240,12 @@ try {
         ];
     } else {
         $conn->commit();
-        $_SESSION['trl_import_flash'] = [
+        $_SESSION['trl_review_flash'] = [
             'type' => 'success',
-            'message' => "TRL import complete. Inserted {$inserted} row(s) into mldb.trl.",
+            'message' => "TRL import complete. Inserted {$inserted} row(s).",
             'rows' => (int) $inserted
         ];
+        $redirectUrl = '../../trl-review/trl-review.php';
         unset($_SESSION['trl_import_rows'], $_SESSION['trl_import_summary'], $_SESSION['trl_import_duplicate_result']);
     }
 } catch (Exception $e) {
@@ -248,5 +262,5 @@ $osStmt->close();
 $ctStmt->close();
 $conn->autocommit(true);
 
-header('Location: ../trl-import-preview.php');
+header('Location: ' . $redirectUrl);
 exit;

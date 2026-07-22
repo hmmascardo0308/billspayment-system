@@ -114,7 +114,24 @@ function trl_find_header_row($sheet, $maxRows = 30) {
             }
         }
 
-        if ($matched >= 9) {
+        $legacyHeaders = [
+            'TRANS. DATE/TIME',
+            'REF. NO.',
+            'BILLER NAME',
+            'ACCOUNT NO.',
+            'NAME',
+            'PAYMENT BRANCH',
+            'AMOUNT',
+            'REASON'
+        ];
+        $legacyMatched = 0;
+        foreach ($legacyHeaders as $legacyHeader) {
+            if (isset($headersFound[trl_normalize_header($legacyHeader)])) {
+                $legacyMatched++;
+            }
+        }
+
+        if ($matched >= 9 || $legacyMatched === count($legacyHeaders)) {
             return [$row, $headersFound];
         }
     }
@@ -147,6 +164,125 @@ function trl_normalize_request_type($value) {
     return strtoupper(trim((string) $value));
 }
 
+function trl_lookup_key($value) {
+    $value = strtoupper(trim((string) $value));
+    $value = preg_replace('/[^A-Z0-9]+/', ' ', $value);
+    return trim(preg_replace('/\s+/', ' ', $value));
+}
+
+function trl_find_lookup_match($value, $lookup, $minimumScore = 0.88) {
+    $key = trl_lookup_key($value);
+    if ($key === '') {
+        return null;
+    }
+    if (isset($lookup[$key])) {
+        return $lookup[$key];
+    }
+
+    $best = null;
+    $bestScore = 0.0;
+    foreach ($lookup as $candidateKey => $candidate) {
+        $maxLength = max(strlen($key), strlen($candidateKey));
+        if ($maxLength === 0) {
+            continue;
+        }
+        $score = 1 - (levenshtein($key, $candidateKey) / $maxLength);
+        if ($score > $bestScore) {
+            $bestScore = $score;
+            $best = $candidate;
+        }
+    }
+
+    return $bestScore >= $minimumScore ? $best : null;
+}
+
+function trl_infer_request_type($reason) {
+    $reason = trl_normalize_request_type($reason);
+    $types = [
+        'NO PAYMENT RECEIVED',
+        'DOUBLE POSTING',
+        'MULTI POSTING',
+        'TRIPLE POSTING',
+        'WRONG BILLER',
+        'OVERSTATED AMOUNT',
+        'CANCELLED TRANSACTION',
+        'UNREFLECTED TRXN',
+        'UNREFLECTED TRANSACTION'
+    ];
+    foreach ($types as $type) {
+        if (strpos($reason, $type) !== false) {
+            return $type === 'UNREFLECTED TRANSACTION' ? 'UNREFLECTED TRXN' : $type;
+        }
+    }
+    return 'UNSPECIFIED';
+}
+
+function trl_extract_intended_biller($reason) {
+    if (preg_match('/\bINTENDED\s+(?:FOR|TO)\s+(.+?)\s*$/i', (string) $reason, $matches)) {
+        return trim($matches[1], " \t\n\r\0\x0B.-");
+    }
+    return '';
+}
+
+function trl_extract_reason_amounts($reason) {
+    $number = '([0-9][0-9,]*(?:\.[0-9]+)?)';
+    $pattern = '/OVERSTATED\s+AMOUNT\s*(?:PHP)?\s*' . $number
+        . '\s+INSTEAD\s+OF\s+(?:PHP)?\s*' . $number
+        . '\s+WITH\s+THE\s+DIFFERENCE\s+OF\s+(?:PHP)?\s*' . $number . '/i';
+
+    if (!preg_match($pattern, (string) $reason, $matches)) {
+        return [null, null, null];
+    }
+
+    return [
+        (float) str_replace(',', '', $matches[1]),
+        (float) str_replace(',', '', $matches[2]),
+        (float) str_replace(',', '', $matches[3])
+    ];
+}
+
+$subBillerLookup = [];
+$subBillerResult = mysqli_query($conn, "SELECT sub_billers_id, sub_billers_name FROM mldb.subbiller WHERE TRIM(COALESCE(sub_billers_name, '')) <> ''");
+if ($subBillerResult) {
+    while ($subBiller = mysqli_fetch_assoc($subBillerResult)) {
+        $key = trl_lookup_key($subBiller['sub_billers_name'] ?? '');
+        if ($key !== '' && !isset($subBillerLookup[$key])) {
+            $subBillerLookup[$key] = [
+                'id' => (string) ($subBiller['sub_billers_id'] ?? ''),
+                'name' => (string) ($subBiller['sub_billers_name'] ?? '')
+            ];
+        }
+    }
+}
+
+$directBillerLookup = [];
+$directBillerResult = mysqli_query($conn, "SELECT partner_id_kpx, partner_name FROM mldb.directbiller WHERE TRIM(COALESCE(partner_name, '')) <> ''");
+if ($directBillerResult) {
+    while ($directBiller = mysqli_fetch_assoc($directBillerResult)) {
+        $key = trl_lookup_key($directBiller['partner_name'] ?? '');
+        if ($key !== '' && !isset($directBillerLookup[$key])) {
+            $directBillerLookup[$key] = [
+                'id' => (string) ($directBiller['partner_id_kpx'] ?? ''),
+                'name' => (string) ($directBiller['partner_name'] ?? '')
+            ];
+        }
+    }
+}
+
+$branchLookup = [];
+$branchResult = mysqli_query($conn, "SELECT branch_id, branch_name FROM masterdata.branch_profile WHERE TRIM(COALESCE(branch_name, '')) <> ''");
+if ($branchResult) {
+    while ($branch = mysqli_fetch_assoc($branchResult)) {
+        $key = trl_lookup_key($branch['branch_name'] ?? '');
+        if ($key !== '' && !isset($branchLookup[$key])) {
+            $branchLookup[$key] = [
+                'id' => (string) ($branch['branch_id'] ?? ''),
+                'name' => (string) ($branch['branch_name'] ?? '')
+            ];
+        }
+    }
+}
+
 $allRows = [];
 $fileResults = [];
 $fileCount = count($_FILES['files']['name']);
@@ -172,19 +308,60 @@ for ($i = 0; $i < $fileCount; $i++) {
             $reader->setReadDataOnly(true);
         }
         $spreadsheet = $reader->load($tmpPath);
-        $sheet = $spreadsheet->getActiveSheet();
+        $rowsForFile = 0;
+        $processedSheets = 0;
+        $skippedSheets = [];
 
-        list($headerRow, $headerMap) = trl_find_header_row($sheet);
-        if ($headerRow === null) {
-            $fileResults[] = [
-                'fileName' => $fileName,
-                'totalRows' => 0,
-                'duplicateRows' => 0,
-                'isUnique' => false,
-                'error' => 'Header row not found.'
-            ];
-            continue;
+        foreach ($spreadsheet->getAllSheets() as $sheet) {
+            $sheetName = trim((string) $sheet->getTitle());
+
+            list($headerRow, $headerMap) = trl_find_header_row($sheet);
+            if ($headerRow === null) {
+                $skippedSheets[] = $sheetName !== '' ? $sheetName : 'Untitled sheet';
+                continue;
+            }
+            $processedSheets++;
+
+        $legacyFormat = !isset($headerMap[trl_normalize_header('TYPE OF REQUEST')])
+            && !isset($headerMap[trl_normalize_header('WRONG BILLER ID')])
+            && !isset($headerMap[trl_normalize_header('PAYMENT BRANCH ID')]);
+
+        $sheetBillerName = '';
+        for ($titleRow = 1; $titleRow < $headerRow; $titleRow++) {
+            $candidate = trim((string) $sheet->getCell('A' . $titleRow)->getValue());
+            if ($candidate !== '') {
+                $sheetBillerName = $candidate;
+                break;
+            }
         }
+        // Legacy workbooks sometimes use an operational abbreviation in the
+        // sheet title instead of the catalog partner name.
+        $sheetBillerAliases = [
+            'METROBANK RTA' => [
+                'lookup_name' => 'METROBANK COLLECTION',
+                'display_name' => 'METROBANK REMIT TO ACCOUNT',
+                'force_group' => true
+            ],
+            'RUBELS MOTOR PARTS' => [
+                'lookup_name' => '',
+                'display_name' => 'RUBELS MOTOR PARTS',
+                'force_group' => true
+            ]
+        ];
+        $sheetBillerAliasKey = trl_lookup_key($sheetBillerName);
+        $usesSheetBillerAlias = isset($sheetBillerAliases[$sheetBillerAliasKey]);
+        $sheetBillerLookupName = $usesSheetBillerAlias
+            ? $sheetBillerAliases[$sheetBillerAliasKey]['lookup_name']
+            : $sheetBillerName;
+        $sheetBiller = trl_find_lookup_match($sheetBillerLookupName, $subBillerLookup);
+        if (!$sheetBiller) {
+            $sheetBiller = trl_find_lookup_match($sheetBillerLookupName, $directBillerLookup);
+        }
+        $sheetBillerDisplayName = $usesSheetBillerAlias
+            ? $sheetBillerAliases[$sheetBillerAliasKey]['display_name']
+            : (string) ($sheetBiller['name'] ?? $sheetBillerName);
+        $forceSheetBillerGroup = $usesSheetBillerAlias
+            && !empty($sheetBillerAliases[$sheetBillerAliasKey]['force_group']);
 
         $requiredMap = [
             'TRANS. DATE/TIME' => 'transfer_datetime',
@@ -208,9 +385,14 @@ for ($i = 0; $i < $fileCount; $i++) {
         ];
 
         $highestRow = $sheet->getHighestRow();
-        $rowsForFile = 0;
 
         for ($row = $headerRow + 1; $row <= $highestRow; $row++) {
+            $sectionMarkerA = trl_normalize_header($sheet->getCell('A' . $row)->getValue());
+            $sectionMarkerB = trl_normalize_header($sheet->getCell('B' . $row)->getValue());
+            if ($sectionMarkerA === 'MBTC COL' && $sectionMarkerB === 'MBTC RTA') {
+                break;
+            }
+
             $record = [
                 'transfer_datetime' => null,
                 'ref_no' => '',
@@ -229,7 +411,9 @@ for ($i = 0; $i < $fileCount; $i++) {
                 'difference_value' => null,
                 'reason' => '',
                 'duplicate_ok' => true,
-                'source_file' => $fileName
+                'source_file' => $fileName,
+                'source_sheet' => $sheetName,
+                'source_format' => $legacyFormat ? 'legacy' : 'standard'
             ];
 
             $hasData = false;
@@ -265,6 +449,44 @@ for ($i = 0; $i < $fileCount; $i++) {
                 }
             }
 
+            if ($legacyFormat) {
+                $record['type_of_request'] = trl_infer_request_type($record['reason']);
+
+                $rowBiller = $forceSheetBillerGroup
+                    ? null
+                    : trl_find_lookup_match($record['biller_name'], $subBillerLookup);
+                $wrongBiller = $rowBiller ?: $sheetBiller;
+                if ($wrongBiller) {
+                    $record['wrong_biller_id'] = $wrongBiller['id'];
+                }
+                if ($forceSheetBillerGroup || ($rowBiller === null && $sheetBillerName !== '' && $sheetBiller)) {
+                    $record['biller_name'] = $sheetBillerDisplayName;
+                }
+
+                $branch = trl_find_lookup_match($record['payment_branch'], $branchLookup, 0.94);
+                if ($branch) {
+                    $record['payment_branch_id'] = $branch['id'];
+                    $record['payment_branch'] = $branch['name'];
+                }
+
+                if ($record['type_of_request'] === 'WRONG BILLER') {
+                    $intendedBillerName = trl_extract_intended_biller($record['reason']);
+                    $intendedBiller = trl_find_lookup_match($intendedBillerName, $subBillerLookup, 0.84);
+                    if (!$intendedBiller) {
+                        $intendedBiller = trl_find_lookup_match($intendedBillerName, $directBillerLookup, 0.84);
+                    }
+                    $record['correct_biller_id'] = $intendedBiller ? $intendedBiller['id'] : '';
+                    $record['correct_biller_name'] = $intendedBiller ? $intendedBiller['name'] : $intendedBillerName;
+                }
+
+                if ($record['type_of_request'] === 'OVERSTATED AMOUNT') {
+                    list($wrongAmount, $correctAmount, $difference) = trl_extract_reason_amounts($record['reason']);
+                    $record['wrong_amount'] = $wrongAmount;
+                    $record['correct_amount'] = $correctAmount;
+                    $record['difference_value'] = $difference;
+                }
+            }
+
             // Canonicalize request type and keep only type-owned supplemental fields.
             $type = trl_normalize_request_type($record['type_of_request'] ?? '');
             $record['type_of_request'] = $type;
@@ -290,23 +512,33 @@ for ($i = 0; $i < $fileCount; $i++) {
                 continue;
             }
 
-            // If REF. NO. is empty, assume we've reached end-of-data (totals/footer)
+            // Totals, spacers, and footers may appear between multiple TRL
+            // sections in the same worksheet. Skip them instead of stopping.
             $refVal = isset($record['ref_no']) ? trim((string) $record['ref_no']) : '';
             if ($refVal === '') {
-                // stop reading further rows for this file
-                break;
+                continue;
+            }
+
+            // A worksheet may repeat its table header for another section.
+            if (trl_normalize_header($refVal) === trl_normalize_header('REF. NO.')) {
+                continue;
             }
 
             $allRows[] = $record;
             $rowsForFile++;
         }
 
+        }
+
         $fileResults[] = [
             'fileName' => $fileName,
             'totalRows' => $rowsForFile,
             'duplicateRows' => 0,
-            'isUnique' => true,
-            'error' => null
+            'isUnique' => $processedSheets > 0,
+            'error' => $processedSheets > 0 ? null : 'No worksheet with a valid TRL header was found.',
+            'sheetCount' => $spreadsheet->getSheetCount(),
+            'processedSheetCount' => $processedSheets,
+            'skippedSheets' => $skippedSheets
         ];
 
         if (isset($spreadsheet) && is_object($spreadsheet)) {

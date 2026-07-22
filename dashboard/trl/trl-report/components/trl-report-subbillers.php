@@ -1,44 +1,86 @@
 <?php
-$partners = [];
+$masterfileIdSql = "CASE WHEN COALESCE(TRIM(partner_id_kpx), '') <> '' THEN CONVERT(TRIM(partner_id_kpx) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ELSE CONVERT(TRIM(COALESCE(partner_id, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci END";
+$masterfileIdDSql = "CASE WHEN COALESCE(TRIM(d.partner_id_kpx), '') <> '' THEN CONVERT(TRIM(d.partner_id_kpx) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ELSE CONVERT(TRIM(COALESCE(d.partner_id, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci END";
+$masterfileIdSSql = "CASE WHEN COALESCE(TRIM(s.partner_id_kpx), '') <> '' THEN CONVERT(TRIM(s.partner_id_kpx) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ELSE CONVERT(TRIM(COALESCE(s.partner_id, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci END";
+$partners = [
+    'all' => ['id' => '', 'name' => 'All', 'source' => 'all', 'label' => 'All']
+];
 $partnersSql = "
     SELECT DISTINCT
-        TRIM(COALESCE(partner_id_kpx, '')) AS partner_id_kpx,
-        TRIM(COALESCE(partner_name, '')) AS partner_name
-    FROM mldb.subbiller
+        CONVERT(CONCAT('subbiller:', TRIM(COALESCE(partner_id_kpx, ''))) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_key,
+        CONVERT(TRIM(COALESCE(partner_id_kpx, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_identifier,
+        CONVERT(TRIM(COALESCE(partner_name, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_name,
+        'subbiller' AS partner_source
+    FROM masterdata.subbiller
     WHERE COALESCE(TRIM(partner_id_kpx), '') <> ''
       AND COALESCE(TRIM(partner_name), '') <> ''
+    UNION
+    SELECT DISTINCT
+        CONCAT('masterfile:', " . $masterfileIdSql . ") AS partner_key,
+        " . $masterfileIdSql . " AS partner_identifier,
+        CONVERT(TRIM(COALESCE(partner_name, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS partner_name,
+        'masterfile' AS partner_source
+    FROM masterdata.partner_masterfile d
+    WHERE " . $masterfileIdSql . " <> ''
+      AND COALESCE(TRIM(partner_name), '') <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM masterdata.subbiller sb
+          WHERE COALESCE(TRIM(sb.sub_billers_id), '') <> ''
+            AND (
+                CONVERT(TRIM(COALESCE(sb.partner_id_kpx, '')) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = " . $masterfileIdDSql . "
+                OR CONVERT(UPPER(TRIM(COALESCE(sb.partner_name, ''))) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = CONVERT(UPPER(TRIM(COALESCE(d.partner_name, ''))) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+            )
+      )
     ORDER BY partner_name ASC
 ";
 
 $partnersRes = mysqli_query($conn, $partnersSql);
 if ($partnersRes) {
     while ($p = mysqli_fetch_assoc($partnersRes)) {
-        $pid = (string) ($p['partner_id_kpx'] ?? '');
+        $key = (string) ($p['partner_key'] ?? '');
+        $pid = (string) ($p['partner_identifier'] ?? '');
         $pname = (string) ($p['partner_name'] ?? '');
-        if ($pid !== '' && $pname !== '') {
-            $partners[$pid] = $pname;
+        $source = (string) ($p['partner_source'] ?? 'subbiller');
+        if (strcasecmp($pname, 'METROBANK RTA') === 0) {
+            $pname = 'METROBANK REMIT TO ACCOUNT';
+        }
+        if ($key !== '' && $pid !== '' && $pname !== '') {
+            $partners[$key] = [
+                'id' => $pid,
+                'name' => $pname,
+                'source' => $source,
+                'label' => $pname
+            ];
         }
     }
 }
 
 $selectedPartnerId = isset($_GET['partner_id']) ? trim((string) $_GET['partner_id']) : '';
+if ($selectedPartnerId !== '' && !isset($partners[$selectedPartnerId]) && isset($partners['subbiller:' . $selectedPartnerId])) {
+    $selectedPartnerId = 'subbiller:' . $selectedPartnerId;
+}
 if ($selectedPartnerId !== '' && !isset($partners[$selectedPartnerId])) {
     $selectedPartnerId = '';
 }
 
-$selectedPartnerName = $selectedPartnerId !== '' ? (string) $partners[$selectedPartnerId] : '';
+$selectedPartner = $selectedPartnerId !== '' ? $partners[$selectedPartnerId] : null;
+$selectedPartnerName = $selectedPartner ? (string) $selectedPartner['label'] : '';
+$selectedPartnerValue = $selectedPartner ? (string) $selectedPartner['id'] : '';
+$isAllPartners = $selectedPartner && (($selectedPartner['source'] ?? '') === 'all');
+$isPartnerMasterfile = $selectedPartner && (($selectedPartner['source'] ?? '') === 'masterfile');
 
 // fetch subbillers for partner
 $subbillers = [];
-if ($selectedPartnerId !== '') {
-    $ss = $conn->prepare(
-        "SELECT TRIM(COALESCE(sub_billers_id, '')) AS id, COALESCE(NULLIF(TRIM(sub_billers_name), ''), 'UNKNOWN BILLER') AS name
-         FROM mldb.subbiller
-         WHERE TRIM(COALESCE(partner_id_kpx, '')) = ?
-         ORDER BY sub_billers_name ASC"
-    );
+if ($selectedPartnerId !== '' && !$isAllPartners) {
+    $subbillerLookupSql = $isPartnerMasterfile
+        ? "SELECT " . $masterfileIdSql . " AS id, COALESCE(NULLIF(TRIM(partner_name), ''), 'UNKNOWN BILLER') AS name
+           FROM masterdata.partner_masterfile WHERE " . $masterfileIdSql . " = CONVERT(? USING utf8mb4) COLLATE utf8mb4_0900_ai_ci ORDER BY partner_name ASC"
+        : "SELECT TRIM(COALESCE(sub_billers_id, '')) AS id, COALESCE(NULLIF(TRIM(sub_billers_name), ''), 'UNKNOWN BILLER') AS name
+           FROM masterdata.subbiller WHERE TRIM(COALESCE(partner_id_kpx, '')) = ? ORDER BY sub_billers_name ASC";
+    $ss = $conn->prepare($subbillerLookupSql);
     if ($ss) {
-        $ss->bind_param('s', $selectedPartnerId);
+        $ss->bind_param('s', $selectedPartnerValue);
         if ($ss->execute()) {
             $res = $ss->get_result();
             while ($r = $res->fetch_assoc()) {
@@ -63,6 +105,16 @@ if (!empty($_GET['subbiller']) && is_array($_GET['subbiller'])) {
     }
 }
 
+// A standalone partner from the master file has no child sub-billers. Use the
+// partner itself as the report/export selection without showing the selector.
+if ($isAllPartners) {
+    $selectedSub = [];
+} elseif ($isPartnerMasterfile && $selectedPartnerValue !== '') {
+    $selectedSub = [$selectedPartnerValue];
+}
+
+$hasSelectableSubbillers = !$isAllPartners && !$isPartnerMasterfile && !empty($subbillers);
+
 // Do not default to selecting all sub-billers. Let the user choose explicitly.
 // (If the user submits the form with no selection, we respect the empty selection.)
 
@@ -79,28 +131,43 @@ if ($selectedPartnerId !== '') {
         $escaped = array_map(function($v) use ($conn) {
             return "'" . $conn->real_escape_string((string) $v) . "'";
         }, $selectedSub);
-        $inClause = ' AND s.sub_billers_id IN (' . implode(',', $escaped) . ') ';
+        $selectedIdColumn = $isPartnerMasterfile ? $masterfileIdSSql : 's.sub_billers_id';
+        $inClause = ' AND ' . $selectedIdColumn . ' IN (' . implode(',', $escaped) . ') ';
     }
+
+    $reportJoin = $isAllPartners
+        ? ''
+        : ($isPartnerMasterfile
+        ? "INNER JOIN masterdata.partner_masterfile s
+            ON CONVERT(TRIM(CAST(t.wrong_biller_id AS CHAR)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = " . $masterfileIdSSql . "
+            OR (TRIM(COALESCE(t.biller_name, '')) <> '' AND CONVERT(UPPER(TRIM(t.biller_name)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = CONVERT(UPPER(TRIM(s.partner_name)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci)"
+        : "INNER JOIN masterdata.subbiller s
+            ON BINARY TRIM(CAST(t.wrong_biller_id AS CHAR)) = BINARY TRIM(CAST(s.sub_billers_id AS CHAR))");
+    $reportName = $isAllPartners ? 't.biller_name' : ($isPartnerMasterfile ? 's.partner_name' : 's.sub_billers_name');
+    $partnerWhere = $isAllPartners ? '1 = 1' : ($isPartnerMasterfile
+        ? $masterfileIdSSql . " = CONVERT(? USING utf8mb4) COLLATE utf8mb4_0900_ai_ci"
+        : 's.partner_id_kpx = ?');
 
     $sql = "
         SELECT
-            COALESCE(NULLIF(TRIM(s.sub_billers_name), ''), 'UNKNOWN BILLER') AS sub_biller_name,
+            COALESCE(NULLIF(TRIM(" . $reportName . "), ''), 'UNKNOWN BILLER') AS sub_biller_name,
             YEAR(t.transfer_datetime) AS report_year,
             SUM(COALESCE(t.amount, 0)) AS total_amount
         FROM mldb.trl t
-        INNER JOIN mldb.subbiller s
-            ON CAST(t.wrong_biller_id AS CHAR) = CAST(s.sub_billers_id AS CHAR)
-        WHERE s.partner_id_kpx = ?
+        " . $reportJoin . "
+        WHERE " . $partnerWhere . "
             AND t.transfer_datetime IS NOT NULL
             AND t.status IS NULL
             " . $inClause . "
-        GROUP BY COALESCE(NULLIF(TRIM(s.sub_billers_name), ''), 'UNKNOWN BILLER'), YEAR(t.transfer_datetime)
+        GROUP BY COALESCE(NULLIF(TRIM(" . $reportName . "), ''), 'UNKNOWN BILLER'), YEAR(t.transfer_datetime)
         ORDER BY sub_biller_name ASC, report_year ASC
     ";
 
     $stmt = $conn->prepare($sql);
     if ($stmt) {
-        $stmt->bind_param('s', $selectedPartnerId);
+        if (!$isAllPartners) {
+            $stmt->bind_param('s', $selectedPartnerValue);
+        }
         if ($stmt->execute()) {
             $result = $stmt->get_result();
             while ($r = $result->fetch_assoc()) {
@@ -131,10 +198,11 @@ if ($selectedPartnerId !== '') {
 $yearColumns = array_keys($yearColumns);
 sort($yearColumns);
 ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
+$reportEntityLabel = !empty($isPartnerMasterfile) ? 'BILLER' : 'SUB BILLERS';
 
 // build export URL base (only when sub-billers are explicitly selected)
 $exportBase = '';
-if ($selectedPartnerId !== '' && !empty($selectedSub)) {
+if ($selectedPartnerId !== '' && $selectedPartnerId !== 'all' && !empty($selectedSub)) {
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
     $baseDir = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\');
     $exportBase = $scheme . '://' . $_SERVER['HTTP_HOST'] . $baseDir . '/controllers/trl-report-excel-subbiler.php?partner_id=' . rawurlencode($selectedPartnerId);
@@ -156,14 +224,17 @@ if ($selectedPartnerId !== '' && !empty($selectedSub)) {
             <div class="subbiller-dropdown partner-dropdown" id="partnerDropdownSub">
                 <button type="button" id="partnerToggleSub" class="subbiller-toggle partner-toggle"><?php echo $selectedPartnerName !== '' ? htmlspecialchars($selectedPartnerName) : 'Select Partner'; ?> <i class="fa-solid fa-caret-down" aria-hidden="true"></i></button>
                 <div class="subbiller-list partner-list" id="partnerListSub" aria-hidden="true">
-                    <?php foreach ($partners as $pid => $pname): ?>
-                        <button type="button" class="partner-item" data-value="<?php echo htmlspecialchars($pid); ?>"><?php echo htmlspecialchars($pname); ?></button>
+                    <div class="partner-search-wrap">
+                        <input type="search" id="partnerSearchSub" class="partner-search" placeholder="Search partner..." aria-label="Search partners" autocomplete="off">
+                    </div>
+                    <?php foreach ($partners as $partnerKey => $partner): ?>
+                        <button type="button" class="partner-item" data-value="<?php echo htmlspecialchars($partnerKey); ?>"><?php echo htmlspecialchars((string) $partner['label']); ?></button>
                     <?php endforeach; ?>
                 </div>
             </div>
             <input type="hidden" id="partner_id_sub" name="partner_id" value="<?php echo htmlspecialchars($selectedPartnerId); ?>">
 
-            <?php if ($selectedPartnerId !== ''): ?>
+            <?php if ($selectedPartnerId !== '' && $hasSelectableSubbillers): ?>
                 <div class="subbiller-dropdown" id="subbillerDropdown">
                     <button type="button" id="subbillerToggle" class="btn subbiller-toggle">Select Sub-billers <i class="fa-solid fa-caret-down" aria-hidden="true"></i></button>
                     <div class="subbiller-list" id="subbillerList">
@@ -184,7 +255,7 @@ if ($selectedPartnerId !== '' && !empty($selectedSub)) {
         </form>
 
         <div class="trl-subbillers-actions">
-            <a href="<?php echo htmlspecialchars($exportBase !== '' ? $exportBase : '#'); ?>" id="trlExportSubBtn" class="btn btn-danger <?php echo ($selectedPartnerId === '' || empty($selectedSub)) ? 'is-disabled' : ''; ?>" data-export-base="<?php echo htmlspecialchars($exportBase); ?>" data-partner-name="<?php echo htmlspecialchars($selectedPartnerName); ?>">Export Sub-biller(s)</a>
+            <a href="<?php echo htmlspecialchars($exportBase !== '' ? $exportBase : '#'); ?>" id="trlExportSubBtn" class="btn btn-danger <?php echo ($selectedPartnerId === '' || $selectedPartnerId === 'all' || empty($selectedSub)) ? 'is-disabled' : ''; ?>" data-export-base="<?php echo htmlspecialchars($exportBase); ?>" data-partner-name="<?php echo htmlspecialchars($selectedPartnerName); ?>"><?php echo !empty($isPartnerMasterfile) ? 'Export Biller' : 'Export Sub-biller(s)'; ?></a>
         </div>
     </div>
 
@@ -194,7 +265,7 @@ if ($selectedPartnerId !== '' && !empty($selectedSub)) {
         <div class="trl-summary-empty">No TRL rows found for the selected partner / sub-biller selection.</div>
     <?php else: ?>
         <div class="trl-summary-title">
-            <?php echo htmlspecialchars(strtoupper($selectedPartnerName) . ' SUB BILLERS'); ?>
+            <?php echo htmlspecialchars(strtoupper($selectedPartnerName) . ' ' . $reportEntityLabel); ?>
         </div>
 
         <div class="trl-summary-table-wrap">
@@ -208,7 +279,7 @@ if ($selectedPartnerId !== '' && !empty($selectedSub)) {
                 </colgroup>
                 <thead>
                     <tr>
-                        <th class="partner-col-head"><?php echo htmlspecialchars(strtoupper((string) $selectedPartnerName)); ?><br><span>SUB BILLERS</span></th>
+                        <th class="partner-col-head"><?php echo htmlspecialchars(strtoupper((string) $selectedPartnerName)); ?><br><span><?php echo htmlspecialchars($reportEntityLabel); ?></span></th>
                         <?php foreach ($yearColumns as $year): ?>
                             <th><?php echo htmlspecialchars((string) $year); ?></th>
                         <?php endforeach; ?>
@@ -266,10 +337,30 @@ if ($selectedPartnerId !== '' && !empty($selectedSub)) {
     var pToggle = document.getElementById('partnerToggleSub');
     var pList = document.getElementById('partnerListSub');
     var pForm = document.getElementById('subbillerFilterForm');
+    var pSearch = document.getElementById('partnerSearchSub');
     if (pToggle && pList && partnerInput) {
-        pToggle.addEventListener('click', function(e){ pList.classList.toggle('open'); e.stopPropagation(); });
+        pToggle.addEventListener('click', function(e){
+            pList.classList.toggle('open');
+            if (pList.classList.contains('open') && pSearch) {
+                pSearch.value = '';
+                pList.querySelectorAll('.partner-item').forEach(function(item) { item.hidden = false; });
+                window.setTimeout(function() { pSearch.focus(); }, 0);
+            }
+            e.stopPropagation();
+        });
         document.addEventListener('click', function(ev){ if (pList.classList.contains('open') && !pList.contains(ev.target) && !pToggle.contains(ev.target)) { pList.classList.remove('open'); } });
         var pItems = pList.querySelectorAll('.partner-item');
+        if (pSearch) {
+            pSearch.addEventListener('click', function(e) { e.stopPropagation(); });
+            pSearch.addEventListener('input', function() {
+                var term = pSearch.value.trim().toLowerCase();
+                pItems.forEach(function(item) { item.hidden = item.textContent.toLowerCase().indexOf(term) === -1; });
+            });
+            pSearch.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') e.preventDefault();
+                if (e.key === 'Escape') { pList.classList.remove('open'); pToggle.focus(); }
+            });
+        }
         pItems.forEach(function(it){
             it.addEventListener('click', function(){
                 var val = it.getAttribute('data-value') || '';
