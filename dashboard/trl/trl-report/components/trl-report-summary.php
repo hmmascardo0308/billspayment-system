@@ -160,8 +160,12 @@ if ($selectedPartnerId !== '') {
 $yearColumns = array_keys($yearColumns);
 sort($yearColumns);
 ksort($rowsBySubBiller, SORT_NATURAL | SORT_FLAG_CASE);
-$reportEntityLabel = !empty($isPartnerMasterfile) ? 'BILLER' : 'SUB BILLERS';
-$reportEntitySingular = !empty($isPartnerMasterfile) ? 'Biller' : 'Subbiller';
+$reportEntityLabel = !empty($isAllPartners)
+    ? 'SUB BILLERS / BILLERS'
+    : (!empty($isPartnerMasterfile) ? 'BILLER' : 'SUB BILLERS');
+$reportEntitySingular = !empty($isAllPartners)
+    ? 'Biller'
+    : (!empty($isPartnerMasterfile) ? 'Biller' : 'Subbiller');
 ?>
 
 <div class="trl-summary-card">
@@ -519,6 +523,10 @@ $reportEntitySingular = !empty($isPartnerMasterfile) ? 'Biller' : 'Subbiller';
     }
 
     function renderDetails(payload) {
+        if (payload.entity_type === 'Subbiller' || payload.entity_type === 'Biller') {
+            reportEntitySingular = payload.entity_type;
+        }
+
         var summaryYears = payload.summary && payload.summary.years ? payload.summary.years : [];
         var summaryByYear = payload.summary && payload.summary.by_year ? payload.summary.by_year : {};
         var summaryTotal = payload.summary && payload.summary.total ? payload.summary.total : 0;

@@ -8,8 +8,13 @@ if (empty($id)) { header('Location: ../../../login_form.php'); exit; }
 // page-level permission enforcement (allow existing 'Bills Payment' holders too)
 if (!function_exists('has_any_permission') || !has_any_permission(['TRL Entry','Bills Payment'])) { header('Location: ../../home.php'); exit; }
 
+$canAccessPendingApprovals =
+    (($_SESSION['user_type'] ?? '') === 'admin') ||
+    ((string) $id === '17098209');
+
 $mode = strtolower(trim((string) ($_GET['mode'] ?? 'auto')));
-if (!in_array($mode, ['auto', 'manual', 'ticket', 'draft'], true)) {
+if (!in_array($mode, ['auto', 'manual', 'ticket', 'draft', 'pending'], true) ||
+    ($mode === 'pending' && !$canAccessPendingApprovals)) {
     $mode = 'auto';
 }
 
@@ -70,6 +75,15 @@ unset($_SESSION['trl_entry_flash']);
                             <p class="mode-label">Drafts</p>
                         </div>
                     </label>
+                    <?php if ($canAccessPendingApprovals): ?>
+                        <label class="mode-card <?php echo $mode === 'pending' ? 'selected' : ''; ?>" data-mode="pending">
+                            <input type="radio" name="entryMode" value="pending" <?php echo $mode === 'pending' ? 'checked' : ''; ?>>
+                            <div class="mode-icon"><i class="fa-solid fa-clock-rotate-left"></i></div>
+                            <div class="mode-text">
+                                <p class="mode-label">Pending Approvals</p>
+                            </div>
+                        </label>
+                    <?php endif; ?>
                 </div>
 
                 <button id="entrySubmitBtn" class="btn btn-danger" type="submit" style="display:none;">Submit</button>
@@ -96,6 +110,12 @@ unset($_SESSION['trl_entry_flash']);
             <div id="draftPanel" class="mode-panel <?php echo $mode === 'draft' ? '' : 'hidden'; ?>">
                 <?php require __DIR__ . '/components/trl-entry-drafts.php'; ?>
             </div>
+
+            <?php if ($canAccessPendingApprovals): ?>
+                <div id="pendingPanel" class="mode-panel <?php echo $mode === 'pending' ? '' : 'hidden'; ?>">
+                    <?php require __DIR__ . '/components/trl-entry-pending.php'; ?>
+                </div>
+            <?php endif; ?>
         </div>
 
         <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.js"></script>
@@ -107,6 +127,7 @@ unset($_SESSION['trl_entry_flash']);
             var manualPanel = document.getElementById('manualPanel');
             var ticketPanel = document.getElementById('ticketPanel');
             var draftPanel = document.getElementById('draftPanel');
+            var pendingPanel = document.getElementById('pendingPanel');
             var submitBtn = document.getElementById('entrySubmitBtn');
 
             function activeMode() {
@@ -163,6 +184,7 @@ unset($_SESSION['trl_entry_flash']);
                 manualPanel.classList.toggle('hidden', mode !== 'manual');
                 ticketPanel.classList.toggle('hidden', mode !== 'ticket');
                 draftPanel.classList.toggle('hidden', mode !== 'draft');
+                if (pendingPanel) pendingPanel.classList.toggle('hidden', mode !== 'pending');
                 updateSubmitVisibility();
             }
 

@@ -269,6 +269,36 @@ if ($directBillerResult) {
     }
 }
 
+$partnerMasterfileLookup = [];
+$partnerMasterfileResult = mysqli_query(
+    $conn,
+    "SELECT
+        CASE
+            WHEN TRIM(COALESCE(partner_id_kpx, '')) <> '' THEN TRIM(partner_id_kpx)
+            ELSE TRIM(COALESCE(partner_id, ''))
+        END AS biller_id,
+        partner_name
+     FROM masterdata.partner_masterfile
+     WHERE TRIM(COALESCE(partner_name, '')) <> ''"
+);
+if ($partnerMasterfileResult) {
+    while ($partner = mysqli_fetch_assoc($partnerMasterfileResult)) {
+        $key = trl_lookup_key($partner['partner_name'] ?? '');
+        $billerId = trim((string) ($partner['biller_id'] ?? ''));
+        if ($key !== '' && $billerId !== '' && !isset($partnerMasterfileLookup[$key])) {
+            $partnerMasterfileLookup[$key] = [
+                'id' => $billerId,
+                'name' => (string) ($partner['partner_name'] ?? '')
+            ];
+        }
+    }
+}
+
+$allBillerLookup = $subBillerLookup + $directBillerLookup + $partnerMasterfileLookup;
+$findBillerMatch = function ($value, $minimumScore = 0.88) use ($allBillerLookup) {
+    return trl_find_lookup_match($value, $allBillerLookup, $minimumScore);
+};
+
 $branchLookup = [];
 $branchResult = mysqli_query($conn, "SELECT branch_id, branch_name FROM masterdata.branch_profile WHERE TRIM(COALESCE(branch_name, '')) <> ''");
 if ($branchResult) {
@@ -353,10 +383,7 @@ for ($i = 0; $i < $fileCount; $i++) {
         $sheetBillerLookupName = $usesSheetBillerAlias
             ? $sheetBillerAliases[$sheetBillerAliasKey]['lookup_name']
             : $sheetBillerName;
-        $sheetBiller = trl_find_lookup_match($sheetBillerLookupName, $subBillerLookup);
-        if (!$sheetBiller) {
-            $sheetBiller = trl_find_lookup_match($sheetBillerLookupName, $directBillerLookup);
-        }
+        $sheetBiller = $findBillerMatch($sheetBillerLookupName);
         $sheetBillerDisplayName = $usesSheetBillerAlias
             ? $sheetBillerAliases[$sheetBillerAliasKey]['display_name']
             : (string) ($sheetBiller['name'] ?? $sheetBillerName);
@@ -449,12 +476,19 @@ for ($i = 0; $i < $fileCount; $i++) {
                 }
             }
 
+            if ($record['wrong_biller_id'] === '' && $record['biller_name'] !== '') {
+                $matchedBiller = $findBillerMatch($record['biller_name']);
+                if ($matchedBiller) {
+                    $record['wrong_biller_id'] = $matchedBiller['id'];
+                }
+            }
+
             if ($legacyFormat) {
                 $record['type_of_request'] = trl_infer_request_type($record['reason']);
 
                 $rowBiller = $forceSheetBillerGroup
                     ? null
-                    : trl_find_lookup_match($record['biller_name'], $subBillerLookup);
+                    : $findBillerMatch($record['biller_name']);
                 $wrongBiller = $rowBiller ?: $sheetBiller;
                 if ($wrongBiller) {
                     $record['wrong_biller_id'] = $wrongBiller['id'];

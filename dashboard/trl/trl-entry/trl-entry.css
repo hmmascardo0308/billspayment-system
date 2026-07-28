@@ -212,6 +212,64 @@
 	font-weight: 700;
 }
 
+.trl-pending-count {
+	background: #fff7e6;
+	color: #9a6700;
+}
+
+.trl-pending-status,
+.trl-attachment-count {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	border-radius: 999px;
+	padding: 5px 9px;
+	font-size: 12px;
+	font-weight: 700;
+	white-space: nowrap;
+}
+
+.trl-pending-status {
+	background: #fff7e6;
+	color: #9a6700;
+}
+
+.trl-attachment-count {
+	background: #eff6ff;
+	color: #175cd3;
+}
+
+.trl-pending-attachments {
+	display: grid;
+	gap: 5px;
+	min-width: 180px;
+}
+
+.trl-pending-attachment-link {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	max-width: 250px;
+	color: #175cd3;
+	font-size: 12px;
+	font-weight: 600;
+	text-decoration: none;
+	word-break: break-word;
+}
+
+.trl-pending-attachment-link:hover {
+	color: #b42318;
+	text-decoration: underline;
+}
+
+.trl-pending-approve {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	white-space: nowrap;
+}
+
 .trl-drafts-empty {
 	padding: 32px 18px;
 	border: 1px dashed #d0d5dd;

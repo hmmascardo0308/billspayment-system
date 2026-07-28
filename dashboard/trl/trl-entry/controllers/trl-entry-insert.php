@@ -196,8 +196,7 @@ $payload = [
 ];
 
 $requiredKeys = [
-    // Original biller fields may be empty for direct biller or partner transactions.
-    'transfer_datetime', 'account_no', 'name',
+    'transfer_datetime', 'account_no', 'name', 'biller_name',
     'payment_branch_id', 'payment_branch_name', 'amount', 'type_of_request', 'reason'
 ];
 
@@ -272,7 +271,7 @@ try {
     exit;
 }
 
-$trlStatus = empty($attachments) ? 'DRAFT' : null;
+$trlStatus = empty($attachments) ? 'DRAFT' : 'PENDING_APPROVAL';
 
 // Duplicate check: ensure reference number isn't already present
 $refToCheck = trim((string) $payload['ref_no']);
@@ -458,10 +457,12 @@ try {
         'title' => empty($attachments) ? 'Draft Saved' : 'Transaction Request Log',
         'message' => empty($attachments)
             ? 'No attachment was provided, so the transaction was saved as a draft.'
-            : 'Transaction Request Log has been submitted for review successfully!',
+            : 'Transaction Request Log has been submitted and is now pending approval.',
         'redirect' => empty($attachments)
             ? 'trl-entry.php?mode=draft'
-            : '../trl-review/trl-review.php'
+            : (((($_SESSION['user_type'] ?? '') === 'admin') || ((string) $id === '17098209'))
+                ? 'trl-entry.php?mode=pending'
+                : 'trl-entry.php')
     ]);
     exit;
 } catch (Exception $e) {

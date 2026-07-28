@@ -109,7 +109,7 @@ try {
         $transferDatetime = !empty($row['transfer_datetime']) ? $row['transfer_datetime'] : null;
         $refNo = trim((string) ($row['ref_no'] ?? ''));
         $wrongBillerId = trim((string) ($row['wrong_biller_id'] ?? ''));
-        $wrongBillerIdValue = preg_match('/^-?\d+$/', $wrongBillerId) ? (int) $wrongBillerId : null;
+        $wrongBillerIdValue = $wrongBillerId !== '' ? $wrongBillerId : null;
         $billerName = trim((string) ($row['biller_name'] ?? ''));
         $accountNo = trim((string) ($row['account_no'] ?? ''));
         $name = trim((string) ($row['name'] ?? ''));
@@ -125,7 +125,7 @@ try {
         $isLegacyFormat = (($row['source_format'] ?? '') === 'legacy');
 
         $stmt->bind_param(
-            'ssisssisdsss',
+            'ssssssisdsss',
             $transferDatetime,
             $refNo,
             $wrongBillerIdValue,
