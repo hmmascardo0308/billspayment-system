@@ -123,23 +123,25 @@ try {
         trl_draft_insert_file($conn, $trlNo, $userId, $file);
     }
 
-    if (strcasecmp((string) ($draft['status'] ?? ''), 'DRAFT') === 0) {
-        $updateStmt = $conn->prepare("UPDATE mldb.trl SET status = NULL WHERE trl_no = ? AND status = 'DRAFT'");
-        if (!$updateStmt) throw new Exception('Unable to prepare draft submission.');
-        $updateStmt->bind_param('i', $trlNo);
-        if (!$updateStmt->execute() || $updateStmt->affected_rows !== 1) {
-            $updateStmt->close();
-            throw new Exception('The draft could not be submitted for review.');
-        }
+    $updateStmt = $conn->prepare("UPDATE mldb.trl
+        SET status = 'PENDING_APPROVAL'
+        WHERE trl_no = ? AND (status = 'DRAFT' OR status IS NULL)");
+    if (!$updateStmt) throw new Exception('Unable to prepare draft submission.');
+    $updateStmt->bind_param('i', $trlNo);
+    if (!$updateStmt->execute() || $updateStmt->affected_rows !== 1) {
         $updateStmt->close();
+        throw new Exception('The draft could not be submitted for approval.');
     }
+    $updateStmt->close();
 
     $conn->commit();
     $conn->autocommit(true);
     echo json_encode([
         'success' => true,
-        'message' => 'The attachment was saved and the transaction is now ready for TRL Review.',
-        'redirect' => '../trl-review/trl-review.php'
+        'message' => 'The attachment was saved and the transaction is now pending approval.',
+        'redirect' => ((($_SESSION['user_type'] ?? '') === 'admin') || ((string) $userId === '17098209'))
+            ? 'trl-entry.php?mode=pending'
+            : 'trl-entry.php'
     ]);
     exit;
 } catch (Exception $e) {

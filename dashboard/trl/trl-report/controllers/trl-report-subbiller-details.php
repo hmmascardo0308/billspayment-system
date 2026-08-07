@@ -41,6 +41,7 @@ if ($usesBillerName && $billerNameValue === '') {
 
 $partnerName = '';
 $subbillerName = '';
+$entityType = $isPartnerMasterfile ? 'Biller' : 'Subbiller';
 
 $metaSql = $usesBillerName
     ? "SELECT 'All' AS partner_name,
@@ -89,6 +90,32 @@ if ($metaStmt) {
 
 if ($partnerName === '') {
     trl_json_response(404, ['ok' => false, 'message' => 'Subbiller not found for the selected partner']);
+}
+
+if ($isAllPartners) {
+    $entityType = 'Biller';
+    $entityStmt = $conn->prepare(
+        "SELECT EXISTS (
+            SELECT 1
+            FROM mldb.subbiller
+            WHERE CAST(sub_billers_id AS CHAR) = CAST(? AS CHAR)
+               OR (
+                   TRIM(COALESCE(?, '')) <> ''
+                   AND CONVERT(UPPER(TRIM(sub_billers_name)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+                       = CONVERT(UPPER(TRIM(?)) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+               )
+        ) AS is_subbiller"
+    );
+    if ($entityStmt) {
+        $entityStmt->bind_param('sss', $subbillerId, $subbillerName, $subbillerName);
+        if ($entityStmt->execute()) {
+            $entityRes = $entityStmt->get_result();
+            if ($entityRes && ($entityRow = $entityRes->fetch_assoc()) && !empty($entityRow['is_subbiller'])) {
+                $entityType = 'Subbiller';
+            }
+        }
+        $entityStmt->close();
+    }
 }
 
 $summaryYears = [];
@@ -225,6 +252,7 @@ trl_json_response(200, [
     'partner_name' => $partnerName,
     'subbiller_id' => $subbillerId,
     'subbiller_name' => $subbillerName,
+    'entity_type' => $entityType,
     'summary' => [
         'years' => $summaryYears,
         'by_year' => $summaryByYear,
