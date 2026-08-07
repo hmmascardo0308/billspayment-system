@@ -810,7 +810,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             margin-left: 8px;
         }
         
-      
+        /* Date Restriction Info */
+        .date-restriction-info {
+            background: #e8f4fd;
+            border: 1px solid #b8d4e3;
+            color: #2c3e50;
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            display: none;
+        }
+        .date-restriction-info.active {
+            display: block;
+        }
+        .date-restriction-info .info-text {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .date-restriction-info .info-text i {
+            color: #3498db;
+            font-size: 18px;
+        }
     </style>
 </head>
 <body>
@@ -839,7 +860,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     Create New Invoice (Manual)
                 </div>
                 <div>
-                    <span class="badge" style="background: #ff6b6b; color: white; padding: 8px 15px; border-radius: 20px;">
+                    <span class="badge" style="background: #ff1111; color: white; padding: 8px 15px; border-radius: 20px;">
                         <i class="fa-regular fa-calendar"></i> <?php echo date('F d, Y'); ?>
                     </span>
                 </div>
@@ -853,11 +874,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 <span id="soaExistsMessage">SOA already exists for this partner and date range.</span>
             </div>
             
-            <!-- Date Restriction Info -->
+            <!-- Date Range Info -->
             <div class="date-restriction-info" id="dateRestrictionInfo">
                 <div class="info-text">
-                    <i class="fa-solid fa-info-circle"></i> 
-                    <span id="dateRestrictionMessage">Please select a partner to see date restrictions.</span>
+                    <i class="fa-regular fa-calendar-circle-plus"></i> 
+                    <span id="dateRestrictionMessage">Please select transaction dates.</span>
                 </div>
             </div>
             
@@ -874,7 +895,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     <label for="toDate"><i class="fa-solid fa-calendar-day"></i> Transaction Date To <span style="color: red;">*</span></label>
                     <input type="date" id="toDate" name="to_date">
                 </div>
-
 
                 <!-- Partner Selection -->
                 <div class="form-group">
@@ -990,8 +1010,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     </div>
                     
                     <div class="form-group">
-                        <label for="totalPrincipal"><i class="fa-solid fa-peso-sign"></i> Total Principal <span style="color: red;">*</span></label>
-                        <input type="number" id="totalPrincipal" name="total_principal" min="0" step="0.01" placeholder="Enter total principal amount">
+                        <label for="totalPrincipal"><i class="fa-solid fa-peso-sign"></i> Total Principal <span style="color: #7f8c8d; font-size: 12px;">(optional)</span></label>
+                        <input type="number" id="totalPrincipal" name="total_principal" min="0" step="0.01" placeholder="Enter total principal amount (optional)">
                     </div>
                     
                     <div class="form-group">
@@ -1037,7 +1057,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             <div class="value" id="previewTransactionCount">0</div>
                         </div>
                         <div class="summary-item">
-                            <div class="label"><i class="fa-solid fa-peso-sign"></i> Total Principal</div>
+                            <div class="label"><i class="fa-solid fa-peso-sign"></i> Total Principal <span style="font-size: 11px; color: #7f8c8d;">(optional)</span></div>
                             <div class="value" id="previewTotalPrincipal">₱ 0.00</div>
                         </div>
                         <div class="summary-item">
@@ -1225,98 +1245,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $('#toDate').val('');
         
         // =============================================
-        // DATE RESTRICTION LOGIC
+        // DATE RANGE VALIDATION - SIMPLE VERSION
         // =============================================
         
-        function getServiceChargeType() {
-            const serviceCharge = $('#serviceCharge').val() || '';
-            return serviceCharge.trim().toUpperCase();
-        }
-        
-        function getDateRestrictionMessage(serviceChargeType) {
-            const messages = {
-                'MONTHLY': 'Monthly: From date must be the 1st of the month, To date must be the last day of the month.',
-                'SEMI-MONTHLY': 'Semi-Monthly: From date must be the 1st or 16th of the month, To date must be the 15th or last day of the month.',
-                'WEEKLY': 'Weekly: From date must be Monday, To date must be Sunday (7-day week).',
-                'DAILY': 'Daily: From date and To date must be the same day.'
-            };
-            return messages[serviceChargeType] || 'No specific date restrictions for this partner.';
-        }
-        
-        function getDateRangeLimits(serviceChargeType) {
+        function validateDateRange() {
             const fromDate = $('#fromDate').val();
             const toDate = $('#toDate').val();
             
-            if (!fromDate || !toDate) return null;
+            if (!fromDate || !toDate) {
+                return true; // Don't validate if empty
+            }
             
             const from = new Date(fromDate);
             const to = new Date(toDate);
-            const month = from.getMonth();
-            const year = from.getFullYear();
-            const lastDay = new Date(year, month + 1, 0).getDate();
-            const fromDayOfWeek = from.getDay();
-            const toDayOfWeek = to.getDay();
-            const fromDay = from.getDate();
-            const toDay = to.getDate();
-            const diffTime = Math.abs(to - from);
-            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
             
-            let isValid = false;
-            let errorMessage = '';
-            
-            switch(serviceChargeType) {
-                case 'MONTHLY':
-                    if (fromDay === 1 && toDay === lastDay && diffDays === (lastDay - 1)) {
-                        isValid = true;
-                    } else {
-                        errorMessage = `Monthly requires: From = 1st of month, To = ${lastDay}th (last day of month).`;
-                    }
-                    break;
-                case 'SEMI-MONTHLY':
-                    const isFromValid = (fromDay === 1 || fromDay === 16);
-                    const isToValid = (toDay === 15 || toDay === lastDay);
-                    let isRangeValid = false;
-                    if (fromDay === 1 && toDay === 15 && diffDays === 14) {
-                        isRangeValid = true;
-                    } else if (fromDay === 16 && toDay === lastDay && diffDays === (lastDay - 16)) {
-                        isRangeValid = true;
-                    }
-                    if (isFromValid && isToValid && isRangeValid) {
-                        isValid = true;
-                    } else {
-                        errorMessage = `Semi-Monthly requires: From = 1st or 16th, To = 15th or last day of month.`;
-                    }
-                    break;
-                case 'WEEKLY':
-                    if (fromDayOfWeek === 1 && toDayOfWeek === 0 && diffDays === 6) {
-                        isValid = true;
-                    } else {
-                        errorMessage = `Weekly requires: From = Monday, To = Sunday (7-day week).`;
-                    }
-                    break;
-                case 'DAILY':
-                    if (diffDays === 0) {
-                        isValid = true;
-                    } else {
-                        errorMessage = `Daily requires: From date and To date must be the same day.`;
-                    }
-                    break;
-                default:
-                    isValid = true;
-                    errorMessage = '';
+            // Check if dates are valid
+            if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+                showAlert('Please select valid dates.', 'warning');
+                return false;
             }
             
-            return { isValid, errorMessage, from, to, diffDays };
+            // Check if from date is before or equal to to date
+            if (from > to) {
+                showAlert('Transaction Date From must be earlier than or equal to Transaction Date To.', 'warning');
+                $('#fromDate, #toDate').css('border-color', '#e74c3c');
+                return false;
+            }
+            
+            // Clear any error styling
+            $('#fromDate, #toDate').css('border-color', '');
+            return true;
         }
         
         function updateDateRestrictionInfo() {
-            const serviceChargeType = getServiceChargeType();
-            const serviceChargeField = $('#serviceCharge').val();
+            const fromDate = $('#fromDate').val();
+            const toDate = $('#toDate').val();
             
-            if (serviceChargeField && serviceChargeField.trim() !== '') {
-                const message = getDateRestrictionMessage(serviceChargeType);
+            if (fromDate && toDate) {
+                const from = new Date(fromDate);
+                const to = new Date(toDate);
+                const diffTime = Math.abs(to - from);
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // +1 to include both days
+                
                 $('#dateRestrictionMessage').html(
-                    '<strong>' + serviceChargeType + ':</strong> ' + message
+                    '<i class="fa-regular fa-calendar"></i> Date range: ' + 
+                    from.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + 
+                    ' to ' + 
+                    to.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + 
+                    ' <span style="color: #7f8c8d;">(' + diffDays + ' days)</span>'
                 );
                 $('#dateRestrictionInfo').addClass('active');
             } else {
@@ -1324,42 +1300,122 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
         }
         
-        function validateDateRange() {
-            const fromDate = $('#fromDate').val();
-            const toDate = $('#toDate').val();
-            const serviceChargeField = $('#serviceCharge').val();
-            
-            if (!fromDate || !toDate || !serviceChargeField || serviceChargeField.trim() === '') {
-                return true;
-            }
-            
-            const serviceChargeType = getServiceChargeType();
-            const result = getDateRangeLimits(serviceChargeType);
-            
-            if (!result) return true;
-            
-            if (!result.isValid) {
-                showAlert(result.errorMessage, 'warning');
-                $('#fromDate, #toDate').css('border-color', '#e74c3c');
-                return false;
+        // =============================================
+        // END DATE RANGE VALIDATION
+        // =============================================
+        
+        // =============================================
+        // CHECK EXISTING SOA FUNCTION - UPDATED
+        // =============================================
+        
+        function checkExistingSOA(partnerId, fromDate, toDate, partnerName) {
+            return new Promise((resolve, reject) => {
+                // If partnerName is provided, use it directly
+                if (partnerName && !partnerId) {
+                    $.ajax({
+                        url: window.location.href,
+                        method: 'GET',
+                        data: {
+                            action: 'check_existing_soa',
+                            partner_name: partnerName,
+                            from_date: fromDate,
+                            to_date: toDate
+                        },
+                        success: function(response) {
+                            try {
+                                if (typeof response === 'string') {
+                                    response = JSON.parse(response);
+                                }
+                                resolve(response);
+                            } catch (e) {
+                                reject(e);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            reject(error);
+                        }
+                    });
+                    return;
+                }
+                
+                // Check if partner has no ID (no-id- prefix)
+                if (partnerId && partnerId.startsWith('no-id-')) {
+                    var name = partnerName || window._currentPartnerName || '';
+                    if (!name) {
+                        var selectedOption = $('#partnerSelect').find('option:selected');
+                        name = selectedOption.data('partner-name') || '';
+                    }
+                    if (!name) {
+                        resolve({ exists: false });
+                        return;
+                    }
+                    $.ajax({
+                        url: window.location.href,
+                        method: 'GET',
+                        data: {
+                            action: 'check_existing_soa',
+                            partner_name: name,
+                            from_date: fromDate,
+                            to_date: toDate
+                        },
+                        success: function(response) {
+                            try {
+                                if (typeof response === 'string') {
+                                    response = JSON.parse(response);
+                                }
+                                resolve(response);
+                            } catch (e) {
+                                reject(e);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            reject(error);
+                        }
+                    });
+                } else {
+                    $.ajax({
+                        url: window.location.href,
+                        method: 'GET',
+                        data: {
+                            action: 'check_existing_soa',
+                            partner_id: partnerId,
+                            from_date: fromDate,
+                            to_date: toDate
+                        },
+                        success: function(response) {
+                            try {
+                                if (typeof response === 'string') {
+                                    response = JSON.parse(response);
+                                }
+                                resolve(response);
+                            } catch (e) {
+                                reject(e);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            reject(error);
+                        }
+                    });
+                }
+            });
+        }
+        
+        function updateCreateInvoiceButton(exists) {
+            const btn = $('#showInvoiceModalBtn');
+            if (exists) {
+                btn.addClass('disabled-btn').prop('disabled', true);
+                $('#soaExistsWarning').show();
             } else {
-                $('#fromDate, #toDate').css('border-color', '#27ae60');
-                return true;
+                btn.removeClass('disabled-btn').prop('disabled', false);
+                $('#soaExistsWarning').hide();
             }
         }
         
-        $('#fromDate, #toDate').on('change', function() {
-            updateDateRestrictionInfo();
-            if ($('#fromDate').val() && $('#toDate').val()) {
-                validateDateRange();
-            }
-        });
-        
         // =============================================
-        // END DATE RESTRICTION LOGIC
+        // END CHECK EXISTING SOA
         // =============================================
         
-        // Partner selection change
+        // Partner selection change - UPDATED to check for existing SOA
         $('#partnerSelect').on('change.select2', function() {
             const partnerId = $(this).val();
             if (partnerId) {
@@ -1376,12 +1432,102 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 // Clear manual inputs when partner changes
                 clearManualInputs();
                 
-                if (!hasId) {
-                    showAlert('This partner does not have a Partner ID. Fetching by name.', 'info');
-                    fetchPartnerByName(partnerName);
-                    return;
+                // Check if dates are already selected
+                const fromDate = $('#fromDate').val();
+                const toDate = $('#toDate').val();
+                
+                if (fromDate && toDate) {
+                    // Validate dates first
+                    if (!validateDateRange()) {
+                        return;
+                    }
+                    
+                    // Check for existing SOA before fetching partner details
+                    showLoadingModal('Checking...', 'Verifying if SOA already exists for this partner and date range.');
+                    
+                    if (!hasId) {
+                        // For partners without ID, check by name
+                        checkExistingSOA(null, fromDate, toDate, partnerName).then(function(result) {
+                            hideLoadingModal();
+                            if (result && result.exists) {
+                                updateCreateInvoiceButton(true);
+                                $('#soaExistsMessage').html(
+                                    'SOA <strong>' + result.reference_number + '</strong> already exists for this partner (' + 
+                                    result.from_date + ' to ' + result.to_date + ').'
+                                );
+                                Swal.fire({
+                                    icon: 'warning',
+                                    title: 'SOA Already Exists',
+                                    html: `
+                                        <div style="text-align: left;">
+                                            <p><strong>An SOA has already been created for this partner and date range.</strong></p>
+                                            <hr>
+                                            <p><strong>Reference Number:</strong> ${result.reference_number}</p>
+                                            <p><strong>Existing Period:</strong> ${result.from_date} to ${result.to_date}</p>
+                                            <p style="color: #e74c3c; margin-top: 10px;"><i class="fa-solid fa-ban"></i> Please refresh page and select a different date range or partner.</p>
+                                        </div>
+                                    `,
+                                    confirmButtonColor: '#d33',
+                                    confirmButtonText: 'OK',
+                                    allowOutsideClick: false
+                                });
+                                return;
+                            }
+                            updateCreateInvoiceButton(false);
+                            showAlert('This partner does not have a Partner ID. Fetching by name.', 'info');
+                            fetchPartnerByName(partnerName);
+                        }).catch(function(error) {
+                            hideLoadingModal();
+                            console.error('Error checking existing SOA:', error);
+                            showAlert('This partner does not have a Partner ID. Fetching by name.', 'info');
+                            fetchPartnerByName(partnerName);
+                        });
+                    } else {
+                        // For partners with ID
+                        checkExistingSOA(partnerId, fromDate, toDate).then(function(result) {
+                            hideLoadingModal();
+                            if (result && result.exists) {
+                                updateCreateInvoiceButton(true);
+                                $('#soaExistsMessage').html(
+                                    'SOA <strong>' + result.reference_number + '</strong> already exists for this partner (' + 
+                                    result.from_date + ' to ' + result.to_date + ').'
+                                );
+                                Swal.fire({
+                                    icon: 'warning',
+                                    title: 'SOA Already Exists',
+                                    html: `
+                                        <div style="text-align: left;">
+                                            <p><strong>An SOA has already been created for this partner and date range.</strong></p>
+                                            <hr>
+                                            <p><strong>Reference Number:</strong> ${result.reference_number}</p>
+                                            <p><strong>Existing Period:</strong> ${result.from_date} to ${result.to_date}</p>
+                                            <p style="color: #e74c3c; margin-top: 10px;"><i class="fa-solid fa-ban"></i> Please refresh page and select a different date range or partner.</p>
+                                        </div>
+                                    `,
+                                    confirmButtonColor: '#d33',
+                                    confirmButtonText: 'OK',
+                                    allowOutsideClick: false
+                                });
+                                return;
+                            }
+                            updateCreateInvoiceButton(false);
+                            fetchPartnerDetails(partnerId);
+                        }).catch(function(error) {
+                            hideLoadingModal();
+                            console.error('Error checking existing SOA:', error);
+                            fetchPartnerDetails(partnerId);
+                        });
+                    }
+                } else {
+                    // No dates selected yet, just fetch partner details
+                    if (!hasId) {
+                        showAlert('Please select Transaction Date From and To first.', 'info');
+                        fetchPartnerByName(partnerName);
+                    } else {
+                        showAlert('Please select Transaction Date From and To first.', 'info');
+                        fetchPartnerDetails(partnerId);
+                    }
                 }
-                fetchPartnerDetails(partnerId);
             } else {
                 clearForm();
                 $('#dateRestrictionInfo').removeClass('active');
@@ -1447,88 +1593,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $(this).css('border-color', '');
             }
         });
-        
-        // =============================================
-        // CHECK EXISTING SOA FUNCTION
-        // =============================================
-        
-        function checkExistingSOA(partnerId, fromDate, toDate) {
-            return new Promise((resolve, reject) => {
-                if (partnerId && partnerId.startsWith('no-id-')) {
-                    var partnerName = window._currentPartnerName || '';
-                    if (!partnerName) {
-                        var selectedOption = $('#partnerSelect').find('option:selected');
-                        partnerName = selectedOption.data('partner-name') || '';
-                    }
-                    if (!partnerName) {
-                        resolve({ exists: false });
-                        return;
-                    }
-                    $.ajax({
-                        url: window.location.href,
-                        method: 'GET',
-                        data: {
-                            action: 'check_existing_soa',
-                            partner_name: partnerName,
-                            from_date: fromDate,
-                            to_date: toDate
-                        },
-                        success: function(response) {
-                            try {
-                                if (typeof response === 'string') {
-                                    response = JSON.parse(response);
-                                }
-                                resolve(response);
-                            } catch (e) {
-                                reject(e);
-                            }
-                        },
-                        error: function(xhr, status, error) {
-                            reject(error);
-                        }
-                    });
-                } else {
-                    $.ajax({
-                        url: window.location.href,
-                        method: 'GET',
-                        data: {
-                            action: 'check_existing_soa',
-                            partner_id: partnerId,
-                            from_date: fromDate,
-                            to_date: toDate
-                        },
-                        success: function(response) {
-                            try {
-                                if (typeof response === 'string') {
-                                    response = JSON.parse(response);
-                                }
-                                resolve(response);
-                            } catch (e) {
-                                reject(e);
-                            }
-                        },
-                        error: function(xhr, status, error) {
-                            reject(error);
-                        }
-                    });
-                }
-            });
-        }
-        
-        function updateCreateInvoiceButton(exists) {
-            const btn = $('#showInvoiceModalBtn');
-            if (exists) {
-                btn.addClass('disabled-btn').prop('disabled', true);
-                $('#soaExistsWarning').show();
-            } else {
-                btn.removeClass('disabled-btn').prop('disabled', false);
-                $('#soaExistsWarning').hide();
-            }
-        }
-        
-        // =============================================
-        // END CHECK EXISTING SOA
-        // =============================================
         
         // Fetch Partner Details button
         $('#fetchPartnerBtn').click(async function() {
@@ -1599,13 +1663,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         // Date change - auto fetch
         let dateChangeTimer;
         $('#fromDate, #toDate').on('change', function() {
+            // Clear any existing error styling
+            $(this).css('border-color', '');
+            
+            updateDateRestrictionInfo();
+            
+            // Simple validation
+            const fromDate = $('#fromDate').val();
+            const toDate = $('#toDate').val();
+            
+            if (fromDate && toDate) {
+                const from = new Date(fromDate);
+                const to = new Date(toDate);
+                
+                if (from > to) {
+                    showAlert('Transaction Date From must be earlier than or equal to Transaction Date To.', 'warning');
+                    $('#fromDate, #toDate').css('border-color', '#e74c3c');
+                    return;
+                }
+            }
+            
+            // Auto-fetch partner details if partner is selected and dates are valid
             clearTimeout(dateChangeTimer);
             dateChangeTimer = setTimeout(async function() {
                 const partnerId = $('#partnerSelect').val();
                 const fromDate = $('#fromDate').val();
                 const toDate = $('#toDate').val();
                 if (partnerId && fromDate && toDate) {
-                    if (validateDateRange()) {
+                    // Validate dates before fetching
+                    const from = new Date(fromDate);
+                    const to = new Date(toDate);
+                    if (from <= to) {
                         if (partnerId.startsWith('no-id-')) {
                             var selectedOption = $('#partnerSelect').find('option:selected');
                             var partnerName = selectedOption.data('partner-name') || '';
@@ -1638,7 +1726,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }, 300);
         });
         
-        // Fetch partner by name for partners without ID
+        // Fetch partner by name for partners without ID - UPDATED
         function fetchPartnerByName(partnerName) {
             const fromDate = $('#fromDate').val();
             const toDate = $('#toDate').val();
@@ -1649,7 +1737,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 return;
             }
             
-            showLoadingModal('Fetching Data', 'Please wait while we retrieve partner details...');
+            // Only show loading if not already shown (check if modal is already visible)
+            // We'll let the caller handle loading state
             
             $.ajax({
                 url: window.location.href,
@@ -1697,6 +1786,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             });
         }
         
+        // Fetch partner details by ID - UPDATED
         function fetchPartnerDetails(partnerId) {
             const fromDate = $('#fromDate').val();
             const toDate = $('#toDate').val();
@@ -1707,7 +1797,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 return;
             }
             
-            showLoadingModal('Fetching Data', 'Please wait while we retrieve partner details...');
+            // Only show loading if not already shown
             
             $.ajax({
                 url: window.location.href,
@@ -1882,15 +1972,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             
             // Validate manual inputs
             const transactionCount = parseInt($('#numberOfTransactions').val()) || 0;
-            const totalPrincipal = parseFloat($('#totalPrincipal').val()) || 0;
             const serviceChargeAmount = parseFloat($('#serviceChargeAmount').val()) || 0;
             
             if (transactionCount <= 0) {
                 showAlert('Please enter a valid Number of Transactions (must be greater than 0).', 'warning');
-                return;
-            }
-            if (totalPrincipal <= 0) {
-                showAlert('Please enter a valid Total Principal (must be greater than 0).', 'warning');
                 return;
             }
             if (serviceChargeAmount <= 0) {
@@ -1962,7 +2047,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const partnerAccountName = $('#partnerAccName').val() || 'N/A';
             const tin = $('#partnerTin').val() || 'N/A';
             const address = $('#address').val() || 'N/A';
-            const businessStyle = $('#businessStyle').val() || 'NONE';
+            const businessStyle = $('#businessStyle').val() || '';
             const serviceCharge = $('#serviceCharge').val() || '0';
             const incExc = $('#incExc').val() || 'N/A';
             const withholdingTax = $('#withholdingTax').val() || 'NO';
@@ -2039,7 +2124,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 totalAmountDue = baseAmount;
                 lessWT = 0;
                 netAmountDue = totalAmountDue + addAmountValue;
-                formulaText = 'VAT Amount 0%';
+                formulaText = '';
             } else if (isInclusive && isWithheld) {
                 vatAmount = roundTo2((baseAmount * 0.12) / 1.12);
                 netOfVat = roundTo2(baseAmount - vatAmount);
@@ -2195,7 +2280,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             } else {
                 leftColumnParticulars += `
                     <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
-                        <span style="color: #ff0000">VAT Amount 0%</span>
+                        <span style="color: #ff0000">NON-VAT</span>
                     </div>`;
             }
             

@@ -1,4 +1,6 @@
 <?php
+// settlement-per-bank.php
+
 // Add cache control headers to prevent browser caching
 header("Cache-Control: no-cache, no-store, must-revalidate");
 header("Pragma: no-cache");
@@ -1302,6 +1304,9 @@ if (isset($_SESSION['user_type'])) {
                             <button class="btn-export excel" onclick="exportToExcel()">
                                 <i class="fas fa-file-excel"></i> Export Excel
                             </button>
+                            <button class="btn-export pdf" onclick="exportToPDF()">
+                                <i class="fa-solid fa-file-pdf"></i> Export PDF
+                            </button>
                             <button class="btn-export settle" onclick="settleSelected()" style="margin-left: 10px;">
                                 <i class="fas fa-check-circle"></i> Settle
                             </button>
@@ -1900,6 +1905,57 @@ if (isset($_SESSION['user_type'])) {
             });
             
             var exportUrl = 'export_bank_settlement.php?';
+            exportUrl += 'partner=' + encodeURIComponent(partner);
+            exportUrl += '&bank=' + encodeURIComponent(bank);
+            exportUrl += '&settlement_type=' + encodeURIComponent(settlementType);
+            exportUrl += '&date_from=' + encodeURIComponent(dateFrom);
+            exportUrl += '&date_to=' + encodeURIComponent(dateTo);
+            
+            if (excludedRows.length > 0) {
+                exportUrl += '&excluded_rows=' + encodeURIComponent(excludedRows.join(','));
+            }
+            
+            window.open(exportUrl, '_blank');
+            
+            setTimeout(function() {
+                hideLoadingModal();
+            }, 500);
+        }, 300);
+    }
+
+    function exportToPDF() {
+        showLoadingModal();
+        setTimeout(function() {
+            var table = document.getElementById('settlementTable');
+            if (!table) {
+                hideLoadingModal();
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'No Data',
+                    text: 'No data available to export.',
+                    confirmButtonColor: '#ffc107'
+                });
+                return;
+            }
+            
+            var partner = $('#partner').val() || '';
+            var bank = $('#bank').val() || '';
+            var settlementType = $('#settlement_type').val() || '';
+            var dateFrom = $('#date_from').val() || '';
+            var dateTo = $('#date_to').val() || '';
+            
+            var excludedRows = [];
+            $('.data-row').each(function() {
+                var checkbox = $(this).find('.row-checkbox');
+                if (!checkbox.prop('checked') || checkbox.prop('disabled')) {
+                    var rowIndex = $(this).data('row-index');
+                    if (rowIndex !== undefined) {
+                        excludedRows.push(rowIndex);
+                    }
+                }
+            });
+            
+            var exportUrl = 'export_bank_settlement_pdf.php?';
             exportUrl += 'partner=' + encodeURIComponent(partner);
             exportUrl += '&bank=' + encodeURIComponent(bank);
             exportUrl += '&settlement_type=' + encodeURIComponent(settlementType);

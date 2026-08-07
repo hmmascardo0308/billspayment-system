@@ -10,6 +10,18 @@ if (empty($id)) { header('Location: ../../../login_form.php'); exit; }
 if (!function_exists('has_any_permission') || !has_any_permission(['Adjustment Entry Per Branch','Bills Payment'])) { header('Location: ../../home.php'); exit; }
 // prefer explicit session values for current user email
 $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
+
+$display_name = 'GUEST';
+$display_email = '';
+if (isset($_SESSION['user_type'])) {
+    if ($_SESSION['user_type'] === 'admin') {
+        $display_name = $_SESSION['admin_name'] ?? 'ADMIN';
+        $display_email = $_SESSION['admin_email'] ?? '';
+    } elseif ($_SESSION['user_type'] === 'user') {
+        $display_name = $_SESSION['user_name'] ?? 'USER';
+        $display_email = $_SESSION['user_email'] ?? '';
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -27,10 +39,42 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
     <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js" defer></script>
     <script src="../../../assets/js/sweetalert2.all.min.js" defer></script>
     <link rel="stylesheet" href="css/adjustment.css?v=<?= time(); ?>">
-
     
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
 
+    <style>
+        .conditional-field-group {
+            background: #f8f9fa;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 4px;
+            display: none;
+        }
+        .conditional-field-group.active {
+            display: block;
+            animation: fadeIn 0.3s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .field-label {
+            font-weight: 600;
+            color: #495057;
+            margin-bottom: 4px;
+        }
+        .required-asterisk {
+            color: #dc3545;
+            margin-left: 2px;
+        }
+        .adjustment-summary {
+            background: #e9ecef;
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+    </style>
 </head>
 <body>
     <!-- Loading Overlay -->
@@ -131,6 +175,7 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                             datetime,
                             cancellation_date,
                             reference_no,
+                            control_no,
                             amount_paid,
                             charge_to_customer,
                             charge_to_partner,
@@ -161,6 +206,7 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                                 <tr>
                                     <th class="col-partner">Partner Name</th>
                                     <th class="col-ref">Reference No</th>
+                                    <th class="col-ref">Control No</th>
                                     <th class="col-amount">Amount Paid</th>
                                     <th class="col-charge">Charge to Customer</th>
                                     <th class="col-charge">Charge to Partner</th>
@@ -208,6 +254,9 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                                 ?>
                                     <tr class="<?php echo $rowClass; ?>"
                                         data-id="<?php echo $row['id']; ?>"
+                                        data-datetime="<?php echo $row['datetime']; ?>"
+                                        data-amount="<?php echo $row['amount_paid']; ?>"
+                                        data-ref="<?php echo htmlspecialchars($row['reference_no']); ?>"
                                         title="Double-click to view full details">
                                         <td class="col-partner">
                                             <span class="fw-semibold">
@@ -223,6 +272,11 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                                         <td class="col-ref">
                                             <span class="fw-semibold <?php echo $isCancelled ? 'text-danger' : ($isSettled ? 'text-success' : 'text-primary'); ?>">
                                                 <?php echo htmlspecialchars($row['reference_no']); ?>
+                                            </span>
+                                        </td>
+                                        <td class="col-ref">
+                                            <span class="fw-semibold">
+                                                <?php echo htmlspecialchars($row['control_no'] ?? '—'); ?>
                                             </span>
                                         </td>
                                         <td class="col-amount">
@@ -303,7 +357,11 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                                                 <!-- Active button for non-cancelled and unsettled transactions -->
                                                 <button class="btn btn-sm btn-warning settle-btn" 
                                                         data-id="<?php echo $row['id']; ?>"
-                                                        data-ref="<?php echo htmlspecialchars($row['reference_no']); ?>">
+                                                        data-ref="<?php echo htmlspecialchars($row['reference_no']); ?>"
+                                                        data-control="<?php echo htmlspecialchars($row['control_no'] ?? ''); ?>"
+                                                        data-amount="<?php echo $row['amount_paid']; ?>"
+                                                        data-partner="<?php echo htmlspecialchars($row['partner_name']); ?>"
+                                                        data-datetime="<?php echo $row['datetime']; ?>">
                                                     <i class="fas fa-edit"></i> Reason For Adjustment
                                                 </button>
                                             <?php endif; ?>
@@ -395,11 +453,29 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                 $('#loadingOverlay').removeClass('active');
             });
 
+            // Function to show/hide conditional fields based on reason selection
+            function toggleConditionalFields(reason) {
+                // Hide all conditional groups first
+                $('.conditional-field-group').removeClass('active');
+                
+                // Show the relevant group
+                if (reason && reason !== '') {
+                    const targetGroup = $('#conditionalFields-' + reason);
+                    if (targetGroup.length) {
+                        targetGroup.addClass('active');
+                    }
+                }
+            }
+
             // Settlement action - only for non-cancelled AND non-settled transactions
             $('.settle-btn:not([disabled])').on('click', function(e) {
                 e.stopPropagation(); // prevent triggering row dblclick handler
                 const id = $(this).data('id');
                 const ref = $(this).data('ref');
+                const control = $(this).data('control');
+                const amount = $(this).data('amount');
+                const partner = $(this).data('partner');
+                const datetime = $(this).data('datetime');
                 
                 // Check if already settled - additional client-side check
                 const row = $(this).closest('tr');
@@ -415,64 +491,502 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                     return;
                 }
                 
-                Swal.fire({
-                    title: 'Reason For Adjustment',
-                    html: `
-                        <div class="text-start">
-                            <p><strong>Reference:</strong> ${ref}</p>
-                            <div class="mb-3">
-                                <label class="form-label fw-bold">Reason for Adjustment:</label>
-                                <select class="form-select" id="adjustmentReason">
-                                    <option value="">Select reason...</option>
-                                    <option value="late_posting">Late Posting</option>
-                                    <option value="incorrect_amount">Incorrect Amount</option>
-                                    <option value="wrong_biller">Wrong Biller</option>
-                                    <option value="duplicate_entry">Duplicate Entry</option>
-                                    <option value="customer_request">Customer Request</option>
-                                    <option value="system_error">System Error</option>
-                                    <option value="no_payment">No Payment</option>
-                                </select>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label fw-bold">Comments:</label>
-                                <textarea class="form-control" id="adjustmentComments" rows="3" placeholder="Enter additional details..."></textarea>
+                // Build the HTML for the modal
+                let modalHtml = `
+                    <div class="text-start">
+                        <div class="adjustment-summary">
+                            <div class="row">
+                                <div class="col-6"><strong>Reference:</strong> ${ref}</div>
+                                <div class="col-6"><strong>Control No:</strong> ${control || '—'}</div>
+                                <div class="col-6"><strong>Partner:</strong> ${partner}</div>
+                                <div class="col-6"><strong>Amount:</strong> ₱${parseFloat(amount).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
                             </div>
                         </div>
-                    `,
+                        <div class="mb-3 mt-3">
+                            <label class="form-label fw-bold">Reason for Adjustment: <span class="required-asterisk">*</span></label>
+                            <select class="form-select" id="adjustmentReason">
+                                <option value="">Select reason</option>
+                                <option value="late_posting">Late Posting</option>
+                                <option value="incorrect_amount">Incorrect Amount</option>
+                                <option value="wrong_biller">Wrong Biller</option>
+                                <option value="duplicate_entry">Duplicate Entry</option>
+                                <option value="customer_request">Customer Request</option>
+                                <option value="system_error">System Error</option>
+                                <option value="no_payment">No Payment</option>
+                            </select>
+                        </div>
+                `;
+
+                // Late Posting Fields - Set Posting Date as datetime (readonly)
+                const formattedDatetime = datetime ? new Date(datetime).toISOString().split('T')[0] : '';
+                
+                modalHtml += `
+                    <div class="conditional-field-group" id="conditionalFields-late_posting">
+                        <h6 class="text-primary"><i class="fas fa-clock"></i> Late Posting Details</h6>
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Original Payment Date <span class="required-asterisk">*</span></label>
+                                <input type="date" class="form-control" id="late_original_date">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Posting Date <span class="required-asterisk">*</span></label>
+                                <input type="date" class="form-control" id="late_posting_date" value="${formattedDatetime}" readonly style="background-color: #e9ecef;">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Grace Period End Date</label>
+                                <input type="date" class="form-control" id="late_grace_period">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Late Fee Reversal Requested</label>
+                                <select class="form-control" id="late_fee_reversal">
+                                    <option value="no">No</option>
+                                    <option value="yes">Yes</option>
+                                </select>
+                            </div>
+                            <div class="col-12 mb-2">
+                                <label class="field-label">Reason for Late Posting <span class="required-asterisk">*</span></label>
+                                <textarea class="form-control" id="late_justification" rows="2" placeholder="Why did this post late?"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // Incorrect Amount Fields - Set Amount Currently Applied as amount_paid
+                modalHtml += `
+                    <div class="conditional-field-group" id="conditionalFields-incorrect_amount">
+                        <h6 class="text-primary"><i class="fa-solid fa-peso-sign"></i> Incorrect Amount Details</h6>
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Original Amount Paid <span class="required-asterisk">*</span></label>
+                                <input type="number" class="form-control" id="incorrect_original_amount" step="0.01" placeholder="0.00">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Amount Currently Applied <span class="required-asterisk">*</span></label>
+                                <input type="number" class="form-control" id="incorrect_current_amount" step="0.01" value="${amount}" readonly style="background-color: #e9ecef;">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Correct Amount <span class="required-asterisk">*</span></label>
+                                <input type="number" class="form-control" id="incorrect_correct_amount" step="0.01" placeholder="0.00">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Difference Amount</label>
+                                <input type="text" class="form-control" id="incorrect_difference" readonly placeholder="Auto-calculated">
+                            </div>
+                            <div class="col-12 mb-2">
+                                <label class="field-label">Supporting Document</label>
+                                <input type="file" class="form-control" id="incorrect_document" accept=".pdf,.jpg,.jpeg,.png">
+                                <small class="text-muted">Upload supporting attachment.</small>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // Wrong Biller Fields - Get partner names for dropdown
+                <?php
+                // Fetch distinct partner names for dropdown
+                $partnerDropdownQuery = "SELECT DISTINCT partner_name 
+                                        FROM masterdata.partner_masterfile 
+                                        WHERE partner_name IS NOT NULL 
+                                        ORDER BY partner_name ASC";
+                $partnerDropdownResult = mysqli_query($conn, $partnerDropdownQuery);
+                $partnerOptions = '';
+                while ($partnerRow = mysqli_fetch_assoc($partnerDropdownResult)) {
+                    $partnerOptions .= "<option value='" . htmlspecialchars($partnerRow['partner_name']) . "'>" . htmlspecialchars($partnerRow['partner_name']) . "</option>";
+                }
+                ?>
+                
+                modalHtml += `
+                    <div class="conditional-field-group" id="conditionalFields-wrong_biller">
+                        <h6 class="text-primary"><i class="fas fa-building"></i> Wrong Biller Details</h6>
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Current Biller <span class="required-asterisk">*</span></label>
+                                <select class="form-control" id="wrong_current_biller" disabled style="background-color: #e9ecef;">
+                                    <option value="${partner}">${partner}</option>
+                                    <?php echo $partnerOptions; ?>
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Correct Biller <span class="required-asterisk">*</span></label>
+                                <select class="form-control" id="wrong_correct_biller">
+                                    <option value="">Select correct biller...</option>
+                                    <?php echo $partnerOptions; ?>
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Invoice Number</label>
+                                <input type="text" class="form-control" id="wrong_invoice" placeholder="Invoice number if applicable">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Action Required</label>
+                                <select class="form-control" id="wrong_action">
+                                    <option value="transfer">Transfer funds to correct account</option>
+                                    <option value="reverse">Reverse from wrong account first</option>
+                                    <option value="both">Both transfer and reverse</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // Duplicate Entry Fields - Set Original Reference No. as reference_no
+                modalHtml += `
+                    <div class="conditional-field-group" id="conditionalFields-duplicate_entry">
+                        <h6 class="text-primary"><i class="fas fa-copy"></i> Duplicate Entry Details</h6>
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Original Reference No. <span class="required-asterisk">*</span></label>
+                                <input type="text" class="form-control" id="dup_original_id" value="${ref}" readonly style="background-color: #e9ecef;">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Duplicate Reference No. <span class="required-asterisk">*</span></label>
+                                <input type="text" class="form-control" id="dup_duplicate_id" placeholder="Enter duplicate reference">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Transaction Date <span class="required-asterisk">*</span></label>
+                                <input type="date" class="form-control" id="dup_transaction_date">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Amount of Duplicate <span class="required-asterisk">*</span></label>
+                                <input type="number" class="form-control" id="dup_amount" step="0.01" placeholder="0.00">
+                            </div>
+                            <div class="col-12 mb-2">
+                                <label class="field-label">Action to Take <span class="required-asterisk">*</span></label>
+                                <select class="form-control" id="dup_action">
+                                    <option value="void">Void Duplicate</option>
+                                    <option value="refund">Refund Duplicate</option>
+                                    <option value="credit">Keep as Credit</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // Customer Request Fields
+                modalHtml += `
+                    <div class="conditional-field-group" id="conditionalFields-customer_request">
+                        <h6 class="text-primary"><i class="fas fa-user"></i> Customer Request Details</h6>
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Customer Authorization Received <span class="required-asterisk">*</span></label>
+                                <select class="form-control" id="cust_authorization">
+                                    <option value="no">No</option>
+                                    <option value="yes">Yes</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Authorization Reference</label>
+                                <input type="text" class="form-control" id="cust_auth_ref" placeholder="Ticket/email/call log ID">
+                            </div>
+                            <div class="col-12 mb-2">
+                                <label class="field-label">Customer Reason Summary <span class="required-asterisk">*</span></label>
+                                <textarea class="form-control" id="cust_reason" rows="2"></textarea>
+                            </div>
+                            <div class="col-12 mb-2">
+                                <label class="field-label">Customer Approval/Consent</label>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="cust_consent">
+                                    <label class="form-check-label" for="cust_consent">
+                                        I confirm customer has approved this adjustment
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // System Error Fields
+                modalHtml += `
+                    <div class="conditional-field-group" id="conditionalFields-system_error">
+                        <h6 class="text-primary"><i class="fas fa-desktop"></i> System Error Details</h6>
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">System Name <span class="required-asterisk">*</span></label>
+                                <input type="text" class="form-control" id="sys_module">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Error Code/Message</label>
+                                <input type="text" class="form-control" id="sys_error_code">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Date/Time of Error <span class="required-asterisk">*</span></label>
+                                <input type="datetime-local" class="form-control" id="sys_error_datetime">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">IT Ticket Number</label>
+                                <input type="text" class="form-control" id="sys_ticket" placeholder="IT ticket reference">
+                            </div>
+                            <div class="col-12 mb-2">
+                                <label class="field-label">Root Cause Summary <span class="required-asterisk">*</span></label>
+                                <textarea class="form-control" id="sys_root_cause" rows="2" placeholder="Brief description of the system error"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // No Payment Fields
+                modalHtml += `
+                    <div class="conditional-field-group" id="conditionalFields-no_payment">
+                        <h6 class="text-primary"><i class="fas fa-times-circle"></i> No Payment Details</h6>
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Payment Record Date <span class="required-asterisk">*</span></label>
+                                <input type="date" class="form-control" id="nopay_record_date">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Actual Payment Status <span class="required-asterisk">*</span></label>
+                                <select class="form-control" id="nopay_status">
+                                    <option value="bank_rejected">Bank Rejected</option>
+                                    <option value="check_bounced">Check Bounced</option>
+                                    <option value="never_sent">Never Sent</option>
+                                    <option value="other">Other</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Original Payment Method <span class="required-asterisk">*</span></label>
+                                <select class="form-control" id="nopay_method">
+                                    <option value="credit_card">Credit Card</option>
+                                    <option value="ach">ACH</option>
+                                    <option value="check">Check</option>
+                                    <option value="cash">Cash</option>
+                                    <option value="other">Other</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Action to Take <span class="required-asterisk">*</span></label>
+                                <select class="form-control" id="nopay_action">
+                                    <option value="remove">Remove from Account</option>
+                                    <option value="send_invoice">Send New Invoice</option>
+                                    <option value="contact_customer">Contact Customer</option>
+                                </select>
+                            </div>
+                            <div class="col-12 mb-2">
+                                <label class="field-label">Proof of Non-Payment</label>
+                                <input type="file" class="form-control" id="nopay_proof" accept=".pdf,.jpg,.jpeg,.png">
+                                <small class="text-muted">Upload bank rejection notice or statement</small>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // Common fields for all adjustments - Set Reviewed by as $display_name
+                modalHtml += `
+                        <div class="mt-3">
+                            <div class="row">
+                                <div class="col-md-6 mb-2">
+                                    <label class="field-label">Adjustment Effective Date <span class="required-asterisk">*</span></label>
+                                    <input type="date" class="form-control" id="common_effective_date">
+                                </div>
+                                <div class="col-md-6 mb-2">
+                                    <label class="field-label">Reviewed by:</label>
+                                    <input type="text" class="form-control" id="common_approver" value="<?php echo htmlspecialchars($display_name); ?>" readonly style="background-color: #e9ecef;">
+                                </div>
+                                <div class="col-12 mb-2">
+                                    <label class="field-label">Internal Notes</label>
+                                    <textarea class="form-control" id="common_internal_notes" rows="2"></textarea>
+                                </div>
+                                <div class="col-12 mb-2">
+                                    <label class="field-label">Comments from Customers</label>
+                                    <textarea class="form-control" id="common_customer_comments" rows="2"></textarea>
+                                </div>
+                                <div class="col-12 mb-2">
+                                    <label class="field-label">Attachments (General)</label>
+                                    <input type="file" class="form-control" id="common_attachments" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx">
+                                    <small class="text-muted">Upload any additional supporting documents</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                Swal.fire({
+                    title: 'Reason For Adjustment',
+                    html: modalHtml,
                     icon: 'question',
                     confirmButtonText: 'Submit Adjustment',
                     cancelButtonText: 'Cancel',
                     showCancelButton: true,
                     confirmButtonColor: '#ffc107',
                     cancelButtonColor: '#6c757d',
+                    width: '800px',
                     preConfirm: () => {
                         const reason = document.getElementById('adjustmentReason').value;
-                        const comments = document.getElementById('adjustmentComments').value;
-                        
                         if (!reason) {
                             Swal.showValidationMessage('Please select a reason for adjustment');
                             return false;
                         }
-                        
-                        return { reason, comments };
+
+                        // Collect common fields
+                        const commonData = {
+                            effective_date: document.getElementById('common_effective_date')?.value || '',
+                            approver: document.getElementById('common_approver')?.value || '',
+                            internal_notes: document.getElementById('common_internal_notes')?.value || '',
+                            customer_comments: document.getElementById('common_customer_comments')?.value || '',
+                            attachments: document.getElementById('common_attachments')?.files[0]?.name || ''
+                        };
+
+                        // Collect reason-specific fields
+                        let reasonData = {};
+                        let allFields = {};
+
+                        // Late Posting
+                        if (reason === 'late_posting') {
+                            const fields = ['late_original_date', 'late_posting_date', 'late_grace_period', 'late_fee_reversal', 'late_justification'];
+                            fields.forEach(f => {
+                                const el = document.getElementById(f);
+                                if (el) reasonData[f] = el.value;
+                            });
+                            if (!reasonData.late_original_date || !reasonData.late_posting_date || !reasonData.late_justification) {
+                                Swal.showValidationMessage('Please fill in all required fields for Late Posting');
+                                return false;
+                            }
+                        }
+
+                        // Incorrect Amount
+                        if (reason === 'incorrect_amount') {
+                            const fields = ['incorrect_original_amount', 'incorrect_current_amount', 'incorrect_correct_amount'];
+                            fields.forEach(f => {
+                                const el = document.getElementById(f);
+                                if (el) reasonData[f] = el.value;
+                            });
+                            if (!reasonData.incorrect_original_amount || !reasonData.incorrect_current_amount || !reasonData.incorrect_correct_amount) {
+                                Swal.showValidationMessage('Please fill in all required fields for Incorrect Amount');
+                                return false;
+                            }
+                        }
+
+                        // Wrong Biller
+                        if (reason === 'wrong_biller') {
+                            const fields = ['wrong_current_biller', 'wrong_correct_biller'];
+                            fields.forEach(f => {
+                                const el = document.getElementById(f);
+                                if (el) reasonData[f] = el.value;
+                            });
+                            if (!reasonData.wrong_current_biller || !reasonData.wrong_correct_biller) {
+                                Swal.showValidationMessage('Please fill in all required fields for Wrong Biller');
+                                return false;
+                            }
+                        }
+
+                        // Duplicate Entry
+                        if (reason === 'duplicate_entry') {
+                            const fields = ['dup_original_id', 'dup_duplicate_id', 'dup_transaction_date', 'dup_amount', 'dup_action'];
+                            fields.forEach(f => {
+                                const el = document.getElementById(f);
+                                if (el) reasonData[f] = el.value;
+                            });
+                            if (!reasonData.dup_original_id || !reasonData.dup_duplicate_id || !reasonData.dup_transaction_date || !reasonData.dup_amount || !reasonData.dup_action) {
+                                Swal.showValidationMessage('Please fill in all required fields for Duplicate Entry');
+                                return false;
+                            }
+                        }
+
+                        // Customer Request
+                        if (reason === 'customer_request') {
+                            const fields = ['cust_authorization', 'cust_reason'];
+                            fields.forEach(f => {
+                                const el = document.getElementById(f);
+                                if (el) reasonData[f] = el.value;
+                            });
+                            if (!reasonData.cust_authorization || !reasonData.cust_reason) {
+                                Swal.showValidationMessage('Please fill in all required fields for Customer Request');
+                                return false;
+                            }
+                        }
+
+                        // System Error
+                        if (reason === 'system_error') {
+                            const fields = ['sys_module', 'sys_error_datetime', 'sys_root_cause'];
+                            fields.forEach(f => {
+                                const el = document.getElementById(f);
+                                if (el) reasonData[f] = el.value;
+                            });
+                            if (!reasonData.sys_module || !reasonData.sys_error_datetime || !reasonData.sys_root_cause) {
+                                Swal.showValidationMessage('Please fill in all required fields for System Error');
+                                return false;
+                            }
+                        }
+
+                        // No Payment
+                        if (reason === 'no_payment') {
+                            const fields = ['nopay_record_date', 'nopay_status', 'nopay_method', 'nopay_action'];
+                            fields.forEach(f => {
+                                const el = document.getElementById(f);
+                                if (el) reasonData[f] = el.value;
+                            });
+                            if (!reasonData.nopay_record_date || !reasonData.nopay_status || !reasonData.nopay_method || !reasonData.nopay_action) {
+                                Swal.showValidationMessage('Please fill in all required fields for No Payment');
+                                return false;
+                            }
+                        }
+
+                        allFields = {
+                            id: id,
+                            reference: ref,
+                            control_no: control,
+                            reason: reason,
+                            reason_data: reasonData,
+                            common: commonData
+                        };
+
+                        return allFields;
                     }
                 }).then((result) => {
                     if (result.isConfirmed) {
                         const data = result.value;
                         // Here you would send the data to your backend
-                        console.log('Adjustment submitted:', {
-                            id: id,
-                            reference: ref,
-                            reason: data.reason,
-                            comments: data.comments
-                        });
+                        console.log('Adjustment submitted:', data);
                         
+                        // Display success message with details
+                        let detailsHtml = `
+                            <div class="text-start">
+                                <p><strong>Reference:</strong> ${data.reference}</p>
+                                <p><strong>Control No:</strong> ${data.control_no || '—'}</p>
+                                <p><strong>Reason:</strong> ${data.reason.replace('_', ' ').toUpperCase()}</p>
+                                <hr>
+                                <p><strong>Adjustment Effective Date:</strong> ${data.common.effective_date || 'Not set'}</p>
+                                <p><strong>Reviewed by:</strong> ${data.common.approver || 'Not specified'}</p>
+                                ${data.common.internal_notes ? `<p><strong>Internal Notes:</strong> ${data.common.internal_notes}</p>` : ''}
+                                ${data.common.customer_comments ? `<p><strong>Customer Comments:</strong> ${data.common.customer_comments}</p>` : ''}
+                            </div>
+                        `;
+
                         Swal.fire({
                             icon: 'success',
                             title: 'Adjustment Submitted',
-                            text: `Reference ${ref} has been marked for adjustment.`,
-                            confirmButtonColor: '#198754'
+                            html: detailsHtml,
+                            confirmButtonColor: '#198754',
+                            confirmButtonText: 'OK'
                         });
+                    }
+                });
+
+                // Event listener for reason selection change
+                $(document).on('change', '#adjustmentReason', function() {
+                    toggleConditionalFields($(this).val());
+                    
+                    // Auto-calculate difference for incorrect amount
+                    if ($(this).val() === 'incorrect_amount') {
+                        calculateDifference();
+                    }
+                });
+
+                // Calculate difference for incorrect amount
+                function calculateDifference() {
+                    const original = parseFloat(document.getElementById('incorrect_original_amount')?.value) || 0;
+                    const current = parseFloat(document.getElementById('incorrect_current_amount')?.value) || 0;
+                    const correct = parseFloat(document.getElementById('incorrect_correct_amount')?.value) || 0;
+                    const diff = correct - current;
+                    const diffField = document.getElementById('incorrect_difference');
+                    if (diffField) {
+                        diffField.value = diff !== 0 ? `₱${diff.toFixed(2)}` : '₱0.00';
+                    }
+                }
+
+                // Recalculate on input change
+                $(document).on('input', '#incorrect_original_amount, #incorrect_current_amount, #incorrect_correct_amount', function() {
+                    if ($('#adjustmentReason').val() === 'incorrect_amount') {
+                        calculateDifference();
                     }
                 });
             });

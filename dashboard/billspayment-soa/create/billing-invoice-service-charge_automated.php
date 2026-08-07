@@ -950,7 +950,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             <div class="bp-section-title">
                 <i class="fa-solid fa-file-invoice" aria-hidden="true"></i>
                 <div>
-                    <h2>Billing Invoice - Service Charge <span class="manual-badge">MANUAL</span></h2>
+                    <h2>Billing Invoice - Service Charge <span class="manual-badge">AUTOMATED</span></h2>
                     <p class="bp-section-sub">Automated billing Invoice generation</p>
                 </div>
             </div>
@@ -2360,7 +2360,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 totalAmountDue = baseAmount;
                 lessWT = 0;
                 netAmountDue = totalAmountDue + addAmountValue;
-                formulaText = 'VAT Amount 0%';
+                formulaText = '';
             } else if (isInclusive && isWithheld) {
                 // INCLUSIVE, WITHHELD = YES
                 vatAmount = roundTo2((baseAmount * 0.12) / 1.12);
@@ -2537,7 +2537,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 // NON-VAT: Just display text
                 leftColumnParticulars += `
                     <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
-                        <span style="color: #ff0000">VAT Amount 0%</span>
+                        <span style="color: #ff0000">NON-VAT</span>
                     </div>`;
             }
             

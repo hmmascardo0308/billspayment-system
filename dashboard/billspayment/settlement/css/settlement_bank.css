@@ -284,6 +284,10 @@
             background: #217346;
         }
         
+         .btn-export.pdf {
+            background: #9d0e0e;
+        }
+        
         .no-records {
             padding: 40px 20px;
             background: #fff;
@@ -1012,3 +1016,5 @@
             background-color: #fff3cd;
             color: #856404;
         }
+
+        

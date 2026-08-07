@@ -2,10 +2,22 @@
 require_once __DIR__ . '/../../../config/config.php';
 header('Content-Type: application/json');
 
+// Enable error logging
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/import_errors.log');
+
 // Check authentication configuration safely
 session_start();
 if (!isset($_SESSION['user_type'])) {
     echo json_encode(['status' => 'error', 'message' => 'Unauthorized access.']);
+    exit;
+}
+
+// Check database connection
+if ($conn->connect_error) {
+    echo json_encode(['status' => 'error', 'message' => 'Database connection failed: ' . $conn->connect_error]);
     exit;
 }
 
@@ -276,6 +288,65 @@ function resolvePartner($conn, $row, $isKP7) {
     return $result;
 }
 
+// Helper function to normalize values for database
+function bp_null_if_empty($value) {
+    if ($value === null) return null;
+    if (is_string($value)) {
+        $value = trim($value);
+        if ($value === '' || $value === 'NULL' || $value === 'null' || $value === 'Not Found') {
+            return null;
+        }
+        return $value;
+    }
+    return $value;
+}
+
+function bp_normalize_date($value) {
+    $value = bp_null_if_empty($value);
+    if ($value === null) return null;
+    
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
+        return $value;
+    }
+    
+    $timestamp = strtotime($value);
+    return $timestamp === false ? null : date('Y-m-d', $timestamp);
+}
+
+function bp_normalize_datetime($value) {
+    $value = bp_null_if_empty($value);
+    if ($value === null) return null;
+    
+    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $value)) {
+        return $value;
+    }
+    
+    $timestamp = strtotime($value);
+    return $timestamp === false ? null : date('Y-m-d H:i:s', $timestamp);
+}
+
+function bp_normalize_decimal($value) {
+    $value = bp_null_if_empty($value);
+    if ($value === null) return null;
+    
+    if (is_numeric($value)) {
+        return number_format((float)$value, 2, '.', '');
+    }
+    
+    if (is_string($value)) {
+        $clean = str_replace([',', '₱', '$', ' ', 'PHP'], '', $value);
+        if (preg_match('/^\((.*)\)$/', $clean, $matches)) {
+            $clean = '-' . $matches[1];
+        }
+        if (is_numeric($clean)) {
+            return number_format((float)$clean, 2, '.', '');
+        }
+    }
+    
+    return null;
+}
+
+// Main processing
 if (isset($_POST['rows'])) {
     // Decode incoming rows
     $rows = json_decode($_POST['rows'], true);
@@ -284,60 +355,12 @@ if (isset($_POST['rows'])) {
         exit;
     }
 
-    function bp_null_if_empty(mixed $value): ?string
-    {
-        if ($value === null) {
-            return null;
-        }
-
-        $value = trim((string) $value);
-        return $value === '' ? null : $value;
-    }
-
-    function bp_normalize_date(mixed $value): ?string
-    {
-        $value = bp_null_if_empty($value);
-        if ($value === null) {
-            return null;
-        }
-
-        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
-            return $value;
-        }
-
-        $timestamp = strtotime($value);
-        return $timestamp === false ? null : date('Y-m-d', $timestamp);
-    }
-
-    function bp_normalize_datetime(mixed $value): ?string {
-        $value = bp_null_if_empty($value);
-        if ($value === null) {
-            return null;
-        }
-
-        if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $value)) {
-            return $value;
-        }
-
-        $timestamp = strtotime($value);
-        return $timestamp === false ? null : date('Y-m-d H:i:s', $timestamp);
-    }
-
-    function bp_normalize_decimal(mixed $value): ?string {
-        $value = bp_null_if_empty($value);
-        if ($value === null) {
-            return null;
-        }
-
-        $clean = str_replace([',', '₱', '$', ' '], '', $value);
-        if (preg_match('/^\((.*)\)$/', $clean, $matches)) {
-            $clean = '-' . $matches[1];
-        }
-
-        return is_numeric($clean) ? number_format((float)$clean, 2, '.', '') : null;
-    }
-
+    // Handle import action
     if (($_POST['action'] ?? '') === 'import') {
+        error_log("=== STARTING IMPORT ===");
+        error_log("Total rows to import: " . count($rows));
+        
+        // REMOVED: reason_for_adjustment, new_amount, deducted_amount - these columns don't exist
         $columns = [
             'status', 'billing_invoice', 'report_date', 'settlement_date', 'datetime', 'cancellation_date',
             'source_file', 'run_date', 'control_no', 'reference_no', 'payor', 'address', 'account_no', 'account_name',
@@ -345,26 +368,37 @@ if (isset($_POST['rows'])) {
             'branch_id', 'branch_code', 'outlet', 'zone_code', 'region_code', 'region_code_tg', 'region',
             'region_tg', 'operator', 'remote_branch', 'remote_operator', '2nd_approver', 'sub_billers_id',
             'sub_billers_name', 'partner_name', 'partner_id', 'partner_id_kpx', 'mpm_gl_code',
-            'reason_for_adjustment', 'new_amount', 'deducted_amount', 'settle_unsettle', 'claim_unclaim',
+            'settle_unsettle', 'claim_unclaim',
             'imported_by', 'imported_date', 'rfp_no', 'cad_no', 'hold_status', 'post_transaction'
         ];
 
-        $duplicateSql = "SELECT id FROM mldb.billspayment_transaction
-            WHERE report_date <=> ?
-              AND reference_no <=> ?
-              AND cancellation_date <=> ?
-              AND status <=> ?
-              AND `datetime` <=> ?
-              AND run_date <=> ?
+        // Prepare duplicate check statement
+        $duplicateSql = "SELECT id FROM mldb.billspayment_transaction 
+            WHERE report_date = ? 
+              AND reference_no = ? 
+              AND (cancellation_date = ? OR (cancellation_date IS NULL AND ? IS NULL))
+              AND (status = ? OR (status IS NULL AND ? IS NULL))
+              AND datetime = ? 
+              AND (run_date = ? OR (run_date IS NULL AND ? IS NULL))
             LIMIT 1";
+        
         $duplicateStmt = $conn->prepare($duplicateSql);
+        if (!$duplicateStmt) {
+            error_log("Failed to prepare duplicate statement: " . $conn->error);
+            echo json_encode(['status' => 'error', 'message' => 'Database error: ' . $conn->error]);
+            exit;
+        }
 
+        // Prepare insert statement
         $columnList = '`' . implode('`, `', $columns) . '`';
         $placeholders = implode(', ', array_fill(0, count($columns), '?'));
-        $insertStmt = $conn->prepare("INSERT INTO mldb.billspayment_transaction ($columnList) VALUES ($placeholders)");
-
-        if (!$duplicateStmt || !$insertStmt) {
-            echo json_encode(['status' => 'error', 'message' => 'Unable to prepare import statements.']);
+        $insertSql = "INSERT INTO mldb.billspayment_transaction ($columnList) VALUES ($placeholders)";
+        $insertStmt = $conn->prepare($insertSql);
+        
+        if (!$insertStmt) {
+            error_log("Failed to prepare insert statement: " . $conn->error);
+            error_log("SQL: " . $insertSql);
+            echo json_encode(['status' => 'error', 'message' => 'Database error: ' . $conn->error]);
             exit;
         }
 
@@ -374,6 +408,7 @@ if (isset($_POST['rows'])) {
         $seen = [];
 
         foreach ($rows as $index => $row) {
+            // Normalize values
             $reportDate = bp_normalize_date($row['report_date'] ?? null);
             $referenceNo = bp_null_if_empty($row['reference_no'] ?? null);
             $cancellationDate = bp_normalize_datetime($row['cancellation_date'] ?? null);
@@ -381,6 +416,7 @@ if (isset($_POST['rows'])) {
             $datetimeValue = bp_normalize_datetime($row['datetime'] ?? null);
             $runDateValue = bp_normalize_datetime($row['run_date'] ?? null);
 
+            // Create duplicate key for file-level checking
             $duplicateKey = implode('|', [
                 $reportDate ?? 'NULL',
                 $referenceNo ?? 'NULL',
@@ -390,20 +426,50 @@ if (isset($_POST['rows'])) {
                 $runDateValue ?? 'NULL'
             ]);
 
+            // Check file-level duplicates
             if (isset($seen[$duplicateKey])) {
                 $duplicates[] = ['row' => $index + 1, 'reference_no' => $referenceNo, 'type' => 'file'];
                 continue;
             }
             $seen[$duplicateKey] = true;
 
-            $duplicateStmt->bind_param('ssssss', $reportDate, $referenceNo, $cancellationDate, $statusValue, $datetimeValue, $runDateValue);
-            $duplicateStmt->execute();
+            // Check database duplicates
+            $dupReportDate = $reportDate ?? '';
+            $dupReferenceNo = $referenceNo ?? '';
+            $dupCancellationDate = $cancellationDate ?? '';
+            $dupCancellationDateNull = $cancellationDate === null ? null : '';
+            $dupStatus = $statusValue ?? '';
+            $dupStatusNull = $statusValue === null ? null : '';
+            $dupDatetime = $datetimeValue ?? '';
+            $dupRunDate = $runDateValue ?? '';
+            $dupRunDateNull = $runDateValue === null ? null : '';
+
+            $duplicateStmt->bind_param(
+                'sssssssss',
+                $dupReportDate,
+                $dupReferenceNo,
+                $dupCancellationDate,
+                $dupCancellationDateNull,
+                $dupStatus,
+                $dupStatusNull,
+                $dupDatetime,
+                $dupRunDate,
+                $dupRunDateNull
+            );
+
+            if (!$duplicateStmt->execute()) {
+                error_log("Duplicate check failed for row " . ($index + 1) . ": " . $duplicateStmt->error);
+                $errors[] = ['row' => $index + 1, 'reference_no' => $referenceNo, 'message' => 'Duplicate check failed'];
+                continue;
+            }
+
             $duplicateResult = $duplicateStmt->get_result();
             if ($duplicateResult && $duplicateResult->num_rows > 0) {
                 $duplicates[] = ['row' => $index + 1, 'reference_no' => $referenceNo, 'type' => 'database'];
                 continue;
             }
 
+            // Build values for insert
             $values = [];
             foreach ($columns as $column) {
                 $key = $column === '2nd_approver' ? 'second_approver' : $column;
@@ -413,7 +479,7 @@ if (isset($_POST['rows'])) {
                     $value = bp_normalize_date($value);
                 } elseif (in_array($column, ['datetime', 'cancellation_date', 'run_date'], true)) {
                     $value = bp_normalize_datetime($value);
-                } elseif (in_array($column, ['amount_paid', 'charge_to_customer', 'charge_to_partner', 'new_amount', 'deducted_amount'], true)) {
+                } elseif (in_array($column, ['amount_paid', 'charge_to_customer', 'charge_to_partner'], true)) {
                     $value = bp_normalize_decimal($value);
                 } else {
                     $value = bp_null_if_empty($value);
@@ -422,23 +488,33 @@ if (isset($_POST['rows'])) {
                 $values[] = $value;
             }
 
+            // Bind parameters for insert
             $types = str_repeat('s', count($values));
-            $bindValues = [$types];
-            foreach ($values as $valueIndex => &$valueRef) {
-                $bindValues[] = &$valueRef;
+            $bindParams = [$types];
+            foreach ($values as $key => &$valueRef) {
+                $bindParams[] = &$valueRef;
             }
-            call_user_func_array([$insertStmt, 'bind_param'], $bindValues);
+            call_user_func_array([$insertStmt, 'bind_param'], $bindParams);
             unset($valueRef);
 
+            // Execute insert
             if ($insertStmt->execute()) {
                 $inserted++;
             } else {
-                $errors[] = ['row' => $index + 1, 'reference_no' => $referenceNo, 'message' => $insertStmt->error];
+                error_log("Insert failed for row " . ($index + 1) . ": " . $insertStmt->error);
+                error_log("Row data: " . json_encode($values));
+                $errors[] = [
+                    'row' => $index + 1, 
+                    'reference_no' => $referenceNo, 
+                    'message' => $insertStmt->error
+                ];
             }
         }
 
         $duplicateStmt->close();
         $insertStmt->close();
+
+        error_log("Import completed. Inserted: $inserted, Duplicates: " . count($duplicates) . ", Errors: " . count($errors));
 
         echo json_encode([
             'status' => empty($errors) ? 'success' : 'partial',
@@ -451,9 +527,13 @@ if (isset($_POST['rows'])) {
         exit;
     }
     
+    // Handle lookup action (preview)
+    error_log("=== STARTING LOOKUP ===");
+    error_log("Total rows to lookup: " . count($rows));
+    
     $processedRows = [];
 
-    foreach ($rows as $row) {
+    foreach ($rows as $index => $row) {
         $isKP7 = strtoupper(trim((string)($row['source_file'] ?? ''))) === 'KP7';
         
         // Resolve branch
@@ -486,6 +566,8 @@ if (isset($_POST['rows'])) {
 
         $processedRows[] = $row;
     }
+
+    error_log("Lookup completed. Processed: " . count($processedRows) . " rows");
 
     echo json_encode(['status' => 'success', 'data' => $processedRows]);
     exit;

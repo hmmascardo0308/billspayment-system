@@ -1,0 +1,26 @@
+[30-Jul-2026 01:38:53 Europe/Berlin] === STARTING LOOKUP ===
+[30-Jul-2026 01:38:53 Europe/Berlin] Total rows to lookup: 59
+[30-Jul-2026 01:38:53 Europe/Berlin] Lookup completed. Processed: 59 rows
+[30-Jul-2026 01:38:55 Europe/Berlin] === STARTING IMPORT ===
+[30-Jul-2026 01:38:55 Europe/Berlin] Total rows to import: 59
+[30-Jul-2026 01:38:55 Europe/Berlin] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'reason_for_adjustment' in 'field list' in C:\xampp\htdocs\BillsPayment\dashboard\billspayment\import\process-lookup.php:395
+Stack trace:
+#0 C:\xampp\htdocs\BillsPayment\dashboard\billspayment\import\process-lookup.php(395): mysqli->prepare('INSERT INTO mld...')
+#1 {main}
+  thrown in C:\xampp\htdocs\BillsPayment\dashboard\billspayment\import\process-lookup.php on line 395
+[30-Jul-2026 01:46:40 Europe/Berlin] === STARTING LOOKUP ===
+[30-Jul-2026 01:46:40 Europe/Berlin] Total rows to lookup: 59
+[30-Jul-2026 01:46:40 Europe/Berlin] Lookup completed. Processed: 59 rows
+[30-Jul-2026 01:46:41 Europe/Berlin] === STARTING IMPORT ===
+[30-Jul-2026 01:46:41 Europe/Berlin] Total rows to import: 59
+[30-Jul-2026 01:46:41 Europe/Berlin] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'reason_for_adjustment' in 'field list' in C:\xampp\htdocs\BillsPayment\dashboard\billspayment\import\process-lookup.php:395
+Stack trace:
+#0 C:\xampp\htdocs\BillsPayment\dashboard\billspayment\import\process-lookup.php(395): mysqli->prepare('INSERT INTO mld...')
+#1 {main}
+  thrown in C:\xampp\htdocs\BillsPayment\dashboard\billspayment\import\process-lookup.php on line 395
+[30-Jul-2026 01:49:36 Europe/Berlin] === STARTING LOOKUP ===
+[30-Jul-2026 01:49:36 Europe/Berlin] Total rows to lookup: 59
+[30-Jul-2026 01:49:36 Europe/Berlin] Lookup completed. Processed: 59 rows
+[30-Jul-2026 01:49:37 Europe/Berlin] === STARTING IMPORT ===
+[30-Jul-2026 01:49:37 Europe/Berlin] Total rows to import: 59
+[30-Jul-2026 01:49:37 Europe/Berlin] Import completed. Inserted: 59, Duplicates: 0, Errors: 0

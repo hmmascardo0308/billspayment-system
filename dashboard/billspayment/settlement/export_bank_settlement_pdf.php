@@ -1,5 +1,5 @@
 <?php
-// export_bank_settement.php
+// export_bank_settlement_pdf.php
 // Add cache control headers
 header("Cache-Control: no-cache, no-store, must-revalidate");
 header("Pragma: no-cache");
@@ -16,6 +16,9 @@ $id = resolve_user_identifier();
 if (empty($id)) { header('Location: ../../../login_form.php'); exit; }
 if (!function_exists('has_any_permission') || !has_any_permission(['Settlement Per Bank','Bills Payment'])) { header('Location: ../../home.php'); exit; }
 
+use Dompdf\Dompdf;
+use Dompdf\Options;
+
 // Get filter values from GET parameters
 $selected_partner = isset($_GET['partner']) ? trim($_GET['partner']) : '';
 $selected_bank = isset($_GET['bank']) ? trim($_GET['bank']) : '';
@@ -25,14 +28,20 @@ $selected_date_to = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
 
 // Get excluded rows from GET parameters (comma-separated list of row indices)
 $excluded_rows = isset($_GET['excluded_rows']) ? explode(',', trim($_GET['excluded_rows'])) : [];
-$excluded_rows = array_filter($excluded_rows, 'is_numeric'); // Sanitize
+$excluded_rows = array_filter($excluded_rows, 'is_numeric');
+
+// Get current user name for Prepared By
+$display_name = 'GUEST';
+if (isset($_SESSION['user_type'])) {
+    if ($_SESSION['user_type'] === 'admin') {
+        $display_name = $_SESSION['admin_name'] ?? 'ADMIN';
+    } elseif ($_SESSION['user_type'] === 'user') {
+        $display_name = $_SESSION['user_name'] ?? 'USER';
+    }
+}
 
 /**
  * Get bank abbreviation from database
- * 
- * @param mysqli $conn Database connection
- * @param string $bank_name Bank name to look up
- * @return string Bank abbreviation or empty string if not found
  */
 function getBankAbbreviation(mysqli $conn, string $bank_name): string {
     if (empty($bank_name)) return '';
@@ -52,9 +61,6 @@ function getBankAbbreviation(mysqli $conn, string $bank_name): string {
 
 /**
  * Get settlement type abbreviation
- * 
- * @param string $settlement_type Settlement type (CHECK or ONLINE)
- * @return string Abbreviation (CHK or ONL) or empty string
  */
 function getSettlementAbbreviation(string $settlement_type): string {
     if (empty($settlement_type)) return '';
@@ -63,17 +69,12 @@ function getSettlementAbbreviation(string $settlement_type): string {
 
 /**
  * Format date for CAD number
- * 
- * @param string|null $date_from Start date
- * @param string|null $date_to End date
- * @return string Formatted date string (YYYY-MM-DD or YYYY-MM-DDDD)
  */
 function formatCADDate(?string $date_from, ?string $date_to): string {
     if (empty($date_from) && empty($date_to)) {
         return date('Y-m-d');
     }
     
-    // Use the last day of the period for the CAD number
     $date = !empty($date_to) ? $date_to : $date_from;
     $timestamp = strtotime($date);
     return date('Y-m', $timestamp) . '-' . sprintf('%05d', date('d', $timestamp));
@@ -81,10 +82,6 @@ function formatCADDate(?string $date_from, ?string $date_to): string {
 
 /**
  * Format date range for display
- * 
- * @param string|null $date_from Start date
- * @param string|null $date_to End date
- * @return string Formatted date range
  */
 function formatDateRange(?string $date_from, ?string $date_to): string {
     if (empty($date_from) && empty($date_to)) {
@@ -95,22 +92,17 @@ function formatDateRange(?string $date_from, ?string $date_to): string {
     $to = !empty($date_to) ? strtotime($date_to) : $from;
     
     if ($from == $to) {
-        // Single date: June 12, 2026
         return strtoupper(date('F d, Y', $from));
     } else {
-        // Date range: June 01 - 10, 2026
         $from_month = date('F', $from);
         $to_month = date('F', $to);
         $from_day = date('d', $from);
         $to_day = date('d', $to);
         $to_year = date('Y', $to);
         
-        // Check if months are the same
         if ($from_month == $to_month) {
-            // Same month: June 01 - 10, 2026
             return strtoupper($from_month . ' ' . $from_day . ' - ' . $to_day . ', ' . $to_year);
         } else {
-            // Different months: June 01 - July 10, 2026
             return strtoupper(date('F d', $from) . ' - ' . date('F d, Y', $to));
         }
     }
@@ -118,10 +110,6 @@ function formatDateRange(?string $date_from, ?string $date_to): string {
 
 /**
  * Get bank details from database
- * 
- * @param mysqli $conn Database connection
- * @param string $bank_name Bank name to look up
- * @return array|null Bank details or null if not found
  */
 function getBankDetails(mysqli $conn, string $bank_name): ?array {
     if (empty($bank_name)) return null;
@@ -329,7 +317,7 @@ try {
                 'txn_count' => (int)($row['txn_count'] ?? 0),
                 'total_principal' => (float)($row['total_principal'] ?? 0),
                 'total_charge' => (float)($row['total_charge'] ?? 0),
-                'total_adjustment' => 0, // Will be updated from adjustment query
+                'total_adjustment' => 0,
                 'settled_count' => (int)($row['settled_count'] ?? 0),
                 'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
                 'last_transaction_date' => $row['last_transaction_date'] ?? null,
@@ -344,8 +332,6 @@ try {
             if (isset($combined_data[$partner_id])) {
                 $combined_data[$partner_id]['total_adjustment'] = (float)($row['total_adjustment'] ?? 0);
             } else {
-                // Partner has only adjustments, no regular transactions
-                // Fetch partner details separately
                 $partner_details_sql = "SELECT 
                                             partner_name,
                                             partner_accName,
@@ -395,7 +381,6 @@ try {
     if (!empty($combined_data)) {
         $data_array = array_values($combined_data);
         
-        // Sort by charge_to and serviceCharge
         usort($data_array, function($a, $b) {
             $order = [
                 'CUSTOMER_DAILY' => 1,
@@ -428,7 +413,7 @@ try {
         });
     }
     
-    // Define groups - same as settlement-per-bank.php
+    // Define groups
     $groups = [
         'CHARGE BY CUSTOMER DAILY' => [
             'display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY',
@@ -483,8 +468,6 @@ try {
     ];
     
     $grand_totals = ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0];
-    
-    // Store all rows with their indices for filtering
     $all_rows = [];
     $row_index = 0;
     
@@ -492,7 +475,6 @@ try {
         $charge_to = strtoupper(trim($row['charge_to'] ?? ''));
         $serviceCharge = strtoupper(trim($row['serviceCharge'] ?? ''));
         
-        // Determine which group this belongs to
         $group_key = null;
         
         if (empty($charge_to)) {
@@ -545,7 +527,6 @@ try {
         $is_fully_settled = ($settled_count > 0 && $unsettled_count == 0);
         $is_partially_settled = ($settled_count > 0 && $unsettled_count > 0);
         
-        // Determine status text
         if ($is_fully_settled) {
             $status = 'Settled';
         } elseif ($is_partially_settled) {
@@ -578,7 +559,7 @@ try {
         $row_index++;
     }
     
-    // Filter out excluded rows based on row_index
+    // Filter out excluded rows
     $excluded_rows_set = array_flip($excluded_rows);
     $filtered_rows = array_filter($all_rows, function($row) use ($excluded_rows_set) {
         return !isset($excluded_rows_set[$row['row_index']]);
@@ -638,7 +619,6 @@ try {
         ]
     ];
     
-    // Populate groups and calculate totals from filtered rows
     $grand_totals = ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0];
     
     foreach ($filtered_rows as $row_data) {
@@ -648,17 +628,14 @@ try {
             continue;
         }
         
-        // Add to group
         $groups[$group_key]['rows'][] = $row_data;
         
-        // Update group totals
         $groups[$group_key]['totals']['txn_count'] += $row_data['txn_count'];
         $groups[$group_key]['totals']['principal'] += $row_data['principal'];
         $groups[$group_key]['totals']['charge'] += $row_data['charge'];
         $groups[$group_key]['totals']['adjustment'] += $row_data['adjustment'];
         $groups[$group_key]['totals']['settlement'] += $row_data['settlement_amount'];
         
-        // Update grand totals
         $grand_totals['txn_count'] += $row_data['txn_count'];
         $grand_totals['principal'] += $row_data['principal'];
         $grand_totals['charge'] += $row_data['charge'];
@@ -666,12 +643,10 @@ try {
         $grand_totals['settlement'] += $row_data['settlement_amount'];
     }
     
-    // Remove empty groups
     $groups = array_filter($groups, function($group) {
         return !empty($group['rows']);
     });
     
-    // Get bank abbreviation and settlement type
     $bank_abbreviation = '';
     $settlement_abbr = '';
     
@@ -685,196 +660,407 @@ try {
     if (!empty($selected_settlement_type)) {
         $settlement_abbr = getSettlementAbbreviation($selected_settlement_type);
     } else {
-        // If no settlement type selected, check if all selected banks have the same settlement type
-        $settlement_abbr = 'CHK'; // Default
+        $settlement_abbr = 'CHK';
     }
     
-    // Generate CAD number
     $cad_date = formatCADDate($selected_date_from, $selected_date_to);
     $cad_number = $bank_abbreviation . '-' . $settlement_abbr . '-' . $cad_date;
-    
-    // Format date range for display
     $date_range_display = formatDateRange($selected_date_from, $selected_date_to);
     $current_date = strtoupper(date('F d, Y'));
 
 } catch (Exception $e) {
-    error_log("Error in export_bank_settlement: " . $e->getMessage());
-    die("Error generating export: " . $e->getMessage());
+    error_log("Error in export_bank_settlement_pdf: " . $e->getMessage());
+    die("Error generating PDF: " . $e->getMessage());
 }
 
-// Create Excel file using PhpSpreadsheet
-use PhpOffice\PhpSpreadsheet\Spreadsheet;
-use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
-use PhpOffice\PhpSpreadsheet\Style\Alignment;
-use PhpOffice\PhpSpreadsheet\Style\Border;
-use PhpOffice\PhpSpreadsheet\Style\Fill;
-use PhpOffice\PhpSpreadsheet\Style\Font;
-use PhpOffice\PhpSpreadsheet\Cell\DataType;
-use PhpOffice\PhpSpreadsheet\Style\Color;
+// ============================================
+// GENERATE HTML FOR PDF
+// ============================================
 
-$spreadsheet = new Spreadsheet();
-$sheet = $spreadsheet->getActiveSheet();
-
-// Set column widths for 4 visible columns (A, B, C, D)
-// D will be the "AMOUNT FOR SETTLEMENT" column
-$sheet->getColumnDimension('A')->setWidth(35);
-$sheet->getColumnDimension('B')->setWidth(25);
-$sheet->getColumnDimension('C')->setWidth(20);
-$sheet->getColumnDimension('D')->setWidth(22);
-
-// Set column C (Account Number) as text to prevent scientific notation
-$sheet->getStyle('C:C')->getNumberFormat()->setFormatCode('@');
-
-// Row 1: REQUEST FOR PAYMENT FORM (merged A-D)
-$sheet->mergeCells('A1:D1');
-$sheet->setCellValue('A1', 'REQUEST FOR PAYMENT FORM');
-$sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14);
-$sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
-
-// Row 2: M. LHUILLIER PHILIPPINES, INC. (A2) and DATE (D2)
-$sheet->setCellValue('A2', 'M. LHUILLIER PHILIPPINES, INC.');
-$sheet->getStyle('A2')->getFont()->setBold(true)->setSize(12);
-
-$sheet->setCellValue('D2', 'DATE: ' . $current_date);
-$sheet->getStyle('D2')->getFont()->setBold(true)->setSize(12);
-$sheet->getStyle('D2')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
-
-// Row 3: BILLS PAYMENT SETTLEMENT (A3) and CAD NO. (D3)
-$sheet->setCellValue('A3', 'BILLS PAYMENT SETTLEMENT');
-$sheet->getStyle('A3')->getFont()->setBold(true)->setSize(12);
-
-$sheet->setCellValue('D3', 'CAD NO.: ' . $cad_number);
-$sheet->getStyle('D3')->getFont()->setBold(true)->setSize(12);
-$sheet->getStyle('D3')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
-
-// Row 4: RFP NO. (D4)
-$sheet->setCellValue('D4', 'RFP NO.: ');
-$sheet->getStyle('D4')->getFont()->setBold(true)->setSize(12);
-$sheet->getStyle('D4')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
-
-// Row 6: BANK NAME (A6)
-$sheet->setCellValue('A6', 'BANK NAME: ' . ($selected_bank ?: ''));
-$sheet->getStyle('A6')->getFont()->setBold(true)->setSize(14);
-
-// Row 7: DATE OF TRANSACTION (A7)
-$sheet->setCellValue('A7', 'DATE OF TRANSACTION: ' . $date_range_display);
-$sheet->getStyle('A7')->getFont()->setBold(true)->setSize(12);
-
-// Row 8: MODE OF PAYMENT (A8)
-$sheet->setCellValue('A8', 'MODE OF PAYMENT: ');
-$sheet->getStyle('A8')->getFont()->setBold(true)->setSize(12);
-
-// Row 10: Headers - Only 4 visible columns (A, B, C, D)
-$headers = ['LIST OF BILLS PAYMENT PARTNER', 'ACCOUNT NAME', 'ACCOUNT NUMBER', 'AMOUNT FOR SETTLEMENT'];
-$col = 'A';
-foreach ($headers as $header) {
-    $sheet->setCellValue($col . '10', $header);
-    $sheet->getStyle($col . '10')->getFont()->setBold(true);
-    $sheet->getStyle($col . '10')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
-    $sheet->getStyle($col . '10')->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
-    $col++;
+$html = '<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Settlement Report</title>
+    <style>
+        @page {
+            margin: 15mm 12mm 15mm 12mm;
+            font-size: 9pt;
+        }
+        body {
+            font-family: "Helvetica", "Arial", sans-serif;
+            font-size: 9pt;
+            line-height: 1.3;
+            color: #333;
+        }
+        .header-title {
+            text-align: center;
+            font-size: 14pt;
+            font-weight: bold;
+            letter-spacing: 1px;
+            padding: 4px 0;
+            border-bottom: 2px solid #000;
+            margin-bottom: 6px;
+        }
+        .company-name {
+            font-size: 11pt;
+            font-weight: bold;
+            float: left;
+        }
+        .date-info {
+            font-size: 9pt;
+            font-weight: bold;
+            float: right;
+        }
+        .clearfix::after {
+            content: "";
+            clear: both;
+            display: table;
+        }
+        .info-row {
+            margin: 2px 0;
+            font-size: 9pt;
+        }
+        .info-row strong {
+            font-weight: bold;
+        }
+        .info-row .label {
+            display: inline-block;
+            min-width: 140px;
+        }
+        .info-row .value {
+            font-weight: normal;
+        }
+        .section-spacer {
+            height: 4px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 8pt;
+            margin-top: 4px;
+        }
+        table th {
+            background-color: #e9ecef;
+            font-weight: bold;
+            text-align: center;
+            padding: 4px 6px;
+            border: 1px solid #333;
+            font-size: 7.5pt;
+        }
+        table td {
+            padding: 3px 6px;
+            border: 1px solid #333;
+            vertical-align: middle;
+            font-size: 7.5pt;
+        }
+        .text-center { text-align: center; }
+        .text-right { text-align: right; }
+        .text-left { text-align: left; }
+        .group-header td {
+            font-weight: bold;
+            background-color: #f1f3f5;
+            padding: 4px 8px;
+            font-size: 8pt;
+        }
+        .group-header-uncategorized td {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        .group-header-both td {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+        .subtotal-row td {
+            font-weight: bold;
+            background-color: #e8f4fd;
+            padding: 4px 6px;
+        }
+        .subtotal-uncategorized td {
+            background-color: #fff3cd;
+        }
+        .subtotal-both td {
+            background-color: #d1ecf1;
+        }
+        .grand-total td {
+            font-weight: bold;
+            background-color: #f8f9fa;
+            padding: 5px 6px;
+            border-top: 2px solid #333;
+            font-size: 8.5pt;
+        }
+        .negative-amount {
+            color: #dc3545;
+        }
+        .positive-amount {
+            color: #28a745;
+        }
+        .footer {
+            margin-top: 8px;
+            font-size: 7pt;
+            text-align: center;
+            color: #6c757d;
+            border-top: 1px solid #ddd;
+            padding-top: 4px;
+        }
+        .signature-section {
+            margin-top: 12px;
+            font-size: 8pt;
+            margin-left: -35px;
+        }
+        .signature-section table {
+            border: none;
+            width: 100%;
+            margin-top: 4px;
+        }
+        .signature-section td {
+            border: none;
+            padding: 4px 8px;
+            vertical-align: top;
+        }
+        .signature-line {
+            border-bottom: 1px solid #333;
+            width: 180px;
+            display: inline-block;
+            margin-top: 20px;
+        }
+        .signature-label {
+            font-size: 7pt;
+            text-align: center;
+            margin-top: 2px;
+        }
+        .page-break {
+            page-break-after: always;
+        }
+        .amount-col {
+            font-weight: 500;
+        }
+        /* Column widths - simplified for fewer columns */
+        .col-partner { width: 28%; }
+        .col-account { width: 22%; }
+        .col-acctno { width: 25%; }
+        .col-settlement { width: 25%; text-align: right; }
+        
+/* Signature table styles */
+.signature-table {
+    border: none !important;
+    width: 100%;
+    margin-top: 4px;
 }
+.signature-table td {
+    border: none !important;
+    padding: 4px 8px;
+    vertical-align: top;
+    text-align: center;
+}
+.signature-name {
+    font-weight: bold;
+    font-size: 8pt;
+    margin-bottom: 4px;
+}
+.signature-blank {
+    border-bottom: 1px solid #333;
+    width: 180px;
+    display: inline-block;
+    height: 1px;
+    margin-bottom: 4px;
+}
+.signature-title {
+    font-size: 7pt;
+    color: #555;
+    margin-top: 2px;
+}
+.signature-blank {
+    border-bottom: 1px solid #333;
+    width: 180px;
+    display: inline-block;
+    height: 1px;
+}
+        .signature-label-text {
+            font-size: 7pt;
+            text-align: center;
+            margin-top: 2px;
+        }
+    </style>
+</head>
+<body>';
 
-// Row 11+: Data rows
-$row = 11;
+// HEADER SECTION
+$html .= '
+<div class="header-title">REQUEST FOR PAYMENT FORM</div>
 
-// Only output groups that have rows
+<div class="clearfix">
+    <div class="company-name">M. LHUILLIER PHILIPPINES, INC.</div>
+    <div class="date-info">DATE: ' . $current_date . '</div>
+</div>
+
+<div class="clearfix" style="margin-top: 2px;">
+    <div style="float: left; font-size: 10pt; font-weight: bold;">BILLS PAYMENT SETTLEMENT</div>
+    <div style="float: right; font-size: 9pt; font-weight: bold;">CAD NO.: ' . $cad_number . '</div>
+</div>
+
+<div style="text-align: right; font-size: 9pt; font-weight: bold; margin-top: 2px;">RFP NO.: </div>
+
+<div class="section-spacer"></div>
+
+<div class="info-row"><strong>BANK NAME:</strong> ' . ($selected_bank ?: '') . '</div>
+<div class="info-row"><strong>DATE OF TRANSACTION:</strong> ' . $date_range_display . '</div>
+<div class="info-row"><strong>MODE OF PAYMENT:</strong> </div>
+
+<div class="section-spacer"></div>';
+
+// TABLE SECTION - Simplified with only 4 columns
+$html .= '<table>
+    <thead>
+        <tr>
+            <th class="col-partner">LIST OF BILLS PAYMENT PARTNER</th>
+            <th class="col-account">ACCOUNT NAME</th>
+            <th class="col-acctno">ACCOUNT NUMBER</th>
+            <th class="col-settlement">AMOUNT FOR SETTLEMENT</th>
+        </tr>
+    </thead>
+    <tbody>';
+
+// DATA ROWS
 foreach ($groups as $group_key => $group_data) {
-    // Skip empty groups
     if (empty($group_data['rows'])) {
         continue;
     }
     
-    // Check if this is the UNCATEGORIZED group
     $is_uncategorized = ($group_key === 'UNCATEGORIZED');
     $is_both = (strpos($group_key, 'BOTH') !== false);
     
-    // Group header with styling - merge A through D
-    $sheet->mergeCells('A' . $row . ':D' . $row);
-    $sheet->setCellValue('A' . $row, $group_data['display_name']);
-    $sheet->getStyle('A' . $row)->getFont()->setBold(true);
-    
-    // Apply group-specific styling
+    // Group header
+    $group_class = '';
     if ($is_uncategorized) {
-        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFF3CD');
-        $sheet->getStyle('A' . $row)->getFont()->getColor()->setARGB(Color::COLOR_DARKYELLOW);
+        $group_class = 'group-header-uncategorized';
     } elseif ($is_both) {
-        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('D1ECF1');
-        $sheet->getStyle('A' . $row)->getFont()->getColor()->setARGB(Color::COLOR_DARKBLUE);
+        $group_class = 'group-header-both';
     }
     
-    $sheet->getStyle('A' . $row . ':D' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
-    $row++;
+    $html .= '<tr class="group-header ' . $group_class . '">';
+    $html .= '<td colspan="4">' . htmlspecialchars($group_data['display_name']) . '</td>';
+    $html .= '</tr>';
     
-    // Data rows - only 4 columns now
+    // Data rows
     foreach ($group_data['rows'] as $row_data) {
-        $sheet->setCellValue('A' . $row, $row_data['partner_name']);
-        $sheet->setCellValue('B' . $row, $row_data['account_name']);
+        $settlement = $row_data['settlement_amount'];
+        $settlement_class = ($settlement < 0) ? 'negative-amount' : '';
         
-        // Set account number as text to prevent scientific notation
-        $sheet->setCellValueExplicit('C' . $row, $row_data['account_number'], DataType::TYPE_STRING);
-        
-        // Settlement amount in column D
-        $sheet->setCellValue('D' . $row, $row_data['settlement_amount']);
-        
-        // Apply number formatting to settlement amount
-        $sheet->getStyle('D' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
-        
-        $sheet->getStyle('A' . $row . ':D' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
-        $row++;
+        $html .= '<tr>';
+        $html .= '<td class="text-left">' . htmlspecialchars($row_data['partner_name']) . '</td>';
+        $html .= '<td class="text-left">' . htmlspecialchars($row_data['account_name']) . '</td>';
+        $html .= '<td class="text-left">' . htmlspecialchars($row_data['account_number']) . '</td>';
+        $html .= '<td class="text-right amount-col ' . $settlement_class . '"> ' . number_format($settlement, 2) . '</td>';
+        $html .= '</tr>';
     }
     
-    // Group subtotal row with styling - merged A through C
-    $sheet->mergeCells('A' . $row . ':C' . $row);
-    $sheet->setCellValue('A' . $row, 'Subtotal - ' . $group_data['display_name']);
-    $sheet->getStyle('A' . $row . ':D' . $row)->getFont()->setBold(true);
-    $sheet->setCellValue('D' . $row, $group_data['totals']['settlement']);
-    
-    $sheet->getStyle('D' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
-    
-    // Apply subtotal styling
+    // Group subtotal
+    $subtotal_class = '';
     if ($is_uncategorized) {
-        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFF3CD');
+        $subtotal_class = 'subtotal-uncategorized';
     } elseif ($is_both) {
-        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('D1ECF1');
-    } else {
-        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('E8F4FD');
+        $subtotal_class = 'subtotal-both';
     }
     
-    $sheet->getStyle('A' . $row . ':D' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
-    $row++;
+    $totals = $group_data['totals'];
+    $settlement_class = ($totals['settlement'] < 0) ? 'negative-amount' : '';
     
-    // Add a blank row between groups (except after the last group)
-    $row++;
+    $html .= '<tr class="subtotal-row ' . $subtotal_class . '">';
+    $html .= '<td colspan="3" class="text-right"><strong>Subtotal - ' . htmlspecialchars($group_data['display_name']) . '</strong></td>';
+    $html .= '<td class="text-right amount-col ' . $settlement_class . '"> ' . number_format($totals['settlement'], 2) . '</td>';
+    $html .= '</tr>';
 }
 
-// Grand Total - merged A through C
-$sheet->mergeCells('A' . $row . ':C' . $row);
-$sheet->setCellValue('A' . $row, 'GRAND TOTAL');
-$sheet->getStyle('A' . $row . ':D' . $row)->getFont()->setBold(true);
-$sheet->setCellValue('D' . $row, $grand_totals['settlement']);
+// GRAND TOTAL
+$settlement_class = ($grand_totals['settlement'] < 0) ? 'negative-amount' : '';
 
-$sheet->getStyle('D' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
-$sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('F8F9FA');
-$sheet->getStyle('A' . $row . ':D' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
+$html .= '<tr class="grand-total">';
+$html .= '<td colspan="3" class="text-right"><strong>GRAND TOTAL</strong></td>';
+$html .= '<td class="text-right amount-col ' . $settlement_class . '"> ' . number_format($grand_totals['settlement'], 2) . '</td>';
+$html .= '</tr>';
 
-// Auto-size columns for better display
-foreach (range('A', 'D') as $col) {
-    $sheet->getColumnDimension($col)->setAutoSize(true);
+$html .= '</tbody></table>';
+
+// SIGNATURE SECTION - Updated with name above the line, title below
+$html .= '
+<div class="signature-section">
+    <table class="signature-table">
+        <tr>
+            <td style="width: 25%;">
+                <div style="font-weight: bold;">Prepared by:</div>
+                <div style="margin-top: 15px;">
+                    <div class="signature-name">' . htmlspecialchars($display_name) . '</div>
+                    <span class="signature-blank"></span>
+                    <div class="signature-title">Accounting Staff</div>
+                </div>
+            </td>
+            <td style="width: 25%;">
+                <div style="font-weight: bold;">Checked by:</div>
+                <div style="margin-top: 15px;">
+                    <div class="signature-name">{Accounting Staff}</div>
+                    <span class="signature-blank"></span>
+                    <div class="signature-title">Accounting Staff</div>
+                </div>
+            </td>
+            <td style="width: 25%;">
+                <div style="font-weight: bold;">Reviewed by:</div>
+                <div style="margin-top: 15px;">
+                    <div class="signature-name">ELVIE CILLO</div>
+                    <span class="signature-blank"></span>
+                    <div class="signature-title">Department Manager</div>
+                </div>
+            </td>
+            <td style="width: 25%;">
+                <div style="font-weight: bold;">Noted by:</div>
+                <div style="margin-top: 15px;">
+                    <div class="signature-name">LUELLA PERALTA</div>
+                    <span class="signature-blank"></span>
+                    <div class="signature-title">Division Manager</div>
+                </div>
+            </td>
+        </tr>
+    </table>
+</div>
+
+
+
+</body>
+</html>';
+
+// <div class="footer">
+//     Generated on ' . date('Y-m-d H:i:s') . ' | CAD: ' . $cad_number . '
+// </div>
+
+// ============================================
+// GENERATE PDF
+// ============================================
+
+try {
+    $options = new Options();
+    $options->set('defaultFont', 'Helvetica');
+    $options->set('isHtml5ParserEnabled', true);
+    $options->set('isRemoteEnabled', false);
+    $options->set('isFontSubsettingEnabled', true);
+    
+    $dompdf = new Dompdf($options);
+    $dompdf->loadHtml($html);
+    $dompdf->setPaper('A4', 'portrait');
+    $dompdf->render();
+    
+    // Output PDF
+    $filename = $cad_number . '.pdf';
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: inline; filename="' . $filename . '"');
+    header('Cache-Control: no-cache, no-store, must-revalidate');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+    
+    echo $dompdf->output();
+    exit;
+    
+} catch (Exception $e) {
+    error_log("PDF Generation Error: " . $e->getMessage());
+    die("Error generating PDF: " . $e->getMessage());
 }
-
-// Set the filename to the CAD number
-$filename = $cad_number . '.xlsx';
-
-// Set headers for download
-header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-header('Content-Disposition: attachment; filename="' . $filename . '"');
-header('Cache-Control: no-cache, no-store, must-revalidate');
-header('Pragma: no-cache');
-header('Expires: 0');
-
-// Create and output the file
-$writer = new Xlsx($spreadsheet);
-$writer->save('php://output');
-exit;
 ?>
