@@ -143,6 +143,9 @@ if (isset($_SESSION['user_type']) && ($_SESSION['user_type'] === 'admin' || $_SE
             <div class="sub" onclick="parent.location='<?php echo $base_url; ?>billspayment/import/billspay-transaction.php'">
                 <a href="<?php echo $base_url; ?>billspayment/import/billspay-transaction.php"><i class="fa-solid fa-receipt"></i> Transaction</a>
             </div>
+            <div class="sub" onclick="parent.location='<?php echo $base_url; ?>billspayment/import/billspay-transaction_monthly.php'">
+            <a href="<?php echo $base_url; ?>billspayment/import/billspay-transaction_monthly.php"><i class="fa-solid fa-receipt"></i> Monthly Transaction</a>
+            </div>
             <?php endif; ?>
             <?php if (has_permission('BP Import Cancellation')): ?>
             <div class="sub" onclick="parent.location='<?php echo $base_url; ?>billspayment/import/billspay-cancellation.php'">

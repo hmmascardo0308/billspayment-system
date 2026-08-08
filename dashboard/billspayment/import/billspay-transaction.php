@@ -232,7 +232,7 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
 
     <!-- Import Disabled Modal (Critical Errors) -->
     <div class="modal fade" id="importDisabledModal" tabindex="-1" aria-labelledby="importDisabledModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg">
+        <div class="dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header bg-danger text-white">
                     <h5 class="modal-title" id="importDisabledModalLabel">
@@ -320,6 +320,15 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
 
         const current_user = "<?php echo $imported_by; ?>";
         const imported_date = "<?php echo date('Y-m-d'); ?>";
+
+        // Function to toggle drop zone visibility
+        function toggleDropZone(show) {
+            if (show) {
+                $('#dropZone').removeClass('hidden-drop-zone').show();
+            } else {
+                $('#dropZone').addClass('hidden-drop-zone');
+            }
+        }
 
         function isEmptyValue(value) {
             if (value === null || value === undefined) return true;
@@ -786,6 +795,7 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
                 $('#validation_summary').hide();
                 $('#summary_section').hide();
                 allRows = [];
+                toggleDropZone(true);
             }
         }
 
@@ -800,6 +810,8 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
             $('#summary_section').hide();
             allRows = [];
             $('#dropFileCount').text('0 files').removeClass('bg-success').addClass('bg-secondary');
+            // Show the drop zone again
+            toggleDropZone(true);
         }
 
         // Handle file selection (used by both drag-drop and browse)
@@ -1329,6 +1341,9 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
                         $('#preview_section').removeClass('d-none');
                         $('#pagination_container').removeClass('d-none');
                         
+                        // Hide the drop zone when results are displayed
+                        toggleDropZone(false);
+                        
                         $('#file_status_badge')
                             .removeClass('bg-success bg-warning bg-danger')
                             .addClass(importDisabled ? 'bg-danger' : 'bg-success')
@@ -1829,3 +1844,391 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
 </body>
 <?php include '../../../templates/footer.php'; ?>
 </html>
+
+
+<style>
+        .import-container { 
+            padding: 20px; 
+            margin-top: 20px; 
+        }
+        .table-responsive { 
+            max-height: 400px; 
+            overflow-y: auto; 
+            margin-top: 20px; 
+        }
+        .table{
+            white-space: nowrap;
+        }
+        th { 
+            position: sticky; 
+            top: 0; 
+            background-color: #ff0000 !important; 
+            color: white; 
+            z-index: 1; 
+        }
+        * {
+            transition: none !important;
+        }
+        .pagination-container {
+            margin-top: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+        }
+        .pagination-container button {
+            padding: 8px 16px;
+            border: 1px solid #ddd;
+            background: #f8f9fa;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .pagination-container button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .pagination-container button.active {
+            background: #ff4141;
+            color: white;
+            border-color: #ff4141;
+        }
+        .pagination-container .page-info {
+            padding: 8px 16px;
+            background: #e9ecef;
+            border-radius: 4px;
+        }
+        .pagination-controls {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .pagination-controls .page-btn {
+            min-width: 35px;
+            text-align: center;
+        }
+        .text-not-found {
+            color: #ff0000 !important;
+            font-weight: bold;
+        }
+        .file-info {
+            margin-top: 10px;
+            padding: 10px 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            border-left: 4px solid #ff0000;
+            display: none;
+        }
+        .file-info .file-name {
+            font-weight: bold;
+            color: #000000;
+        }
+        .file-info .file-size {
+            color: #6c757d;
+            font-size: 0.9em;
+        }
+        .file-info i {
+            margin-right: 8px;
+            color: #28a745;
+        }
+        .validation-summary {
+            margin-top: 10px;
+            padding: 10px 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            border-left: 4px solid #ffc107;
+            display: none;
+        }
+        .validation-summary .badge {
+            font-size: 0.9em;
+            padding: 8px 12px;
+        }
+        .modal-warning-list {
+            max-height: 700px;
+            overflow-y: auto;
+        }
+        /* Row highlighting for warnings */
+        tr.has-empty-partner {
+            background-color: #fff3cd !important;
+            border-left: 6px solid #ffc107;
+        }
+        tr.has-empty-partner:hover {
+            background-color: #ffe69c !important;
+        }
+        tr.has-unrecognized-partner {
+            background-color: #f8d7da !important;
+            border-left: 6px solid #dc3545;
+        }
+        tr.has-unrecognized-partner:hover {
+            background-color: #f5c6cb !important;
+        }
+        tr.has-empty-branch {
+            background-color: #d1ecf1 !important;
+            border-left: 6px solid #17a2b8;
+        }
+        tr.has-empty-branch:hover {
+            background-color: #bee5eb !important;
+        }
+        .col-u-highlight {
+            background-color: #fff3cd !important;
+            font-weight: bold;
+        }
+        .badge-col-u {
+            background-color: #ffc107;
+            color: #000;
+            font-size: 0.7em;
+            padding: 2px 6px;
+            border-radius: 10px;
+            margin-left: 5px;
+        }
+        .badge-empty-value {
+            background-color: #dc3545;
+            color: #fff;
+            font-size: 0.65em;
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+        .import-disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .critical-error {
+            border-left: 4px solid #dc3545 !important;
+            background-color: #f8d7da !important;
+        }
+        /* Summary Table Styles */
+        .summary-table th {
+            background-color: #8f0000 !important;
+            
+        }
+        .summary-table .summary-row {
+            background-color: #d4edda !important;
+        }
+        .summary-table .adjustment-row {
+            background-color: #fff3cd !important;
+        }
+        .summary-table .net-row {
+            background-color: #cce5ff !important;
+        }
+        .summary-table .total-row {
+            font-weight: bold;
+            /* border-top: 3px solid #c50000; */
+        }
+        .summary-table .text-positive {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .summary-table .text-negative {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .summary-table .text-net {
+            color: #0056b3;
+            font-weight: bold;
+        }
+        #summary_section {
+            margin-top: 20px;
+        }
+        #btn_summary {
+            padding: 12px;
+            font-size: 1.1em;
+        }
+        .summary-stats-badge {
+            font-size: 0.85em;
+            padding: 8px 15px;
+            margin-right: 5px;
+        }
+        /* Summary Modal Styles */
+        .summary-modal-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .summary-card {
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 15px;
+            background: #f8f9fa;
+        }
+        .summary-card h6 {
+            border-bottom: 2px solid #dee2e6;
+            padding-bottom: 8px;
+            margin-bottom: 12px;
+        }
+        .summary-card .summary-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            font-size: 0.9em;
+        }
+        .summary-card .summary-item .label {
+            color: #6c757d;
+        }
+        .summary-card .summary-item .value {
+            font-weight: bold;
+        }
+        .summary-card.summary-positive {
+            border-left: 4px solid #920000;
+        }
+        .summary-card.summary-adjustment {
+            border-left: 4px solid #920000;
+        }
+        .summary-card.summary-net {
+            border-left: 4px solid #920000;
+        }
+        .settlement-row {
+            background-color: #d4edda !important;
+            font-size: 1.1em;
+        }
+        .settlement-row td {
+            font-weight: bold;
+        }
+
+        tr.has-negative-amount {
+            background-color: #f8d7da !important;
+            border-left: 6px solid #ac6100;
+        }
+        tr.has-negative-amount:hover {
+            background-color: #ffbb84 !important;
+        }
+
+        /* File list styles */
+        .file-list-container {
+            margin-top: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 10px;
+            background: #f8f9fa;
+        }
+        .file-list-container .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 10px;
+            border-bottom: 1px solid #e9ecef;
+        }
+        .file-list-container .file-item:last-child {
+            border-bottom: none;
+        }
+        .file-list-container .file-item .file-name {
+            font-weight: 500;
+        }
+        .file-list-container .file-item .file-size {
+            color: #6c757d;
+            font-size: 0.85em;
+        }
+        .file-list-container .file-item .file-status {
+            font-size: 0.85em;
+        }
+        .file-list-container .file-item .remove-file {
+            color: #dc3545;
+            cursor: pointer;
+            padding: 0 5px;
+        }
+        .file-list-container .file-item .remove-file:hover {
+            color: #a71d2a;
+        }
+        .file-count-badge {
+            margin-left: 10px;
+        }
+
+        /* Drag and Drop Styles */
+        .drop-zone {
+            border: 3px dashed #dee2e6;
+            border-radius: 10px;
+            padding: 20px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #f8f9fa;
+            position: relative;
+            min-height: 100px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+        .drop-zone:hover {
+            border-color: #ff0000;
+            background: #fff5f5;
+        }
+        .drop-zone.dragover {
+            border-color: #ff0000;
+            background: #fff0f0;
+            transform: scale(1.02);
+        }
+        .drop-zone.dragover .drop-zone-icon {
+            transform: scale(1.1);
+        }
+        .drop-zone-icon {
+            font-size: 2em;
+            color: #ff0000;
+            margin-bottom: 15px;
+            transition: transform 0.3s ease;
+        }
+        .drop-zone-text {
+            font-size: 1em;
+            color: #6c757d;
+        }
+        .drop-zone-text strong {
+            color: #ff0000;
+        }
+        .drop-zone-subtext {
+            color: #6c757d;
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+        .drop-zone .file-input-hidden {
+            display: none;
+        }
+        .drop-zone .browse-link {
+            color: #ff0000;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        .drop-zone .browse-link:hover {
+            color: #cc0000;
+        }
+        .drop-zone .supported-formats {
+            margin-top: 10px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .drop-zone .supported-formats .badge {
+            font-size: 0.8em;
+            padding: 5px 10px;
+        }
+        .drop-zone .file-count-indicator {
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            font-size: 0.85em;
+        }
+        .drop-zone .upload-progress {
+            display: none;
+            margin-top: 15px;
+            width: 100%;
+            max-width: 400px;
+        }
+        .drop-zone .upload-progress .progress {
+            height: 8px;
+        }
+        .file-item .file-progress {
+            flex: 1;
+            margin: 0 15px;
+            max-width: 150px;
+        }
+        .file-item .file-progress .progress {
+            height: 6px;
+        }
+
+        /* Hide drop zone when results are displayed */
+        .drop-zone.hidden-drop-zone {
+            display: none !important;
+        }
+</style>
