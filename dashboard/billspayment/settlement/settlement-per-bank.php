@@ -85,6 +85,30 @@ if (!empty($selected_date_from) && !empty($selected_date_to)) {
     $has_date_range = false;
 }
 
+// Function to calculate settlement amount based on charge type
+function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment) {
+    $charge_to_upper = strtoupper(trim($charge_to));
+    $service_charge_upper = strtoupper(trim($service_charge));
+    
+    // For WEEKLY, MONTHLY, SEMI-MONTHLY: Amount = Principal + Adjustment (no charge deduction)
+    if ($charge_to_upper === 'PARTNER' && in_array($service_charge_upper, ['WEEKLY', 'MONTHLY', 'SEMI-MONTHLY'])) {
+        return $principal + $adjustment;
+    }
+    
+    // For DAILY (both CUSTOMER and PARTNER): Amount = Principal - Charge to Partner + Adjustment
+    if (($charge_to_upper === 'CUSTOMER' || $charge_to_upper === 'PARTNER') && $service_charge_upper === 'DAILY') {
+        return $principal - $charge_to_partner + $adjustment;
+    }
+    
+    // For BOTH charge types: Use the original calculation (Principal + both charges + adjustment)
+    if ($charge_to_upper === 'BOTH') {
+        return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
+    }
+    
+    // Default fallback: Original calculation
+    return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
+}
+
 // Function to get daily breakdown for a partner
 // MODIFIED: Separate logic for regular transactions and adjustments
 function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, string $settlement_type, string $date_from, string $date_to) {
@@ -171,13 +195,14 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
     $where_conditions_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
     
     // Build the daily breakdown query using UNION ALL
+    // Note: We're not calculating amount_for_settlement in SQL, we'll do it in PHP
     $sql = "SELECT 
                 transaction_date,
                 SUM(txn_count) as txn_count,
                 SUM(total_principal) as total_principal,
-                SUM(total_charge) as total_charge,
+                SUM(charge_to_customer) as charge_to_customer,
+                SUM(charge_to_partner) as charge_to_partner,
                 SUM(total_adjustment) as total_adjustment,
-                SUM(total_principal + total_charge + total_adjustment) as amount_for_settlement,
                 MAX(settle_status) as settle_status
             FROM (
                 -- Regular transactions (not cancelled)
@@ -185,7 +210,8 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
                     DATE(bt.datetime) as transaction_date,
                     COUNT(*) as txn_count,
                     SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
-                    (SUM(bt.charge_to_customer) + SUM(bt.charge_to_partner)) as total_charge,
+                    SUM(bt.charge_to_customer) as charge_to_customer,
+                    SUM(bt.charge_to_partner) as charge_to_partner,
                     0 as total_adjustment,
                     MAX(bt.settle_unsettle) as settle_status
                 FROM mldb.billspayment_transaction bt
@@ -200,7 +226,8 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
                     DATE(bt.cancellation_date) as transaction_date,
                     0 as txn_count,
                     0 as total_principal,
-                    0 as total_charge,
+                    0 as charge_to_customer,
+                    0 as charge_to_partner,
                     SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment,
                     '' as settle_status
                 FROM mldb.billspayment_transaction bt
@@ -225,13 +252,48 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
             while ($row = $result->fetch_assoc()) {
                 $status = $row['settle_status'] ?? '';
                 $is_settled = (strtoupper(trim($status)) === 'SETTLED');
+                
+                // Get partner's charge type to calculate settlement amount correctly
+                $charge_to = '';
+                $service_charge = '';
+                $partner_sql = "SELECT COALESCE(charge_to, '') as charge_to, COALESCE(serviceCharge, '') as serviceCharge 
+                                FROM masterdata.partner_masterfile 
+                                WHERE partner_id_kpx = ?";
+                $partner_stmt = $conn->prepare($partner_sql);
+                if ($partner_stmt) {
+                    $partner_stmt->bind_param("s", $partner_id);
+                    $partner_stmt->execute();
+                    $partner_result = $partner_stmt->get_result();
+                    if ($partner_row = $partner_result->fetch_assoc()) {
+                        $charge_to = $partner_row['charge_to'] ?? '';
+                        $service_charge = $partner_row['serviceCharge'] ?? '';
+                    }
+                    $partner_stmt->close();
+                }
+                
+                $principal = (float)($row['total_principal'] ?? 0);
+                $charge_to_customer = (float)($row['charge_to_customer'] ?? 0);
+                $charge_to_partner = (float)($row['charge_to_partner'] ?? 0);
+                $adjustment = (float)($row['total_adjustment'] ?? 0);
+                
+                // Calculate settlement amount using the same logic
+                $amount_for_settlement = calculateSettlementAmount(
+                    $charge_to,
+                    $service_charge,
+                    $principal,
+                    $charge_to_customer,
+                    $charge_to_partner,
+                    $adjustment
+                );
+                
                 $data[] = [
                     'transaction_date' => $row['transaction_date'],
                     'txn_count' => (int)($row['txn_count'] ?? 0),
-                    'total_principal' => (float)($row['total_principal'] ?? 0),
-                    'total_charge' => (float)($row['total_charge'] ?? 0),
-                    'total_adjustment' => (float)($row['total_adjustment'] ?? 0),
-                    'amount_for_settlement' => (float)($row['amount_for_settlement'] ?? 0),
+                    'total_principal' => $principal,
+                    'charge_to_customer' => $charge_to_customer,
+                    'charge_to_partner' => $charge_to_partner,
+                    'total_adjustment' => $adjustment,
+                    'amount_for_settlement' => $amount_for_settlement,
                     'settle_status' => $status,
                     'is_settled' => $is_settled
                 ];
@@ -254,7 +316,8 @@ function generateDailyBreakdownHTML(array $data): string {
     $html .= '<th style="padding: 6px 12px; text-align: center; width: 120px;">Date</th>';
     $html .= '<th style="padding: 6px 12px; text-align: center;">Volume Count</th>';
     $html .= '<th style="padding: 6px 12px; text-align: right;">Principal</th>';
-    $html .= '<th style="padding: 6px 12px; text-align: right;">Charge</th>';
+    $html .= '<th style="padding: 6px 12px; text-align: right;">Charge to Customer</th>';
+    $html .= '<th style="padding: 6px 12px; text-align: right;">Charge to Partner</th>';
     $html .= '<th style="padding: 6px 12px; text-align: right;">Adjustment</th>';
     $html .= '<th style="padding: 6px 12px; text-align: right;">Settlement</th>';
     $html .= '<th style="padding: 6px 12px; text-align: center;">Status</th>';
@@ -265,7 +328,8 @@ function generateDailyBreakdownHTML(array $data): string {
     $dailyTotals = [
         'txn_count' => 0,
         'principal' => 0,
-        'charge' => 0,
+        'charge_to_customer' => 0,
+        'charge_to_partner' => 0,
         'adjustment' => 0,
         'settlement' => 0,
         'settled_count' => 0,
@@ -275,7 +339,8 @@ function generateDailyBreakdownHTML(array $data): string {
     foreach ($data as $daily) {
         $dailyTotals['txn_count'] += $daily['txn_count'];
         $dailyTotals['principal'] += $daily['total_principal'];
-        $dailyTotals['charge'] += $daily['total_charge'];
+        $dailyTotals['charge_to_customer'] += $daily['charge_to_customer'];
+        $dailyTotals['charge_to_partner'] += $daily['charge_to_partner'];
         $dailyTotals['adjustment'] += $daily['total_adjustment'];
         $dailyTotals['settlement'] += $daily['amount_for_settlement'];
         
@@ -310,9 +375,18 @@ function generateDailyBreakdownHTML(array $data): string {
         $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . 
             number_format($daily['total_principal'], 2) . '</td>';
         $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . 
-            number_format($daily['total_charge'], 2) . '</td>';
-        $html .= '<td style="padding: 6px 12px; text-align: right; ' . $adjClass . '">' . 
-            $adjSign . '₱ ' . number_format($daily['total_adjustment'], 2) . '</td>';
+            number_format($daily['charge_to_customer'], 2) . '</td>';
+        $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . 
+            number_format($daily['charge_to_partner'], 2) . '</td>';
+        
+        // Adjustment - only show if not zero
+        if ($daily['total_adjustment'] != 0) {
+            $html .= '<td style="padding: 6px 12px; text-align: right; ' . $adjClass . '">' . 
+                $adjSign . '₱ ' . number_format($daily['total_adjustment'], 2) . '</td>';
+        } else {
+            $html .= '<td style="padding: 6px 12px; text-align: right;"></td>';
+        }
+        
         $html .= '<td style="padding: 6px 12px; text-align: right; font-weight: 600; ' . $settleClass . '">₱ ' . 
             number_format($daily['amount_for_settlement'], 2) . '</td>';
         $html .= '<td style="padding: 6px 12px; text-align: center;">' . $statusBadge . '</td>';
@@ -328,9 +402,17 @@ function generateDailyBreakdownHTML(array $data): string {
     $html .= '<td style="padding: 6px 12px; text-align: right; font-weight: 600;">DAILY SUBTOTAL</td>';
     $html .= '<td style="padding: 6px 12px; text-align: center;">' . number_format($dailyTotals['txn_count'], 0) . '</td>';
     $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . number_format($dailyTotals['principal'], 2) . '</td>';
-    $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . number_format($dailyTotals['charge'], 2) . '</td>';
-    $html .= '<td style="padding: 6px 12px; text-align: right; ' . $adjClass . '">' . 
-        $adjSign . '₱ ' . number_format($dailyTotals['adjustment'], 2) . '</td>';
+    $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . number_format($dailyTotals['charge_to_customer'], 2) . '</td>';
+    $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . number_format($dailyTotals['charge_to_partner'], 2) . '</td>';
+    
+    // Adjustment subtotal - only show if not zero
+    if ($dailyTotals['adjustment'] != 0) {
+        $html .= '<td style="padding: 6px 12px; text-align: right; ' . $adjClass . '">' . 
+            $adjSign . '₱ ' . number_format($dailyTotals['adjustment'], 2) . '</td>';
+    } else {
+        $html .= '<td style="padding: 6px 12px; text-align: right;"></td>';
+    }
+    
     $html .= '<td style="padding: 6px 12px; text-align: right; ' . $settleClass . '">₱ ' . 
         number_format($dailyTotals['settlement'], 2) . '</td>';
     $html .= '<td style="padding: 6px 12px; text-align: center; font-size: 11px;">';
@@ -617,7 +699,8 @@ if (isset($_SESSION['user_type'])) {
                     COALESCE(pm.serviceCharge, '') as serviceCharge,
                     COUNT(*) as txn_count,
                     SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
-                    (SUM(bt.charge_to_customer) + SUM(bt.charge_to_partner)) as total_charge,
+                    SUM(bt.charge_to_customer) as charge_to_customer,
+                    SUM(bt.charge_to_partner) as charge_to_partner,
                     SUM(CASE WHEN bt.settle_unsettle = 'Settled' THEN 1 ELSE 0 END) as settled_count,
                     SUM(CASE WHEN bt.settle_unsettle IS NULL 
                               OR bt.settle_unsettle = '' 
@@ -705,7 +788,8 @@ if (isset($_SESSION['user_type'])) {
                             'settle_unsettle' => $row['settle_unsettle'] ?? '',
                             'txn_count' => (int)($row['txn_count'] ?? 0),
                             'total_principal' => (float)($row['total_principal'] ?? 0),
-                            'total_charge' => (float)($row['total_charge'] ?? 0),
+                            'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
+                            'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
                             'total_adjustment' => 0, // Will be updated from adjustment query
                             'settled_count' => (int)($row['settled_count'] ?? 0),
                             'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
@@ -752,7 +836,8 @@ if (isset($_SESSION['user_type'])) {
                                         'settle_unsettle' => '',
                                         'txn_count' => 0,
                                         'total_principal' => 0,
-                                        'total_charge' => 0,
+                                        'charge_to_customer' => 0,
+                                        'charge_to_partner' => 0,
                                         'total_adjustment' => (float)($row['total_adjustment'] ?? 0),
                                         'settled_count' => 0,
                                         'unsettled_count' => 0,
@@ -810,70 +895,70 @@ if (isset($_SESSION['user_type'])) {
                             'display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY',
                             'icon' => 'fa-user',
                             'rows' => [],
-                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
+                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
                         ],
                         'CHARGE BY CUSTOMER WEEKLY' => [
                             'display_name' => 'NOTE: CHARGE BY CUSTOMER WEEKLY',
                             'icon' => 'fa-user-clock',
                             'rows' => [],
-                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
+                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
                         ],
                         'CHARGE BY PARTNER DAILY' => [
                             'display_name' => 'NOTE: CHARGE BY PARTNER DAILY',
                             'icon' => 'fa-calendar-day',
                             'rows' => [],
-                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
+                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
                         ],
                         'CHARGE BY PARTNER WEEKLY' => [
                             'display_name' => 'NOTE: CHARGE BY PARTNER WEEKLY',
                             'icon' => 'fa-calendar-week',
                             'rows' => [],
-                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
+                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
                         ],
                         'CHARGE BY PARTNER SEMI MONTHLY' => [
                             'display_name' => 'NOTE: CHARGE BY PARTNER SEMI-MONTHLY',
                             'icon' => 'fa-calendar-alt',
                             'rows' => [],
-                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
+                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
                         ],
                         'CHARGE BY PARTNER MONTHLY' => [
                             'display_name' => 'NOTE: CHARGE BY PARTNER MONTHLY',
                             'icon' => 'fa-calendar-check',
                             'rows' => [],
-                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
+                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
                         ],
                         'CHARGE BY BOTH DAILY' => [
                             'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) DAILY',
                             'icon' => 'fa-handshake',
                             'rows' => [],
-                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0],
+                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0],
                             'is_both' => true
                         ],
                         'CHARGE BY BOTH WEEKLY' => [
                             'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) WEEKLY',
                             'icon' => 'fa-handshake',
                             'rows' => [],
-                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0],
+                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0],
                             'is_both' => true
                         ],
                         'CHARGE BY BOTH MONTHLY' => [
                             'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) MONTHLY',
                             'icon' => 'fa-handshake',
                             'rows' => [],
-                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0],
+                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0],
                             'is_both' => true
                         ],
                         'UNCATEGORIZED' => [
                             'display_name' => '⚠️ PARTNERS WITHOUT CHARGE TYPE (UNCATEGORIZED)',
                             'icon' => 'fa-exclamation-triangle',
                             'rows' => [],
-                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0],
+                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0],
                             'is_uncategorized' => true
                         ]
                     ];
                     
                     // Initialize grand totals
-                    $grand_totals = ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0];
+                    $grand_totals = ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0];
                     
                     $row_index = 0;
                     // Pre-fetch daily breakdown data for all partners (only if date range is selected AND dates are different)
@@ -953,9 +1038,20 @@ if (isset($_SESSION['user_type'])) {
                         
                         $txn_count = (int)($row['txn_count'] ?? 0);
                         $principal = (float)($row['total_principal'] ?? 0);
-                        $charge = (float)($row['total_charge'] ?? 0);
+                        $charge_to_customer = (float)($row['charge_to_customer'] ?? 0);
+                        $charge_to_partner = (float)($row['charge_to_partner'] ?? 0);
                         $adjustment = (float)($row['total_adjustment'] ?? 0);
-                        $settlement_amount = $principal + $charge + $adjustment;
+                        
+                        // Calculate settlement amount based on charge type
+                        $settlement_amount = calculateSettlementAmount(
+                            $charge_to,
+                            $serviceCharge,
+                            $principal,
+                            $charge_to_customer,
+                            $charge_to_partner,
+                            $adjustment
+                        );
+                        
                         $settled_count = (int)($row['settled_count'] ?? 0);
                         $unsettled_count = (int)($row['unsettled_count'] ?? 0);
                         $settle_status = $row['settle_unsettle'] ?? '';
@@ -965,7 +1061,8 @@ if (isset($_SESSION['user_type'])) {
                         // Add to group totals
                         $groups[$group_key]['totals']['txn_count'] += $txn_count;
                         $groups[$group_key]['totals']['principal'] += $principal;
-                        $groups[$group_key]['totals']['charge'] += $charge;
+                        $groups[$group_key]['totals']['charge_to_customer'] += $charge_to_customer;
+                        $groups[$group_key]['totals']['charge_to_partner'] += $charge_to_partner;
                         $groups[$group_key]['totals']['adjustment'] += $adjustment;
                         $groups[$group_key]['totals']['settlement'] += $settlement_amount;
                         $groups[$group_key]['totals']['settled_count'] += $settled_count;
@@ -974,7 +1071,8 @@ if (isset($_SESSION['user_type'])) {
                         // Add to grand totals
                         $grand_totals['txn_count'] += $txn_count;
                         $grand_totals['principal'] += $principal;
-                        $grand_totals['charge'] += $charge;
+                        $grand_totals['charge_to_customer'] += $charge_to_customer;
+                        $grand_totals['charge_to_partner'] += $charge_to_partner;
                         $grand_totals['adjustment'] += $adjustment;
                         $grand_totals['settlement'] += $settlement_amount;
                         $grand_totals['settled_count'] += $settled_count;
@@ -999,7 +1097,8 @@ if (isset($_SESSION['user_type'])) {
                             'account_number' => $row['bank_accNumber'] ?? 'N/A',
                             'txn_count' => $txn_count,
                             'principal' => $principal,
-                            'charge' => $charge,
+                            'charge_to_customer' => $charge_to_customer,
+                            'charge_to_partner' => $charge_to_partner,
                             'adjustment' => $adjustment,
                             'settlement_amount' => $settlement_amount,
                             'is_negative' => $settlement_amount < 0,
@@ -1106,7 +1205,8 @@ if (isset($_SESSION['user_type'])) {
                                     <th class="center">ACCOUNT NUMBER</th>
                                     <th class="center">VOLUME COUNT</th>
                                     <th class="center">PRINCIPAL</th>
-                                    <th class="center">CHARGE</th>
+                                    <th class="center">CHARGE TO CUSTOMER</th>
+                                    <th class="center">CHARGE TO PARTNER</th>
                                     <th class="center">ADJUSTMENT (add/less)</th>
                                     <th class="center settlement-col">AMOUNT FOR SETTLEMENT</th>
                                     <th class="center">STATUS</th>
@@ -1123,7 +1223,7 @@ if (isset($_SESSION['user_type'])) {
                                 ?>
                                     <!-- Group Header -->
                                     <tr class="group-header-row <?php echo $is_uncategorized ? 'uncategorized' : ''; ?> <?php echo $is_both ? 'both' : ''; ?>">
-                                        <td colspan="11">
+                                        <td colspan="12">
                                             <i class="fas <?php echo $group_data['icon']; ?>"></i>
                                             <?php echo htmlspecialchars($group_data['display_name']); ?>
                                             <?php if ($is_uncategorized): ?>
@@ -1150,12 +1250,15 @@ if (isset($_SESSION['user_type'])) {
                                             data-row-index="<?php echo $row_data['row_index']; ?>"
                                             data-settlement="<?php echo $row_data['settlement_amount']; ?>"
                                             data-principal="<?php echo $row_data['principal']; ?>"
-                                            data-charge="<?php echo $row_data['charge']; ?>"
+                                            data-charge-to-customer="<?php echo $row_data['charge_to_customer']; ?>"
+                                            data-charge-to-partner="<?php echo $row_data['charge_to_partner']; ?>"
                                             data-adjustment="<?php echo $row_data['adjustment']; ?>"
                                             data-txn-count="<?php echo $row_data['txn_count']; ?>"
                                             data-partner-id="<?php echo $row_data['partner_id']; ?>"
                                             data-partner-name="<?php echo htmlspecialchars($row_data['partner_name']); ?>"
-                                            data-is-settled="<?php echo $is_settled ? 'true' : 'false'; ?>">
+                                            data-is-settled="<?php echo $is_settled ? 'true' : 'false'; ?>"
+                                            data-charge-to="<?php echo $row_data['charge_to']; ?>"
+                                            data-service-charge="<?php echo $row_data['service_charge']; ?>">
                                             <td class="center checkbox-cell">
                                                 <input type="checkbox" class="row-checkbox" 
                                                        data-row-index="<?php echo $row_data['row_index']; ?>"
@@ -1193,9 +1296,12 @@ if (isset($_SESSION['user_type'])) {
                                             <td class="center"><?php echo htmlspecialchars($row_data['account_number']); ?></td>
                                             <td class="center txn-count"><?php echo number_format($row_data['txn_count']); ?></td>
                                             <td class="right amount-col principal">₱ <?php echo number_format($row_data['principal'], 2); ?></td>
-                                            <td class="right amount-col charge">₱ <?php echo number_format($row_data['charge'], 2); ?></td>
+                                            <td class="right amount-col charge-to-customer">₱ <?php echo number_format($row_data['charge_to_customer'], 2); ?></td>
+                                            <td class="right amount-col charge-to-partner">₱ <?php echo number_format($row_data['charge_to_partner'], 2); ?></td>
                                             <td class="right amount-col adjustment <?php echo $row_data['adjustment'] < 0 ? 'negative-amount' : ($row_data['adjustment'] > 0 ? 'positive-amount' : ''); ?>">
-                                                <?php echo ($row_data['adjustment'] >= 0 ? '+' : ''); ?>₱ <?php echo number_format($row_data['adjustment'], 2); ?>
+                                                <?php if ($row_data['adjustment'] != 0): ?>
+                                                    <?php echo ($row_data['adjustment'] >= 0 ? '+' : ''); ?>₱ <?php echo number_format($row_data['adjustment'], 2); ?>
+                                                <?php endif; ?>
                                             </td>
                                             <td class="right settlement-col settlement-amount <?php echo $row_data['is_negative'] ? 'negative-amount' : ''; ?>">
                                                 ₱ <?php echo number_format($row_data['settlement_amount'], 2); ?>
@@ -1221,7 +1327,7 @@ if (isset($_SESSION['user_type'])) {
                                             <tr class="daily-breakdown-container" 
                                                 id="dailyBreakdown_<?php echo $row_data['row_index']; ?>" 
                                                 style="display: none;">
-                                                <td colspan="11">
+                                                <td colspan="12">
                                                     <?php echo $row_data['daily_html']; ?>
                                                 </td>
                                             </tr>
@@ -1229,7 +1335,7 @@ if (isset($_SESSION['user_type'])) {
                                             <tr class="daily-breakdown-container" 
                                                 id="dailyBreakdown_<?php echo $row_data['row_index']; ?>" 
                                                 style="display: none;">
-                                                <td colspan="11" class="daily-breakdown-error">
+                                                <td colspan="12" class="daily-breakdown-error">
                                                     <i class="fas fa-info-circle"></i>
                                                     No daily transactions found for this date range.
                                                 </td>
@@ -1244,9 +1350,12 @@ if (isset($_SESSION['user_type'])) {
                                         </td>
                                         <td class="center group-txn-count"><?php echo number_format($group_data['totals']['txn_count']); ?></td>
                                         <td class="right group-principal">₱ <?php echo number_format($group_data['totals']['principal'], 2); ?></td>
-                                        <td class="right group-charge">₱ <?php echo number_format($group_data['totals']['charge'], 2); ?></td>
+                                        <td class="right group-charge-to-customer">₱ <?php echo number_format($group_data['totals']['charge_to_customer'], 2); ?></td>
+                                        <td class="right group-charge-to-partner">₱ <?php echo number_format($group_data['totals']['charge_to_partner'], 2); ?></td>
                                         <td class="right group-adjustment <?php echo $group_data['totals']['adjustment'] < 0 ? 'negative-amount' : ($group_data['totals']['adjustment'] > 0 ? 'positive-amount' : ''); ?>">
-                                            <?php echo ($group_data['totals']['adjustment'] >= 0 ? '+' : ''); ?>₱ <?php echo number_format($group_data['totals']['adjustment'], 2); ?>
+                                            <?php if ($group_data['totals']['adjustment'] != 0): ?>
+                                                <?php echo ($group_data['totals']['adjustment'] >= 0 ? '+' : ''); ?>₱ <?php echo number_format($group_data['totals']['adjustment'], 2); ?>
+                                            <?php endif; ?>
                                         </td>
                                         <td class="right settlement-col group-settlement <?php echo $group_data['totals']['settlement'] < 0 ? 'negative-amount' : ''; ?>">
                                             ₱ <?php echo number_format($group_data['totals']['settlement'], 2); ?>
@@ -1267,7 +1376,7 @@ if (isset($_SESSION['user_type'])) {
                                     
                                     <?php if (!$is_last_group): ?>
                                         <tr style="height: 8px; background: transparent;">
-                                            <td colspan="11" style="border: none; padding: 0;"></td>
+                                            <td colspan="12" style="border: none; padding: 0;"></td>
                                         </tr>
                                     <?php endif; ?>
                                 <?php endforeach; ?>
@@ -1277,9 +1386,12 @@ if (isset($_SESSION['user_type'])) {
                                     <td colspan="5" style="text-align: right;">GRAND TOTAL</td>
                                     <td class="center grand-txn-count"><?php echo number_format($grand_totals['txn_count']); ?></td>
                                     <td class="right grand-principal">₱ <?php echo number_format($grand_totals['principal'], 2); ?></td>
-                                    <td class="right grand-charge">₱ <?php echo number_format($grand_totals['charge'], 2); ?></td>
+                                    <td class="right grand-charge-to-customer">₱ <?php echo number_format($grand_totals['charge_to_customer'], 2); ?></td>
+                                    <td class="right grand-charge-to-partner">₱ <?php echo number_format($grand_totals['charge_to_partner'], 2); ?></td>
                                     <td class="right grand-adjustment <?php echo $grand_totals['adjustment'] < 0 ? 'negative-amount' : ($grand_totals['adjustment'] > 0 ? 'positive-amount' : ''); ?>">
-                                        <?php echo ($grand_totals['adjustment'] >= 0 ? '+' : ''); ?>₱ <?php echo number_format($grand_totals['adjustment'], 2); ?>
+                                        <?php if ($grand_totals['adjustment'] != 0): ?>
+                                            <?php echo ($grand_totals['adjustment'] >= 0 ? '+' : ''); ?>₱ <?php echo number_format($grand_totals['adjustment'], 2); ?>
+                                        <?php endif; ?>
                                     </td>
                                     <td class="right settlement-col grand-settlement <?php echo $grand_totals['settlement'] < 0 ? 'negative-amount' : ''; ?>">
                                         ₱ <?php echo number_format($grand_totals['settlement'], 2); ?>
@@ -1674,7 +1786,8 @@ if (isset($_SESSION['user_type'])) {
         var grandTotals = {
             txn_count: 0,
             principal: 0,
-            charge: 0,
+            charge_to_customer: 0,
+            charge_to_partner: 0,
             adjustment: 0,
             settlement: 0,
             settled_count: 0,
@@ -1689,7 +1802,8 @@ if (isset($_SESSION['user_type'])) {
             
             var txnCount = parseInt(row.data('txn-count')) || 0;
             var principal = parseFloat(row.data('principal')) || 0;
-            var charge = parseFloat(row.data('charge')) || 0;
+            var chargeToCustomer = parseFloat(row.data('charge-to-customer')) || 0;
+            var chargeToPartner = parseFloat(row.data('charge-to-partner')) || 0;
             var adjustment = parseFloat(row.data('adjustment')) || 0;
             var settlement = parseFloat(row.data('settlement')) || 0;
             
@@ -1700,7 +1814,8 @@ if (isset($_SESSION['user_type'])) {
                 groupTotals[groupKey] = {
                     txn_count: 0,
                     principal: 0,
-                    charge: 0,
+                    charge_to_customer: 0,
+                    charge_to_partner: 0,
                     adjustment: 0,
                     settlement: 0,
                     settled_count: 0,
@@ -1718,13 +1833,15 @@ if (isset($_SESSION['user_type'])) {
             if (isChecked) {
                 groupTotals[groupKey].txn_count += txnCount;
                 groupTotals[groupKey].principal += principal;
-                groupTotals[groupKey].charge += charge;
+                groupTotals[groupKey].charge_to_customer += chargeToCustomer;
+                groupTotals[groupKey].charge_to_partner += chargeToPartner;
                 groupTotals[groupKey].adjustment += adjustment;
                 groupTotals[groupKey].settlement += settlement;
                 
                 grandTotals.txn_count += txnCount;
                 grandTotals.principal += principal;
-                grandTotals.charge += charge;
+                grandTotals.charge_to_customer += chargeToCustomer;
+                grandTotals.charge_to_partner += chargeToPartner;
                 grandTotals.adjustment += adjustment;
                 grandTotals.settlement += settlement;
             }
@@ -1758,15 +1875,22 @@ if (isset($_SESSION['user_type'])) {
                 var totals = groupTotals[matchedKey];
                 groupRow.find('.group-txn-count').text(formatNumberInt(totals.txn_count));
                 groupRow.find('.group-principal').text('₱ ' + formatNumberDecimal(totals.principal));
-                groupRow.find('.group-charge').text('₱ ' + formatNumberDecimal(totals.charge));
+                groupRow.find('.group-charge-to-customer').text('₱ ' + formatNumberDecimal(totals.charge_to_customer));
+                groupRow.find('.group-charge-to-partner').text('₱ ' + formatNumberDecimal(totals.charge_to_partner));
                 
-                var adjText = (totals.adjustment >= 0 ? '+' : '') + '₱ ' + formatNumberDecimal(totals.adjustment);
-                groupRow.find('.group-adjustment').text(adjText);
-                groupRow.find('.group-adjustment').removeClass('negative-amount positive-amount');
-                if (totals.adjustment < 0) {
-                    groupRow.find('.group-adjustment').addClass('negative-amount');
-                } else if (totals.adjustment > 0) {
-                    groupRow.find('.group-adjustment').addClass('positive-amount');
+                // Adjustment - only show if not zero
+                if (totals.adjustment != 0) {
+                    var adjText = (totals.adjustment >= 0 ? '+' : '') + '₱ ' + formatNumberDecimal(totals.adjustment);
+                    groupRow.find('.group-adjustment').text(adjText);
+                    groupRow.find('.group-adjustment').removeClass('negative-amount positive-amount');
+                    if (totals.adjustment < 0) {
+                        groupRow.find('.group-adjustment').addClass('negative-amount');
+                    } else if (totals.adjustment > 0) {
+                        groupRow.find('.group-adjustment').addClass('positive-amount');
+                    }
+                } else {
+                    groupRow.find('.group-adjustment').text('');
+                    groupRow.find('.group-adjustment').removeClass('negative-amount positive-amount');
                 }
                 
                 groupRow.find('.group-settlement').text('₱ ' + formatNumberDecimal(totals.settlement));
@@ -1793,15 +1917,22 @@ if (isset($_SESSION['user_type'])) {
         // Update grand totals
         $('.grand-total-row').find('.grand-txn-count').text(formatNumberInt(grandTotals.txn_count));
         $('.grand-total-row').find('.grand-principal').text('₱ ' + formatNumberDecimal(grandTotals.principal));
-        $('.grand-total-row').find('.grand-charge').text('₱ ' + formatNumberDecimal(grandTotals.charge));
+        $('.grand-total-row').find('.grand-charge-to-customer').text('₱ ' + formatNumberDecimal(grandTotals.charge_to_customer));
+        $('.grand-total-row').find('.grand-charge-to-partner').text('₱ ' + formatNumberDecimal(grandTotals.charge_to_partner));
         
-        var grandAdjText = (grandTotals.adjustment >= 0 ? '+' : '') + '₱ ' + formatNumberDecimal(grandTotals.adjustment);
-        $('.grand-total-row').find('.grand-adjustment').text(grandAdjText);
-        $('.grand-total-row').find('.grand-adjustment').removeClass('negative-amount positive-amount');
-        if (grandTotals.adjustment < 0) {
-            $('.grand-total-row').find('.grand-adjustment').addClass('negative-amount');
-        } else if (grandTotals.adjustment > 0) {
-            $('.grand-total-row').find('.grand-adjustment').addClass('positive-amount');
+        // Grand total adjustment - only show if not zero
+        if (grandTotals.adjustment != 0) {
+            var grandAdjText = (grandTotals.adjustment >= 0 ? '+' : '') + '₱ ' + formatNumberDecimal(grandTotals.adjustment);
+            $('.grand-total-row').find('.grand-adjustment').text(grandAdjText);
+            $('.grand-total-row').find('.grand-adjustment').removeClass('negative-amount positive-amount');
+            if (grandTotals.adjustment < 0) {
+                $('.grand-total-row').find('.grand-adjustment').addClass('negative-amount');
+            } else if (grandTotals.adjustment > 0) {
+                $('.grand-total-row').find('.grand-adjustment').addClass('positive-amount');
+            }
+        } else {
+            $('.grand-total-row').find('.grand-adjustment').text('');
+            $('.grand-total-row').find('.grand-adjustment').removeClass('negative-amount positive-amount');
         }
         
         $('.grand-total-row').find('.grand-settlement').text('₱ ' + formatNumberDecimal(grandTotals.settlement));

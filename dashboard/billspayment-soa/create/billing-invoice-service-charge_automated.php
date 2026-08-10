@@ -1,4 +1,5 @@
 <?php
+// billing-invoice-service-charge_automated.php
 // Connect to the database
 require_once __DIR__ . '/../../../config/config.php';
 require_once __DIR__ . '/../../../vendor/autoload.php';
@@ -158,81 +159,81 @@ if (isset($_GET['action'])) {
                 $inc_exc_value = 'NON-VAT';
             }
             
-           // Get transaction summary for date range
-$from_date = $_GET['from_date'] ?? '';
-$to_date = $_GET['to_date'] ?? '';
+            // Get transaction summary for date range
+            $from_date = $_GET['from_date'] ?? '';
+            $to_date = $_GET['to_date'] ?? '';
 
-// Only query transactions if both dates are provided
-if (!empty($from_date) && !empty($to_date)) {
-    // Validate dates
-    if (!strtotime($from_date) || !strtotime($to_date)) {
-        echo json_encode(['error' => 'Invalid date format']);
-        exit;
-    }
-    
-    // Check if the billspayment_transaction table exists and has data
-    $check_table_query = "SHOW TABLES LIKE 'billspayment_transaction'";
-    $check_table_result = mysqli_query($conn, $check_table_query);
-    $table_exists = mysqli_num_rows($check_table_result) > 0;
-    
-    if (!$table_exists) {
-        error_log("Table 'billspayment_transaction' does not exist in database 'mldb'");
-        // Return empty transaction data
-        $trans_data = [
-            'total_amount_paid' => 0,
-            'total_charge' => 0,
-            'transaction_count' => 0
-        ];
-    } else {
-        // Check if the table has the required columns
-        $check_columns_query = "SHOW COLUMNS FROM mldb.billspayment_transaction LIKE 'partner_id_kpx'";
-        $check_columns_result = mysqli_query($conn, $check_columns_query);
-        $column_exists = mysqli_num_rows($check_columns_result) > 0;
-        
-        if (!$column_exists) {
-            error_log("Column 'partner_id_kpx' does not exist in billspayment_transaction table");
-            $trans_data = [
-                'total_amount_paid' => 0,
-                'total_charge' => 0,
-                'transaction_count' => 0
-            ];
-        } else {
-            // Updated query: Fetch only transactions where datetime is within range AND cancellation_date is NULL or empty
-            $trans_query = "SELECT 
-                                SUM(amount_paid) AS total_amount_paid,
-                                SUM(charge_to_partner + charge_to_customer) AS total_charge,
-                                COUNT(*) AS transaction_count
-                            FROM mldb.billspayment_transaction
-                            WHERE partner_id_kpx = '$partner_id'
-                            AND DATE(`datetime`) BETWEEN '$from_date' AND '$to_date'
-                            AND (status is null or STATUS = '')";
-            
-            error_log("Transaction Query: " . $trans_query);
-            
-            $trans_result = mysqli_query($conn, $trans_query);
-            
-            if (!$trans_result) {
-                error_log("Transaction Query Error: " . mysqli_error($conn));
+            // Only query transactions if both dates are provided
+            if (!empty($from_date) && !empty($to_date)) {
+                // Validate dates
+                if (!strtotime($from_date) || !strtotime($to_date)) {
+                    echo json_encode(['error' => 'Invalid date format']);
+                    exit;
+                }
+                
+                // Check if the billspayment_transaction table exists and has data
+                $check_table_query = "SHOW TABLES LIKE 'billspayment_transaction'";
+                $check_table_result = mysqli_query($conn, $check_table_query);
+                $table_exists = mysqli_num_rows($check_table_result) > 0;
+                
+                if (!$table_exists) {
+                    error_log("Table 'billspayment_transaction' does not exist in database 'mldb'");
+                    // Return empty transaction data
+                    $trans_data = [
+                        'total_amount_paid' => 0,
+                        'total_charge' => 0,
+                        'transaction_count' => 0
+                    ];
+                } else {
+                    // Check if the table has the required columns
+                    $check_columns_query = "SHOW COLUMNS FROM mldb.billspayment_transaction LIKE 'partner_id_kpx'";
+                    $check_columns_result = mysqli_query($conn, $check_columns_query);
+                    $column_exists = mysqli_num_rows($check_columns_result) > 0;
+                    
+                    if (!$column_exists) {
+                        error_log("Column 'partner_id_kpx' does not exist in billspayment_transaction table");
+                        $trans_data = [
+                            'total_amount_paid' => 0,
+                            'total_charge' => 0,
+                            'transaction_count' => 0
+                        ];
+                    } else {
+                        // Updated query: Fetch only transactions where datetime is within range AND cancellation_date is NULL or empty
+                        $trans_query = "SELECT 
+                                            SUM(amount_paid) AS total_amount_paid,
+                                            SUM(charge_to_partner + charge_to_customer) AS total_charge,
+                                            COUNT(*) AS transaction_count
+                                        FROM mldb.billspayment_transaction
+                                        WHERE partner_id_kpx = '$partner_id'
+                                        AND DATE(`datetime`) BETWEEN '$from_date' AND '$to_date'
+                                        AND (status is null or STATUS = '')";
+                        
+                        error_log("Transaction Query: " . $trans_query);
+                        
+                        $trans_result = mysqli_query($conn, $trans_query);
+                        
+                        if (!$trans_result) {
+                            error_log("Transaction Query Error: " . mysqli_error($conn));
+                            $trans_data = [
+                                'total_amount_paid' => 0,
+                                'total_charge' => 0,
+                                'transaction_count' => 0
+                            ];
+                        } else {
+                            $trans_data = mysqli_fetch_assoc($trans_result);
+                            error_log("Transaction Data: " . print_r($trans_data, true));
+                        }
+                    }
+                }
+            } else {
+                // No dates provided, return empty transaction data
                 $trans_data = [
                     'total_amount_paid' => 0,
                     'total_charge' => 0,
                     'transaction_count' => 0
                 ];
-            } else {
-                $trans_data = mysqli_fetch_assoc($trans_result);
-                error_log("Transaction Data: " . print_r($trans_data, true));
+                error_log("No date range provided. Returning empty transaction data.");
             }
-        }
-    }
-} else {
-    // No dates provided, return empty transaction data
-    $trans_data = [
-        'total_amount_paid' => 0,
-        'total_charge' => 0,
-        'transaction_count' => 0
-    ];
-    error_log("No date range provided. Returning empty transaction data.");
-}
             
             // Check if partner is 434 for additional fields
             $is_partner_434 = ($partner_id == '434');
@@ -650,6 +651,129 @@ if (!empty($from_date) && !empty($to_date)) {
         }
     }
     
+    // NEW: Get latest SOA dates for a partner - UPDATED to include last SOA info
+    if ($_GET['action'] == 'get_latest_soa_dates') {
+        try {
+            $partner_id = mysqli_real_escape_string($conn, $_GET['partner_id'] ?? '');
+            $partner_name = mysqli_real_escape_string($conn, $_GET['partner_name'] ?? '');
+            
+            error_log("Getting latest SOA dates - Partner ID: $partner_id, Name: $partner_name");
+            
+            // Get partner abbreviation - try by ID first, then by name
+            $abbreviation = '';
+            $service_charge = '';
+            $partner_accName = '';
+            
+            // Try by ID first (if provided and not a no-id placeholder)
+            if (!empty($partner_id) && !str_starts_with($partner_id, 'no-id-')) {
+                $abbrev_query = "SELECT abbreviation, serviceCharge, partner_accName FROM masterdata.partner_masterfile WHERE partner_id_kpx = '$partner_id'";
+                $abbrev_result = mysqli_query($conn, $abbrev_query);
+                if ($abbrev_result && mysqli_num_rows($abbrev_result) > 0) {
+                    $abbrev_data = mysqli_fetch_assoc($abbrev_result);
+                    $abbreviation = trim($abbrev_data['abbreviation'] ?? '');
+                    $service_charge = trim($abbrev_data['serviceCharge'] ?? '');
+                    $partner_accName = trim($abbrev_data['partner_accName'] ?? '');
+                }
+            }
+            
+            // If not found by ID or no ID provided, try by name
+            if (empty($abbreviation) && !empty($partner_name)) {
+                $abbrev_query = "SELECT abbreviation, serviceCharge, partner_accName FROM masterdata.partner_masterfile WHERE partner_name = '$partner_name'";
+                $abbrev_result = mysqli_query($conn, $abbrev_query);
+                if ($abbrev_result && mysqli_num_rows($abbrev_result) > 0) {
+                    $abbrev_data = mysqli_fetch_assoc($abbrev_result);
+                    $abbreviation = trim($abbrev_data['abbreviation'] ?? '');
+                    $service_charge = trim($abbrev_data['serviceCharge'] ?? '');
+                    $partner_accName = trim($abbrev_data['partner_accName'] ?? '');
+                }
+            }
+            
+            if (empty($abbreviation)) {
+                echo json_encode(['success' => false, 'error' => 'No abbreviation found for this partner']);
+                exit;
+            }
+            
+            // Check if soa_transaction table exists
+            $check_soa_table = "SHOW TABLES LIKE 'soa_transaction'";
+            $check_soa_result = mysqli_query($conn, $check_soa_table);
+            $soa_table_exists = mysqli_num_rows($check_soa_result) > 0;
+            
+            if (!$soa_table_exists) {
+                echo json_encode(['success' => false, 'error' => 'SOA table does not exist']);
+                exit;
+            }
+            
+            // Get the latest SOA for this partner
+            $latest_query = "SELECT from_date, to_date, reference_number 
+                             FROM mldb.soa_transaction 
+                             WHERE reference_number LIKE '$abbreviation-%' 
+                             ORDER BY id DESC LIMIT 1";
+            
+            error_log("Latest SOA Query: " . $latest_query);
+            
+            $latest_result = mysqli_query($conn, $latest_query);
+            
+            if (!$latest_result) {
+                error_log("Latest SOA Query Error: " . mysqli_error($conn));
+                echo json_encode(['success' => false, 'error' => 'Database error']);
+                exit;
+            }
+            
+            $response = [
+                'success' => true,
+                'abbreviation' => $abbreviation,
+                'service_charge' => $service_charge,
+                'partner_accName' => $partner_accName,
+                'has_previous' => false,
+                // Last SOA details
+                'last_from_date' => null,
+                'last_to_date' => null,
+                'last_reference_number' => null,
+                // Next SOA details
+                'next_from_date' => null,
+                'next_to_date' => null,
+                'next_reference_number' => null
+            ];
+            
+            if (mysqli_num_rows($latest_result) > 0) {
+                $latest_data = mysqli_fetch_assoc($latest_result);
+                $response['has_previous'] = true;
+                $response['last_from_date'] = $latest_data['from_date'];
+                $response['last_to_date'] = $latest_data['to_date'];
+                $response['last_reference_number'] = $latest_data['reference_number'];
+                
+                // Calculate next dates based on service charge type
+                $next_dates = calculateNextDates($latest_data['to_date'], $service_charge, $partner_id);
+                $response['next_from_date'] = $next_dates['from_date'];
+                $response['next_to_date'] = $next_dates['to_date'];
+                
+                // Generate next reference number
+                $series_part = 0;
+                $ref_parts = explode('-', $latest_data['reference_number']);
+                if (count($ref_parts) >= 2) {
+                    $series_part = intval(end($ref_parts));
+                }
+                $next_series = $series_part + 1;
+                $response['next_reference_number'] = $abbreviation . '-' . $next_series;
+                
+                error_log("Latest SOA found: " . print_r($latest_data, true));
+                error_log("Next dates: " . print_r($next_dates, true));
+                error_log("Next reference: " . $response['next_reference_number']);
+            } else {
+                error_log("No previous SOA found for abbreviation: $abbreviation");
+            }
+            
+            echo json_encode($response);
+            exit;
+            
+        } catch (Exception $e) {
+            error_log("Exception in get_latest_soa_dates: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
+            echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            exit;
+        }
+    }
+    
     if ($_GET['action'] == 'generate_invoice') {
         // Check if SOA already exists before generating
         $partner_id = mysqli_real_escape_string($conn, $_GET['partner_id'] ?? '');
@@ -865,6 +989,87 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 }
+
+/**
+ * Calculate the next date range based on service charge type
+ * @param string $last_to_date The last TO date from previous SOA
+ * @param string $service_charge The service charge type (WEEKLY, MONTHLY, SEMI-MONTHLY, DAILY)
+ * @param string $partner_id The partner ID (for special cases)
+ * @return array ['from_date' => 'YYYY-MM-DD', 'to_date' => 'YYYY-MM-DD']
+ */
+function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
+    $last_to = new DateTime($last_to_date);
+    $next_from = clone $last_to;
+    $next_to = clone $last_to;
+    
+    $service_charge_upper = strtoupper(trim($service_charge));
+    
+    // Special partners that need 14-day rolling semi-monthly
+    $special_semi_monthly_partners = ['457', '458', '459', '460'];
+    $is_special_partner = in_array($partner_id, $special_semi_monthly_partners);
+    
+    switch ($service_charge_upper) {
+        case 'WEEKLY':
+            // Next from = last to + 1 day, next to = last to + 7 days
+            $next_from->modify('+1 day');
+            $next_to->modify('+7 days');
+            break;
+            
+        case 'MONTHLY':
+            // Next from = 1st of next month, next to = last day of next month
+            $next_from->modify('first day of next month');
+            $next_to->modify('last day of next month');
+            break;
+            
+        case 'SEMI-MONTHLY':
+            if ($is_special_partner) {
+                // Special 14-day rolling semi-monthly for partners 457, 458, 459, '460'
+                // Next from = last to + 1 day, next to = last to + 14 days
+                $next_from->modify('+1 day');
+                $next_to->modify('+14 days');
+            } else {
+                // Standard semi-monthly: 1st-15th and 16th-last day
+                $last_day = clone $last_to;
+                $last_day->modify('last day of this month');
+                $last_day_of_month = $last_day->format('d');
+                $last_to_day = $last_to->format('d');
+                
+                if ($last_to_day == 15) {
+                    // Last was 1st-15th period, next is 16th to last day
+                    $next_from->modify('+1 day');
+                    $next_to->modify('last day of this month');
+                } elseif ($last_to_day == $last_day_of_month) {
+                    // Last was 16th-last day period, next is 1st-15th of next month
+                    $next_from->modify('first day of next month');
+                    $next_to->modify('+14 days');
+                    $next_to->setDate($next_to->format('Y'), $next_to->format('m'), 15);
+                } else {
+                    // Fallback: default to 1st-15th of next month
+                    $next_from->modify('first day of next month');
+                    $next_to->modify('+14 days');
+                    $next_to->setDate($next_to->format('Y'), $next_to->format('m'), 15);
+                }
+            }
+            break;
+            
+        case 'DAILY':
+            // Next from = last to + 1 day, next to = last to + 1 day
+            $next_from->modify('+1 day');
+            $next_to->modify('+1 day');
+            break;
+            
+        default:
+            // Default: next from = last to + 1 day, next to = last to + 7 days
+            $next_from->modify('+1 day');
+            $next_to->modify('+7 days');
+            break;
+    }
+    
+    return [
+        'from_date' => $next_from->format('Y-m-d'),
+        'to_date' => $next_to->format('Y-m-d')
+    ];
+}
 ?>
 
 <!DOCTYPE html>
@@ -885,57 +1090,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     <!-- Select2 CSS -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/css/select2.min.css" rel="stylesheet" />
     
-    <style>
-        .btn-success.disabled-btn {
-            background-color: #95a5a6 !important;
-            cursor: not-allowed !important;
-            opacity: 0.7;
-        }
-        .soa-exists-warning {
-            background-color: #fff3cd;
-            border: 1px solid #ffeeba;
-            color: #856404;
-            padding: 10px 15px;
-            border-radius: 5px;
-            margin-bottom: 15px;
-            display: none;
-        }
-        .soa-exists-warning i {
-            margin-right: 10px;
-        }
-        /* Style for partners without partner_id_kpx in dropdown */
-        .partner-no-id {
-            color: #666;
-            font-style: italic;
-        }
-        .partner-no-id .no-id-badge {
-            color: #e67e22;
-            font-size: 11px;
-            background: #fef9e7;
-            padding: 1px 6px;
-            border-radius: 3px;
-            margin-left: 5px;
-            border: 1px solid #f39c12;
-        }
-        .select2-results__option .no-id-badge {
-            color: #e67e22;
-            font-size: 11px;
-            background: #fef9e7;
-            padding: 1px 6px;
-            border-radius: 3px;
-            margin-left: 5px;
-            border: 1px solid #f39c12;
-        }
-        .select2-results__option .with-id-badge {
-            color: #27ae60;
-            font-size: 11px;
-            background: #eafaf1;
-            padding: 1px 6px;
-            border-radius: 3px;
-            margin-left: 5px;
-            border: 1px solid #27ae60;
-        }
-    </style>
+  
 </head>
 <body>
     <div class="main-container">
@@ -987,19 +1142,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             
             <form id="invoiceForm" class="invoice-form">
 
-            <!-- Transaction Date From -->
-                <div class="form-group">
-                    <label for="fromDate"><i class="fa-solid fa-calendar-day"></i> Transaction Date From <span style="color: red;">*</span></label>
-                    <input type="date" id="fromDate" name="from_date">
-                </div>
-                
-                <!-- Transaction Date To -->
-                <div class="form-group">
-                    <label for="toDate"><i class="fa-solid fa-calendar-day"></i> Transaction Date To <span style="color: red;">*</span></label>
-                    <input type="date" id="toDate" name="to_date">
-                </div>
-
-
                 <!-- Partner Selection -->
                 <div class="form-group">
                     <label for="partnerSelect"><i class="fa-solid fa-handshake-angle"></i> Partner <span style="color: red;">*</span></label>
@@ -1044,7 +1186,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     <label for="controlNumber"><i class="fa-solid fa-hashtag"></i> Control Number</label>
                     <input type="text" id="controlNumber" readonly placeholder="Select partner to generate">
                 </div>
+
+                <!-- Transaction Date From - Display Only (Auto-populated) -->
+                <div class="form-group">
+                    <label for="fromDateDisplay"><i class="fa-solid fa-calendar-day"></i> Transaction Date From <span style="color: red;">*</span></label>
+                    <input type="text" id="fromDateDisplay" readonly class="date-display-input" placeholder="Auto-populated from latest SOA">
+                    <input type="hidden" id="fromDate" name="from_date" value="">
+                    <span class="date-helper-text"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
+                </div>
                 
+                <!-- Transaction Date To - Display Only (Auto-populated) -->
+                <div class="form-group">
+                    <label for="toDateDisplay"><i class="fa-solid fa-calendar-day"></i> Transaction Date To <span style="color: red;">*</span></label>
+                    <input type="text" id="toDateDisplay" readonly class="date-display-input" placeholder="Auto-populated from latest SOA">
+                    <input type="hidden" id="toDate" name="to_date" value="">
+                    <span class="date-helper-text"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
+                </div>
+
                 <!-- Invoice Date -->
                 <div class="form-group">
                     <label for="invoiceDate"><i class="fa-solid fa-calendar-check"></i> Invoice Date</label>
@@ -1155,6 +1313,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         </div>
     </div>
     
+    <!-- SOA Info Modal -->
+    <div class="soa-info-modal-overlay" id="soaInfoModal">
+        <div class="soa-info-modal">
+            <div class="soa-info-modal-header">
+                <h3><i class="fa-solid fa-clock-rotate-left"></i> SOA Date Information</h3>
+                <button class="soa-info-modal-close" id="soaInfoModalClose">&times;</button>
+            </div>
+            <div class="soa-info-modal-body" id="soaInfoModalBody">
+                <!-- Content dynamically populated -->
+            </div>
+            <div class="soa-info-timer">
+                <span>This modal will close in <span class="timer-count" id="soaInfoTimerCount">5</span> seconds.</span>
+                <span class="close-now" id="soaInfoCloseNow">Close now</span>
+            </div>
+        </div>
+    </div>
+    
     <!-- Invoice Modal -->
     <div class="modal-overlay" id="invoiceModal">
         <div class="modal-content">
@@ -1219,6 +1394,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
         // Store partner name for later use (for partners without ID)
         window._currentPartnerName = '';
+        
+        // Flag to track if dates were auto-populated
+        let _datesAutoPopulated = false;
+
+        // SOA Info Modal timer variables
+        let soaInfoTimer = null;
+        let soaInfoCountdown = 10;
+        let soaInfoModalOpen = false;
 
         // Helper function to format numbers with commas
         function formatNumberWithCommas(number) {
@@ -1231,6 +1414,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
             // Join back with decimal if it exists
             return parts.join('.');
+        }
+
+        // Helper function to format date for display (e.g., "January 15, 2024")
+        function formatDateDisplay(dateStr) {
+            if (!dateStr) return '';
+            var date = new Date(dateStr + 'T00:00:00');
+            if (isNaN(date.getTime())) return dateStr;
+            var options = { year: 'numeric', month: 'long', day: 'numeric' };
+            return date.toLocaleDateString('en-US', options);
+        }
+
+        // Function to set both the hidden input and display field
+        function setDateFields(fromDate, toDate) {
+            // Set hidden inputs
+            $('#fromDate').val(fromDate || '');
+            $('#toDate').val(toDate || '');
+            
+            // Set display fields
+            $('#fromDateDisplay').val(formatDateDisplay(fromDate));
+            $('#toDateDisplay').val(formatDateDisplay(toDate));
+            
+            // Update UI styling
+            if (fromDate && toDate) {
+                $('#fromDateDisplay').addClass('has-value').css('border-color', '#27ae60');
+                $('#toDateDisplay').addClass('has-value').css('border-color', '#27ae60');
+            } else {
+                $('#fromDateDisplay').removeClass('has-value').css('border-color', '#bdc3c7');
+                $('#toDateDisplay').removeClass('has-value').css('border-color', '#bdc3c7');
+            }
         }
 
         // Initialize Select2 for partner dropdown
@@ -1273,7 +1485,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     // Add badge to indicate if partner has ID or not
                     var badgeHtml = '';
                     if (hasId) {
-                        badgeHtml = ' <span class="with-id-badge" style="color: #27ae60; font-size: 11px; background: #eafaf1; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #27ae60;">✓ Has ID</span>';
+                        badgeHtml = ' <span class="with-id-badge" style="color: #27ae60; font-size: 11px; background: #eafaf1; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #27ae60;">✓ With ID</span>';
                     } else {
                         badgeHtml = ' <span class="no-id-badge" style="color: #e67e22; font-size: 11px; background: #fef9e7; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #f39c12;">No ID</span>';
                     }
@@ -1313,16 +1525,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
         });
         
-        // Initialize date inputs - EMPTY by default
-        $('#fromDate').val('');
-        $('#toDate').val('');
-        
-        function formatDate(date) {
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            return `${year}-${month}-${day}`;
-        }
+        // Initialize date fields - EMPTY by default
+        setDateFields('', '');
         
         // =============================================
         // DATE RESTRICTION LOGIC
@@ -1333,14 +1537,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const serviceCharge = $('#serviceCharge').val() || '';
             return serviceCharge.trim().toUpperCase();
         }
-        
+
         function getDateRestrictionMessage(serviceChargeType) {
+            const partnerId = $('#partnerSelect').val();
+            const specialPartners = ['457', '458', '459', '460'];
+            const isSpecialPartner = specialPartners.includes(partnerId);
+            
             const messages = {
                 'MONTHLY': 'Monthly: From date must be the 1st of the month, To date must be the last day of the month.',
-                'SEMI-MONTHLY': 'Semi-Monthly: From date must be the 1st or 16th of the month, To date must be the 15th or last day of the month.',
                 'WEEKLY': 'Weekly: From date must be Monday, To date must be Sunday (7-day week).',
                 'DAILY': 'Daily: From date and To date must be the same day.'
             };
+            
+            if (serviceChargeType === 'SEMI-MONTHLY') {
+                if (isSpecialPartner) {
+                    return 'SEMI-MONTHLY (LDS Special): Date range must be exactly 14 days (from date to to date). Dates are auto-populated from the latest SOA.';
+                }
+                return 'SEMI-MONTHLY: Semi-Monthly: From date must be the 1st or 16th of the month, To date must be the 15th or last day of the month.';
+            }
+            
             return messages[serviceChargeType] || 'No specific date restrictions for this partner.';
         }
         
@@ -1350,8 +1565,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             
             if (!fromDate || !toDate) return null;
             
-            const from = new Date(fromDate);
-            const to = new Date(toDate);
+            const from = new Date(fromDate + 'T00:00:00');
+            const to = new Date(toDate + 'T00:00:00');
             
             // Get the month and year
             const month = from.getMonth();
@@ -1372,6 +1587,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const diffTime = Math.abs(to - from);
             const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
             
+            // Check if this is a special partner (457, 458, 459, '460')
+            const partnerId = $('#partnerSelect').val();
+            const specialPartners = ['457', '458', '459', '460'];
+            const isSpecialPartner = specialPartners.includes(partnerId);
+            
             // Calculate allowed ranges based on service charge type
             let isValid = false;
             let errorMessage = '';
@@ -1387,26 +1607,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     break;
                     
                 case 'SEMI-MONTHLY':
-                    // From must be 1st or 16th, To must be 15th or last day
-                    const fromDay1 = fromDay;
-                    const toDay1 = toDay;
-                    
-                    // Check if dates are valid for semi-monthly
-                    const isFromValid = (fromDay1 === 1 || fromDay1 === 16);
-                    const isToValid = (toDay1 === 15 || toDay1 === lastDay);
-                    
-                    // Check if the range is correct
-                    let isRangeValid = false;
-                    if (fromDay1 === 1 && toDay1 === 15 && diffDays === 14) {
-                        isRangeValid = true;
-                    } else if (fromDay1 === 16 && toDay1 === lastDay && diffDays === (lastDay - 16)) {
-                        isRangeValid = true;
-                    }
-                    
-                    if (isFromValid && isToValid && isRangeValid) {
-                        isValid = true;
+                    if (isSpecialPartner) {
+                        // Special partners (457, 458, 459, '460'): Only check that the date range is exactly 14 days
+                        if (diffDays === 13) {
+                            isValid = true;
+                        } else {
+                            errorMessage = 'Semi-Monthly (LDS Special): Date range must be exactly 14 days (from date to to date).';
+                        }
                     } else {
-                        errorMessage = `Semi-Monthly requires: From = 1st or 16th, To = 15th or last day of month.`;
+                        // Standard semi-monthly: From must be 1st or 16th, To must be 15th or last day
+                        const isFromValid = (fromDay === 1 || fromDay === 16);
+                        const isToValid = (toDay === 15 || toDay === lastDay);
+                        
+                        // Check if the range is correct
+                        let isRangeValid = false;
+                        if (fromDay === 1 && toDay === 15 && diffDays === 14) {
+                            isRangeValid = true;
+                        } else if (fromDay === 16 && toDay === lastDay && diffDays === (lastDay - 16)) {
+                            isRangeValid = true;
+                        }
+                        
+                        if (isFromValid && isToValid && isRangeValid) {
+                            isValid = true;
+                        } else {
+                            errorMessage = 'Semi-Monthly requires: From = 1st or 16th, To = 15th or last day of month.';
+                        }
                     }
                     break;
                     
@@ -1415,7 +1640,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     if (fromDayOfWeek === 1 && toDayOfWeek === 0 && diffDays === 6) {
                         isValid = true;
                     } else {
-                        errorMessage = `Weekly requires: From = Monday, To = Sunday (7-day week).`;
+                        errorMessage = 'Weekly requires: From = Monday, To = Sunday (7-day week).';
                     }
                     break;
                     
@@ -1424,7 +1649,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     if (diffDays === 0) {
                         isValid = true;
                     } else {
-                        errorMessage = `Daily requires: From date and To date must be the same day.`;
+                        errorMessage = 'Daily requires: From date and To date must be the same day.';
                     }
                     break;
                     
@@ -1476,33 +1701,211 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             if (!result.isValid) {
                 showAlert(result.errorMessage, 'warning');
                 // Highlight invalid fields
-                $('#fromDate, #toDate').css('border-color', '#e74c3c');
+                $('#fromDateDisplay, #toDateDisplay').css('border-color', '#e74c3c');
                 return false;
             } else {
-                $('#fromDate, #toDate').css('border-color', '#27ae60');
+                $('#fromDateDisplay, #toDateDisplay').css('border-color', '#27ae60');
                 return true;
             }
         }
-        
-        // Apply date restrictions when date changes
-        $('#fromDate, #toDate').on('change', function() {
-            const fromDate = $('#fromDate').val();
-            const toDate = $('#toDate').val();
-            
-            // Update restriction info
-            updateDateRestrictionInfo();
-            
-            // Validate dates
-            if (fromDate && toDate) {
-                validateDateRange();
-            }
-        });
         
         // =============================================
         // END DATE RESTRICTION LOGIC
         // =============================================
         
-        // Partner selection change
+        // =============================================
+        // SOA INFO MODAL FUNCTIONS
+        // =============================================
+        
+        function showSOAInfoModal(data) {
+            const $modal = $('#soaInfoModal');
+            const $body = $('#soaInfoModalBody');
+            
+            if (!data || !data.success) {
+                return;
+            }
+            
+            let html = '';
+            
+            if (data.has_previous) {
+                html = `
+                    <div class="soa-info-item">
+                        <span class="label"><i class="fa-solid fa-calendar-check" style="color: #b60000;"></i> Last SOA Date Range</span>
+                        <span class="value">${formatDateDisplay(data.last_from_date)} <span style="color: #7f8c8d; font-weight: 400;">to</span> ${formatDateDisplay(data.last_to_date)}</span>
+                    </div>
+                    <div class="soa-info-item">
+                        <span class="label"><i class="fa-solid fa-hashtag" style="color: #c30000;"></i> Reference Number</span>
+                        <span class="value success">${data.last_reference_number || 'N/A'}</span>
+                    </div>
+                    <div class="soa-info-divider"></div>
+                    <div class="soa-info-item" style="background: #eaf2f8; border-radius: 6px; padding: 12px 10px; margin: 4px 0;">
+                        <span class="label"><i class="fa-solid fa-forward" style="color: #b60000;"></i> Next SOA Date Range</span>
+                        <span class="value highlight">${formatDateDisplay(data.next_from_date)} <span style="color: #7f8c8d; font-weight: 400;">to</span> ${formatDateDisplay(data.next_to_date)}</span>
+                    </div>
+                    ${data.next_reference_number ? `
+                    <div class="soa-info-item" style="padding-top: 6px;">
+                        <span class="label"><i class="fa-solid fa-arrow-right" style="color: #c70000;"></i> Next Reference</span>
+                        <span class="value" style="color: #e67e22;">${data.next_reference_number}</span>
+                    </div>
+                    ` : ''}
+                    <div class="soa-info-warning">
+                        <i class="fa-solid fa-triangle-exclamation"></i>
+                        <span>A new SOA will be generated for the <strong>Next</strong> date range above.</span>
+                    </div>
+                `;
+            } else {
+                html = `
+                    <div style="text-align: center; padding: 20px 0;">
+                        <i class="fa-solid fa-info-circle" style="font-size: 48px; color: #3498db; margin-bottom: 15px;"></i>
+                        <p style="color: #7f8c8d; font-size: 16px;">No previous SOA found for this partner.</p>
+                        <p style="color: #95a5a6; font-size: 14px;">Please contact administrator to set up initial dates.</p>
+                    </div>
+                `;
+            }
+            
+            $body.html(html);
+            
+            // Reset timer
+            soaInfoCountdown = 10;
+            $('#soaInfoTimerCount').text(soaInfoCountdown);
+            
+            // Show modal
+            $modal.addClass('active');
+            soaInfoModalOpen = true;
+            $('body').css('overflow', 'hidden');
+            
+            // Start countdown timer
+            if (soaInfoTimer) {
+                clearInterval(soaInfoTimer);
+            }
+            
+            soaInfoTimer = setInterval(function() {
+                soaInfoCountdown--;
+                $('#soaInfoTimerCount').text(soaInfoCountdown);
+                
+                if (soaInfoCountdown <= 0) {
+                    closeSOAInfoModal();
+                }
+            }, 1000);
+        }
+        
+        function closeSOAInfoModal() {
+            if (soaInfoTimer) {
+                clearInterval(soaInfoTimer);
+                soaInfoTimer = null;
+            }
+            $('#soaInfoModal').removeClass('active');
+            soaInfoModalOpen = false;
+            $('body').css('overflow', '');
+        }
+        
+        // SOA Info Modal event handlers
+        $('#soaInfoModalClose').click(closeSOAInfoModal);
+        $('#soaInfoCloseNow').click(closeSOAInfoModal);
+        
+        // Close SOA Info modal on overlay click
+        $('#soaInfoModal').click(function(e) {
+            if (e.target === this) {
+                closeSOAInfoModal();
+            }
+        });
+        
+        // Escape key to close SOA Info modal
+        $(document).keydown(function(e) {
+            if (e.key === 'Escape' && soaInfoModalOpen) {
+                closeSOAInfoModal();
+            }
+        });
+        
+        // =============================================
+        // END SOA INFO MODAL FUNCTIONS
+        // =============================================
+        
+        // =============================================
+        // AUTO-POPULATE DATES FUNCTION - UPDATED
+        // =============================================
+        
+        // Auto-populate dates based on latest SOA
+        function autoPopulateDates(partnerId, partnerName, hasId) {
+            showLoadingModal('Loading Dates', 'Fetching latest SOA dates for this partner...');
+            
+            var data = {
+                action: 'get_latest_soa_dates'
+            };
+            
+            if (hasId && partnerId && !partnerId.startsWith('no-id-')) {
+                data.partner_id = partnerId;
+            } else {
+                data.partner_name = partnerName;
+            }
+            
+            $.ajax({
+                url: window.location.href,
+                method: 'GET',
+                data: data,
+                success: function(response) {
+                    hideLoadingModal();
+                    try {
+                        if (typeof response === 'string') {
+                            response = JSON.parse(response);
+                        }
+                        
+                        // Show SOA info modal with the response data
+                        showSOAInfoModal(response);
+                        
+                        if (response.success && response.has_previous && response.next_from_date && response.next_to_date) {
+                            // Set the date fields with NEXT dates
+                            setDateFields(response.next_from_date, response.next_to_date);
+                            _datesAutoPopulated = true;
+                            
+                            var message = 'Next dates auto-populated from previous SOA: ' + 
+                                          formatDateDisplay(response.next_from_date) + ' to ' + formatDateDisplay(response.next_to_date);
+                            showAlert(message, 'success');
+                            
+                            // Update restriction info and validate
+                            updateDateRestrictionInfo();
+                            validateDateRange();
+                            
+                            // Auto-fetch data if dates are populated
+                            if (partnerId && partnerId !== '' && !partnerId.startsWith('no-id-')) {
+                                fetchPartnerDetails(partnerId);
+                            } else if (partnerName) {
+                                fetchPartnerByName(partnerName);
+                            }
+                        } else if (response.success && !response.has_previous) {
+                            // No previous SOA found - leave dates empty
+                            showAlert('No previous SOA found for this partner. Please contact administrator to set up initial dates.', 'info');
+                            setDateFields('', '');
+                            _datesAutoPopulated = false;
+                        } else {
+                            // Error or no data - leave dates empty
+                            showAlert('Could not auto-populate dates. Please contact administrator.', 'warning');
+                            setDateFields('', '');
+                            _datesAutoPopulated = false;
+                        }
+                    } catch (e) {
+                        hideLoadingModal();
+                        console.error('Error parsing auto-populate response:', e);
+                        showAlert('Error auto-populating dates. Please contact administrator.', 'warning');
+                        setDateFields('', '');
+                        _datesAutoPopulated = false;
+                    }
+                },
+                error: function(xhr, status, error) {
+                    hideLoadingModal();
+                    console.error('Error auto-populating dates:', error);
+                    showAlert('Error auto-populating dates. Please contact administrator.', 'warning');
+                    setDateFields('', '');
+                    _datesAutoPopulated = false;
+                }
+            });
+        }
+        
+        // =============================================
+        // END AUTO-POPULATE DATES FUNCTION
+        // =============================================
+        
+        // Partner selection change - Auto-populate dates
         $('#partnerSelect').on('change.select2', function() {
             const partnerId = $(this).val();
             if (partnerId) {
@@ -1520,18 +1923,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 // Store the partner name for later use
                 window._currentPartnerName = partnerName;
                 
-                if (!hasId) {
-                    // For partners without ID, we need to fetch by name
-                    showAlert('This partner does not have a Partner ID. Fetching by name.', 'info');
-                    fetchPartnerByName(partnerName);
-                    return;
-                }
-                fetchPartnerDetails(partnerId);
+                // Auto-populate dates based on latest SOA
+                autoPopulateDates(partnerId, partnerName, hasId);
             } else {
                 clearForm();
                 $('#dateRestrictionInfo').removeClass('active');
                 $('#soaExistsWarning').hide();
                 window._currentPartnerName = '';
+                _datesAutoPopulated = false;
+                setDateFields('', '');
                 updateCreateInvoiceButton(false);
             }
         });
@@ -1543,7 +1943,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             
             if (!fromDate || !toDate) {
                 hideLoadingModal();
-                showAlert('Please select transaction dates first.', 'warning');
+                showAlert('No date range available. Please select a partner with existing SOA.', 'warning');
                 return;
             }
             
@@ -1705,7 +2105,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const fromDate = $('#fromDate').val();
             const toDate = $('#toDate').val();
             if (!fromDate || !toDate) {
-                showAlert('Please select both Transaction Date From and Transaction Date To.', 'warning');
+                showAlert('No date range available. Please select a partner with existing SOA.', 'warning');
                 return;
             }
             
@@ -1777,53 +2177,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $('#addAmount').val(addAmount.toFixed(2));
         });
         
-        // Date change - auto fetch
-        let dateChangeTimer;
-        $('#fromDate, #toDate').on('change', function() {
-            clearTimeout(dateChangeTimer);
-            dateChangeTimer = setTimeout(async function() {
-                const partnerId = $('#partnerSelect').val();
-                const fromDate = $('#fromDate').val();
-                const toDate = $('#toDate').val();
-                if (partnerId && fromDate && toDate) {
-                    // Validate date range before fetching
-                    if (validateDateRange()) {
-                        // Check if this is a partner without ID
-                        if (partnerId.startsWith('no-id-')) {
-                            var selectedOption = $('#partnerSelect').find('option:selected');
-                            var partnerName = selectedOption.data('partner-name') || '';
-                            window._currentPartnerName = partnerName;
-                            fetchPartnerByName(partnerName);
-                            return;
-                        }
-                        
-                        // Check for existing SOA
-                        try {
-                            const result = await checkExistingSOA(partnerId, fromDate, toDate);
-                            if (result.exists) {
-                                updateCreateInvoiceButton(true);
-                                $('#soaExistsMessage').html(
-                                    'SOA <strong>' + result.reference_number + '</strong> already exists for this partner (' + 
-                                    result.from_date + ' to ' + result.to_date + ').'
-                                );
-                                // Still fetch data but show warning
-                                showLoadingModal('Fetching data...', 'Please wait while we retrieve partner details and transaction data.');
-                                fetchPartnerDetails(partnerId);
-                                return;
-                            }
-                            updateCreateInvoiceButton(false);
-                            showLoadingModal('Fetching data...', 'Please wait while we retrieve partner details and transaction data.');
-                            fetchPartnerDetails(partnerId);
-                        } catch (error) {
-                            console.error('Error checking existing SOA:', error);
-                            showLoadingModal('Fetching data...', 'Please wait while we retrieve partner details and transaction data.');
-                            fetchPartnerDetails(partnerId);
-                        }
-                    }
-                }
-            }, 300);
-        });
-        
         // PO Number validation
         $('#poNumber').on('input', function() {
             const poNumber = $(this).val();
@@ -1858,7 +2211,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const fromDate = $('#fromDate').val();
             const toDate = $('#toDate').val();
             if (!fromDate || !toDate) {
-                showAlert('Please select both Transaction Date From and Transaction Date To.', 'warning');
+                showAlert('No date range available. Please select a partner with existing SOA.', 'warning');
                 return;
             }
             
@@ -2077,7 +2430,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             
             if (!fromDate || !toDate) {
                 hideLoadingModal();
-                showAlert('Please select transaction dates and partner to fetch other fields.', 'warning');
+                showAlert('No date range available. Please select a partner with existing SOA.', 'warning');
                 return;
             }
             
@@ -2217,7 +2570,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $('#controlNumber').val('');
             $('#partnerAccName').val('');
             $('#partnerTin').val('');
-             $('#partnerAbbreviation').val(''); 
+            $('#partnerAbbreviation').val(''); 
             $('#address').val('');
             $('#businessStyle').val('');
             $('#serviceCharge').val('');
@@ -2234,11 +2587,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $('#poError').text('');
             $('#poNumber').css('border-color', '');
             $('#dateRestrictionInfo').removeClass('active');
-            $('#fromDate, #toDate').css('border-color', '');
+            $('#fromDateDisplay, #toDateDisplay').css('border-color', '#bdc3c7');
             $('#soaExistsWarning').hide();
             currentInvoiceData = null;
             window._currentPartnerName = '';
+            _datesAutoPopulated = false;
+            setDateFields('', '');
             updateCreateInvoiceButton(false);
+            // Close SOA info modal if open
+            if (soaInfoModalOpen) {
+                closeSOAInfoModal();
+            }
         }
         
         function showAlert(message, type) {
@@ -2324,9 +2683,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
             
             // Format dates
-            const fromDateFormatted = fromDate ? new Date(fromDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-            const toDateFormatted = toDate ? new Date(toDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-            const invoiceDateFormatted = invoiceDate ? new Date(invoiceDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+            const fromDateFormatted = fromDate ? formatDateDisplay(fromDate) : '';
+            const toDateFormatted = toDate ? formatDateDisplay(toDate) : '';
+            const invoiceDateFormatted = invoiceDate ? new Date(invoiceDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
             
             // Initialize variables
             let vatAmount = 0;

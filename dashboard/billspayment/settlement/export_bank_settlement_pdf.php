@@ -19,6 +19,30 @@ if (!function_exists('has_any_permission') || !has_any_permission(['Settlement P
 use Dompdf\Dompdf;
 use Dompdf\Options;
 
+// Function to calculate settlement amount based on charge type (same as main file)
+function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment) {
+    $charge_to_upper = strtoupper(trim($charge_to));
+    $service_charge_upper = strtoupper(trim($service_charge));
+    
+    // For WEEKLY, MONTHLY, SEMI-MONTHLY: Amount = Principal + Adjustment (no charge deduction)
+    if ($charge_to_upper === 'PARTNER' && in_array($service_charge_upper, ['WEEKLY', 'MONTHLY', 'SEMI-MONTHLY'])) {
+        return $principal + $adjustment;
+    }
+    
+    // For DAILY (both CUSTOMER and PARTNER): Amount = Principal - Charge to Partner + Adjustment
+    if (($charge_to_upper === 'CUSTOMER' || $charge_to_upper === 'PARTNER') && $service_charge_upper === 'DAILY') {
+        return $principal - $charge_to_partner + $adjustment;
+    }
+    
+    // For BOTH charge types: Use the original calculation (Principal + both charges + adjustment)
+    if ($charge_to_upper === 'BOTH') {
+        return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
+    }
+    
+    // Default fallback: Original calculation
+    return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
+}
+
 // Get filter values from GET parameters
 $selected_partner = isset($_GET['partner']) ? trim($_GET['partner']) : '';
 $selected_bank = isset($_GET['bank']) ? trim($_GET['bank']) : '';
@@ -64,7 +88,7 @@ function getBankAbbreviation(mysqli $conn, string $bank_name): string {
  */
 function getSettlementAbbreviation(string $settlement_type): string {
     if (empty($settlement_type)) return '';
-    return strtoupper($settlement_type) === 'CHECK' ? 'CHK' : 'ONL';
+    return strtoupper(trim($settlement_type)) === 'CHECK' ? 'CHK' : 'ONL';
 }
 
 /**
@@ -228,7 +252,8 @@ try {
                     COALESCE(pm.serviceCharge, '') as serviceCharge,
                     COUNT(*) as txn_count,
                     SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
-                    (SUM(bt.charge_to_customer) + SUM(bt.charge_to_partner)) as total_charge,
+                    SUM(bt.charge_to_customer) as charge_to_customer,
+                    SUM(bt.charge_to_partner) as charge_to_partner,
                     SUM(CASE WHEN bt.settle_unsettle = 'Settled' THEN 1 ELSE 0 END) as settled_count,
                     SUM(CASE WHEN bt.settle_unsettle IS NULL 
                               OR bt.settle_unsettle = '' 
@@ -316,7 +341,8 @@ try {
                 'settle_unsettle' => $row['settle_unsettle'] ?? '',
                 'txn_count' => (int)($row['txn_count'] ?? 0),
                 'total_principal' => (float)($row['total_principal'] ?? 0),
-                'total_charge' => (float)($row['total_charge'] ?? 0),
+                'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
+                'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
                 'total_adjustment' => 0,
                 'settled_count' => (int)($row['settled_count'] ?? 0),
                 'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
@@ -361,7 +387,8 @@ try {
                             'settle_unsettle' => '',
                             'txn_count' => 0,
                             'total_principal' => 0,
-                            'total_charge' => 0,
+                            'charge_to_customer' => 0,
+                            'charge_to_partner' => 0,
                             'total_adjustment' => (float)($row['total_adjustment'] ?? 0),
                             'settled_count' => 0,
                             'unsettled_count' => 0,
@@ -418,56 +445,56 @@ try {
         'CHARGE BY CUSTOMER DAILY' => [
             'display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY CUSTOMER WEEKLY' => [
             'display_name' => 'NOTE: CHARGE BY CUSTOMER WEEKLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY PARTNER DAILY' => [
             'display_name' => 'NOTE: CHARGE BY PARTNER DAILY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY PARTNER WEEKLY' => [
             'display_name' => 'NOTE: CHARGE BY PARTNER WEEKLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY PARTNER SEMI MONTHLY' => [
             'display_name' => 'NOTE: CHARGE BY PARTNER SEMI-MONTHLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY PARTNER MONTHLY' => [
             'display_name' => 'NOTE: CHARGE BY PARTNER MONTHLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY BOTH DAILY' => [
             'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) DAILY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY BOTH WEEKLY' => [
             'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) WEEKLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY BOTH MONTHLY' => [
             'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) MONTHLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'UNCATEGORIZED' => [
             'display_name' => '⚠️ PARTNERS WITHOUT CHARGE TYPE (UNCATEGORIZED)',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ]
     ];
     
-    $grand_totals = ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0];
+    $grand_totals = ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0];
     $all_rows = [];
     $row_index = 0;
     
@@ -519,9 +546,20 @@ try {
         
         $txn_count = (int)($row['txn_count'] ?? 0);
         $principal = (float)($row['total_principal'] ?? 0);
-        $charge = (float)($row['total_charge'] ?? 0);
+        $charge_to_customer = (float)($row['charge_to_customer'] ?? 0);
+        $charge_to_partner = (float)($row['charge_to_partner'] ?? 0);
         $adjustment = (float)($row['total_adjustment'] ?? 0);
-        $settlement_amount = $principal + $charge + $adjustment;
+        
+        // Calculate settlement amount based on charge type
+        $settlement_amount = calculateSettlementAmount(
+            $charge_to,
+            $serviceCharge,
+            $principal,
+            $charge_to_customer,
+            $charge_to_partner,
+            $adjustment
+        );
+        
         $settled_count = (int)($row['settled_count'] ?? 0);
         $unsettled_count = (int)($row['unsettled_count'] ?? 0);
         $is_fully_settled = ($settled_count > 0 && $unsettled_count == 0);
@@ -542,7 +580,8 @@ try {
             'account_number' => $row['bank_accNumber'] ?? 'N/A',
             'txn_count' => $txn_count,
             'principal' => $principal,
-            'charge' => $charge,
+            'charge_to_customer' => $charge_to_customer,
+            'charge_to_partner' => $charge_to_partner,
             'adjustment' => $adjustment,
             'settlement_amount' => $settlement_amount,
             'status' => $status,
@@ -570,56 +609,56 @@ try {
         'CHARGE BY CUSTOMER DAILY' => [
             'display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY CUSTOMER WEEKLY' => [
             'display_name' => 'NOTE: CHARGE BY CUSTOMER WEEKLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY PARTNER DAILY' => [
             'display_name' => 'NOTE: CHARGE BY PARTNER DAILY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY PARTNER WEEKLY' => [
             'display_name' => 'NOTE: CHARGE BY PARTNER WEEKLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY PARTNER SEMI MONTHLY' => [
             'display_name' => 'NOTE: CHARGE BY PARTNER SEMI-MONTHLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY PARTNER MONTHLY' => [
             'display_name' => 'NOTE: CHARGE BY PARTNER MONTHLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY BOTH DAILY' => [
             'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) DAILY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY BOTH WEEKLY' => [
             'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) WEEKLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'CHARGE BY BOTH MONTHLY' => [
             'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) MONTHLY',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ],
         'UNCATEGORIZED' => [
             'display_name' => '⚠️ PARTNERS WITHOUT CHARGE TYPE (UNCATEGORIZED)',
             'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0]
+            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
         ]
     ];
     
-    $grand_totals = ['txn_count' => 0, 'principal' => 0, 'charge' => 0, 'adjustment' => 0, 'settlement' => 0];
+    $grand_totals = ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0];
     
     foreach ($filtered_rows as $row_data) {
         $group_key = $row_data['group_key'];
@@ -632,13 +671,15 @@ try {
         
         $groups[$group_key]['totals']['txn_count'] += $row_data['txn_count'];
         $groups[$group_key]['totals']['principal'] += $row_data['principal'];
-        $groups[$group_key]['totals']['charge'] += $row_data['charge'];
+        $groups[$group_key]['totals']['charge_to_customer'] += $row_data['charge_to_customer'];
+        $groups[$group_key]['totals']['charge_to_partner'] += $row_data['charge_to_partner'];
         $groups[$group_key]['totals']['adjustment'] += $row_data['adjustment'];
         $groups[$group_key]['totals']['settlement'] += $row_data['settlement_amount'];
         
         $grand_totals['txn_count'] += $row_data['txn_count'];
         $grand_totals['principal'] += $row_data['principal'];
-        $grand_totals['charge'] += $row_data['charge'];
+        $grand_totals['charge_to_customer'] += $row_data['charge_to_customer'];
+        $grand_totals['charge_to_partner'] += $row_data['charge_to_partner'];
         $grand_totals['adjustment'] += $row_data['adjustment'];
         $grand_totals['settlement'] += $row_data['settlement_amount'];
     }
@@ -647,9 +688,12 @@ try {
         return !empty($group['rows']);
     });
     
-    $bank_abbreviation = '';
-    $settlement_abbr = '';
+    // ============================================
+    // CAD NUMBER GENERATION - CORRECTED
+    // ============================================
     
+    // Get bank abbreviation
+    $bank_abbreviation = '';
     if (!empty($selected_bank)) {
         $bank_details = getBankDetails($conn, $selected_bank);
         if ($bank_details) {
@@ -657,15 +701,35 @@ try {
         }
     }
     
+    // Get settlement type abbreviation - only if a specific type is selected
+    $settlement_abbr = '';
     if (!empty($selected_settlement_type)) {
         $settlement_abbr = getSettlementAbbreviation($selected_settlement_type);
-    } else {
-        $settlement_abbr = 'CHK';
     }
     
+    // Generate CAD number - conditionally include settlement abbreviation
     $cad_date = formatCADDate($selected_date_from, $selected_date_to);
-    $cad_number = $bank_abbreviation . '-' . $settlement_abbr . '-' . $cad_date;
+    
+    // Start building CAD number with bank abbreviation or default
+    if (!empty($bank_abbreviation)) {
+        $cad_number = $bank_abbreviation;
+    } else {
+        // If no bank selected, use a default prefix
+        $cad_number = 'RFP';
+    }
+    
+    // Add settlement type if selected
+    if (!empty($settlement_abbr)) {
+        $cad_number .= '-' . $settlement_abbr;
+    }
+    
+    // Add the date part
+    $cad_number .= '-' . $cad_date;
+    
+    // Format date range for display
     $date_range_display = formatDateRange($selected_date_from, $selected_date_to);
+    
+    // Current date for the header
     $current_date = strtoupper(date('F d, Y'));
 
 } catch (Exception $e) {
@@ -723,13 +787,6 @@ $html = '<!DOCTYPE html>
         }
         .info-row strong {
             font-weight: bold;
-        }
-        .info-row .label {
-            display: inline-block;
-            min-width: 140px;
-        }
-        .info-row .value {
-            font-weight: normal;
         }
         .section-spacer {
             height: 4px;
@@ -804,9 +861,8 @@ $html = '<!DOCTYPE html>
             padding-top: 4px;
         }
         .signature-section {
-            margin-top: 12px;
+            margin-top: 15px;
             font-size: 8pt;
-            margin-left: -35px;
         }
         .signature-section table {
             border: none;
@@ -815,18 +871,25 @@ $html = '<!DOCTYPE html>
         }
         .signature-section td {
             border: none;
-            padding: 4px 8px;
+            padding: 4px 12px 4px 0;
             vertical-align: top;
+            text-align: left;
         }
-        .signature-line {
+        .signature-name {
+            font-weight: bold;
+            font-size: 9pt;
+            margin-bottom: 2px;
+        }
+        .signature-blank {
             border-bottom: 1px solid #333;
             width: 180px;
             display: inline-block;
-            margin-top: 20px;
+            height: 1px;
+            margin-top: 2px;
         }
-        .signature-label {
+        .signature-title {
             font-size: 7pt;
-            text-align: center;
+            color: #555;
             margin-top: 2px;
         }
         .page-break {
@@ -835,52 +898,10 @@ $html = '<!DOCTYPE html>
         .amount-col {
             font-weight: 500;
         }
-        /* Column widths - simplified for fewer columns */
         .col-partner { width: 28%; }
         .col-account { width: 22%; }
         .col-acctno { width: 25%; }
         .col-settlement { width: 25%; text-align: right; }
-        
-/* Signature table styles */
-.signature-table {
-    border: none !important;
-    width: 100%;
-    margin-top: 4px;
-}
-.signature-table td {
-    border: none !important;
-    padding: 4px 8px;
-    vertical-align: top;
-    text-align: center;
-}
-.signature-name {
-    font-weight: bold;
-    font-size: 8pt;
-    margin-bottom: 4px;
-}
-.signature-blank {
-    border-bottom: 1px solid #333;
-    width: 180px;
-    display: inline-block;
-    height: 1px;
-    margin-bottom: 4px;
-}
-.signature-title {
-    font-size: 7pt;
-    color: #555;
-    margin-top: 2px;
-}
-.signature-blank {
-    border-bottom: 1px solid #333;
-    width: 180px;
-    display: inline-block;
-    height: 1px;
-}
-        .signature-label-text {
-            font-size: 7pt;
-            text-align: center;
-            margin-top: 2px;
-        }
     </style>
 </head>
 <body>';
@@ -909,7 +930,7 @@ $html .= '
 
 <div class="section-spacer"></div>';
 
-// TABLE SECTION - Simplified with only 4 columns
+// TABLE SECTION
 $html .= '<table>
     <thead>
         <tr>
@@ -950,7 +971,7 @@ foreach ($groups as $group_key => $group_data) {
         $html .= '<tr>';
         $html .= '<td class="text-left">' . htmlspecialchars($row_data['partner_name']) . '</td>';
         $html .= '<td class="text-left">' . htmlspecialchars($row_data['account_name']) . '</td>';
-        $html .= '<td class="text-left">' . htmlspecialchars($row_data['account_number']) . '</td>';
+        $html .= '<td class="text-center">' . htmlspecialchars($row_data['account_number']) . '</td>';
         $html .= '<td class="text-right amount-col ' . $settlement_class . '"> ' . number_format($settlement, 2) . '</td>';
         $html .= '</tr>';
     }
@@ -966,10 +987,10 @@ foreach ($groups as $group_key => $group_data) {
     $totals = $group_data['totals'];
     $settlement_class = ($totals['settlement'] < 0) ? 'negative-amount' : '';
     
-    $html .= '<tr class="subtotal-row ' . $subtotal_class . '">';
-    $html .= '<td colspan="3" class="text-right"><strong>Subtotal - ' . htmlspecialchars($group_data['display_name']) . '</strong></td>';
-    $html .= '<td class="text-right amount-col ' . $settlement_class . '"> ' . number_format($totals['settlement'], 2) . '</td>';
-    $html .= '</tr>';
+    // $html .= '<tr class="Subtotal ' . $subtotal_class . '">';
+    // $html .= '<td colspan="3" class="text-right"><strong>Subtotal - ' . htmlspecialchars($group_data['display_name']) . '</strong></td>';
+    // $html .= '<td class="text-right amount-col ' . $settlement_class . '"> ' . number_format($totals['settlement'], 2) . '</td>';
+    // $html .= '</tr>';
 }
 
 // GRAND TOTAL
@@ -982,55 +1003,51 @@ $html .= '</tr>';
 
 $html .= '</tbody></table>';
 
-// SIGNATURE SECTION - Updated with name above the line, title below
+// SIGNATURE SECTION - Matches the Excel sample format
 $html .= '
 <div class="signature-section">
     <table class="signature-table">
         <tr>
-            <td style="width: 25%;">
-                <div style="font-weight: bold;">Prepared by:</div>
-                <div style="margin-top: 15px;">
-                    <div class="signature-name">' . htmlspecialchars($display_name) . '</div>
+            <td style="width: 50%; text-align: left;">
+                <div style="font-weight: bold; font-size: 9pt;">Prepared by :</div>
+                <div style="margin-top: 10px;">
+                    <div style="font-weight: bold; font-size: 9pt;">' . htmlspecialchars($display_name) . '</div>
                     <span class="signature-blank"></span>
-                    <div class="signature-title">Accounting Staff</div>
+                    <div style="font-size: 7pt; color: #555;">Accounting Staff</div>
                 </div>
             </td>
-            <td style="width: 25%;">
-                <div style="font-weight: bold;">Checked by:</div>
-                <div style="margin-top: 15px;">
-                    <div class="signature-name">{Accounting Staff}</div>
+            <td style="width: 50%; text-align: left;">
+                <div style="font-weight: bold; font-size: 9pt;">Checked by :</div>
+                <div style="margin-top: 10px;">
+                    <div style="font-weight: bold; font-size: 9pt;">{Accounting Staff}</div>
                     <span class="signature-blank"></span>
-                    <div class="signature-title">Accounting Staff</div>
+                    <div style="font-size: 7pt; color: #555;">Accounting Staff</div>
                 </div>
             </td>
-            <td style="width: 25%;">
-                <div style="font-weight: bold;">Reviewed by:</div>
-                <div style="margin-top: 15px;">
-                    <div class="signature-name">ELVIE CILLO</div>
+        </tr>
+        <tr>
+            <td style="width: 50%; text-align: left; padding-top: 15px;">
+                <div style="font-weight: bold; font-size: 9pt;">Reviewed by :</div>
+                <div style="margin-top: 10px;">
+                    <div style="font-weight: bold; font-size: 9pt;">ELVIE CILLO</div>
                     <span class="signature-blank"></span>
-                    <div class="signature-title">Department Manager</div>
+                    <div style="font-size: 7pt; color: #555;">Department Manager</div>
                 </div>
             </td>
-            <td style="width: 25%;">
-                <div style="font-weight: bold;">Noted by:</div>
-                <div style="margin-top: 15px;">
-                    <div class="signature-name">LUELLA PERALTA</div>
+            <td style="width: 50%; text-align: left; padding-top: 15px;">
+                <div style="font-weight: bold; font-size: 9pt;">Noted by :</div>
+                <div style="margin-top: 10px;">
+                    <div style="font-weight: bold; font-size: 9pt;">LUELLA PERALTA</div>
                     <span class="signature-blank"></span>
-                    <div class="signature-title">Division Manager</div>
+                    <div style="font-size: 7pt; color: #555;">Division Manager</div>
                 </div>
             </td>
         </tr>
     </table>
 </div>
 
-
-
 </body>
 </html>';
-
-// <div class="footer">
-//     Generated on ' . date('Y-m-d H:i:s') . ' | CAD: ' . $cad_number . '
-// </div>
 
 // ============================================
 // GENERATE PDF
