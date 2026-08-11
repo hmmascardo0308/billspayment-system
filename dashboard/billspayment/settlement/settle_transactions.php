@@ -29,6 +29,8 @@ if (!function_exists('has_any_permission') || !has_any_permission(['Settlement P
 // Get POST data
 $partner_ids = isset($_POST['partner_ids']) ? $_POST['partner_ids'] : [];
 $settled_by = isset($_POST['settled_by']) ? trim($_POST['settled_by']) : '';
+$rfp_no = isset($_POST['rfp_no']) ? trim($_POST['rfp_no']) : '';
+$cad_no = isset($_POST['cad_no']) ? trim($_POST['cad_no']) : '';
 $partner_filter = isset($_POST['partner_filter']) ? trim($_POST['partner_filter']) : '';
 $bank_filter = isset($_POST['bank_filter']) ? trim($_POST['bank_filter']) : '';
 $settlement_type_filter = isset($_POST['settlement_type_filter']) ? trim($_POST['settlement_type_filter']) : '';
@@ -38,6 +40,18 @@ $date_to = isset($_POST['date_to']) ? trim($_POST['date_to']) : '';
 // Validate
 if (empty($partner_ids) || !is_array($partner_ids)) {
     echo json_encode(['success' => false, 'message' => 'No partners selected for settlement.']);
+    exit;
+}
+
+// Validate RFP No.
+if (empty($rfp_no)) {
+    echo json_encode(['success' => false, 'message' => 'RFP No. is required for settlement.']);
+    exit;
+}
+
+// Validate CAD No.
+if (empty($cad_no)) {
+    echo json_encode(['success' => false, 'message' => 'CAD No. is required for settlement.']);
     exit;
 }
 
@@ -54,6 +68,9 @@ if (empty($settled_by)) {
         $settled_by = 'SYSTEM';
     }
 }
+
+// Log the settlement request
+error_log("Settlement Request - RFP: $rfp_no, CAD: $cad_no, Partners: " . implode(',', $partner_ids));
 
 // Build WHERE clause for the update - ONLY unsettled records
 $where_conditions = [];
@@ -118,7 +135,7 @@ try {
     // First, get count and amount for confirmation (only unsettled)
     $count_sql = "SELECT 
                     COUNT(*) as total_transactions,
-                    SUM(bt.amount_paid) + (SUM(bt.charge_to_customer) + SUM(bt.charge_to_partner)) as total_amount,
+                    SUM(bt.amount_paid + bt.charge_to_customer + bt.charge_to_partner) as total_amount,
                     COUNT(DISTINCT bt.partner_id_kpx) as total_partners
                   FROM mldb.billspayment_transaction bt
                   LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
@@ -142,18 +159,20 @@ try {
         exit;
     }
     
-    // Update ONLY unsettled transactions
+    // Update ONLY unsettled transactions - NOW INCLUDING rfp_no AND cad_no
     $update_sql = "UPDATE mldb.billspayment_transaction bt
                    LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
                    SET 
                        bt.settle_unsettle = 'Settled',
                        bt.settlement_date = ?,
-                       bt.settled_by = ?
+                       bt.settled_by = ?,
+                       bt.rfp_no = ?,
+                       bt.cad_no = ?
                    " . $where_clause;
     
-    // Add settlement_date and settled_by to params
-    $update_params = array_merge([$settlement_date, $settled_by], $params);
-    $update_types = "ss" . $types;
+    // Add settlement_date, settled_by, rfp_no, cad_no to params
+    $update_params = array_merge([$settlement_date, $settled_by, $rfp_no, $cad_no], $params);
+    $update_types = "ssss" . $types;
     
     $update_stmt = $conn->prepare($update_sql);
     if (!$update_stmt) {
@@ -169,23 +188,25 @@ try {
         throw new Exception("Update failed: " . $conn->error);
     }
     
+    // Log the settlement action with RFP and CAD numbers
+    error_log("Settlement completed - RFP: $rfp_no, CAD: $cad_no, By: $settled_by, Date: $settlement_date, Affected rows: $affected_rows");
+    
     // Commit transaction
     $conn->commit();
-    
-    // Log the settlement action
-    error_log("Settlement performed by: $settled_by, Date: $settlement_date, Affected rows: $affected_rows, Partners: " . implode(',', $partner_ids));
     
     // Return success response
     echo json_encode([
         'success' => true,
-        'message' => "Successfully settled $affected_rows transaction(s).",
+        'message' => "Successfully settled $affected_rows transaction(s) with RFP: $rfp_no and CAD: $cad_no.",
         'data' => [
             'total_transactions' => (int)($count_data['total_transactions'] ?? 0),
             'total_amount' => (float)($count_data['total_amount'] ?? 0),
             'total_partners' => (int)($count_data['total_partners'] ?? 0),
             'settled_by' => $settled_by,
             'settlement_date' => $settlement_date_display,
-            'affected_rows' => $affected_rows
+            'affected_rows' => $affected_rows,
+            'rfp_no' => $rfp_no,
+            'cad_no' => $cad_no
         ]
     ]);
     

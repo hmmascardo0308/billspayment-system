@@ -87,3 +87,9 @@ Stack trace:
 [10-Aug-2026 07:30:54 Europe/Berlin] === STARTING IMPORT ===
 [10-Aug-2026 07:30:54 Europe/Berlin] Total rows to import: 18736
 [10-Aug-2026 07:32:11 Europe/Berlin] Import completed. Inserted: 18736, Duplicates: 0, Errors: 0
+[11-Aug-2026 08:46:58 Europe/Berlin] === STARTING LOOKUP ===
+[11-Aug-2026 08:46:58 Europe/Berlin] Total rows to lookup: 89
+[11-Aug-2026 08:46:58 Europe/Berlin] Lookup completed. Processed: 89 rows
+[11-Aug-2026 08:49:16 Europe/Berlin] === STARTING LOOKUP ===
+[11-Aug-2026 08:49:16 Europe/Berlin] Total rows to lookup: 16
+[11-Aug-2026 08:49:16 Europe/Berlin] Lookup completed. Processed: 16 rows

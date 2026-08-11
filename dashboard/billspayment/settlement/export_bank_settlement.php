@@ -17,6 +17,9 @@ if (empty($id)) { header('Location: ../../../login_form.php'); exit; }
 if (!function_exists('has_any_permission') || !has_any_permission(['Settlement Per Bank','Bills Payment'])) { header('Location: ../../home.php'); exit; }
 
 // Function to calculate settlement amount based on charge type (same as main file)
+// ============================================
+// FUNCTION: Calculate settlement amount based on charge type
+// ============================================
 function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment) {
     $charge_to_upper = strtoupper(trim($charge_to));
     $service_charge_upper = strtoupper(trim($service_charge));
@@ -31,12 +34,17 @@ function calculateSettlementAmount($charge_to, $service_charge, $principal, $cha
         return $principal - $charge_to_partner + $adjustment;
     }
     
-    // For BOTH charge types: Use the original calculation (Principal + both charges + adjustment)
+    // For BOTH DAILY: Amount = Principal - Charge to Partner + Adjustment
+    if ($charge_to_upper === 'BOTH' && $service_charge_upper === 'DAILY') {
+        return $principal - $charge_to_partner + $adjustment;
+    }
+    
+    // For BOTH charge types (WEEKLY/MONTHLY): Use the original calculation (Principal + both charges + adjustment)
     if ($charge_to_upper === 'BOTH') {
         return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
     }
     
-    // Default fallback: Original calculation
+    // Default fallback
     return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
 }
 
@@ -46,10 +54,16 @@ $selected_bank = isset($_GET['bank']) ? trim($_GET['bank']) : '';
 $selected_settlement_type = isset($_GET['settlement_type']) ? trim($_GET['settlement_type']) : '';
 $selected_date_from = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
 $selected_date_to = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
+$selected_rfp_no = isset($_GET['rfp_no']) ? trim($_GET['rfp_no']) : '';
 
-// Get excluded rows from GET parameters (comma-separated list of row indices)
+// Validate RFP No.
+if (empty($selected_rfp_no)) {
+    die("RFP No. is required for Excel export.");
+}
+
+// Get excluded rows from GET parameters
 $excluded_rows = isset($_GET['excluded_rows']) ? explode(',', trim($_GET['excluded_rows'])) : [];
-$excluded_rows = array_filter($excluded_rows, 'is_numeric'); // Sanitize
+$excluded_rows = array_filter($excluded_rows, 'is_numeric');
 
 // Get current user name for Prepared By
 $display_name = 'GUEST';
@@ -62,63 +76,160 @@ if (isset($_SESSION['user_type'])) {
 }
 
 /**
- * Get bank abbreviation from database
- * 
- * @param mysqli $conn Database connection
- * @param string $bank_name Bank name to look up
- * @return string Bank abbreviation or empty string if not found
+ * Get bank abbreviation from multiple sources (IMPROVED - matches settlement-per-bank.php)
  */
 function getBankAbbreviation(mysqli $conn, string $bank_name): string {
     if (empty($bank_name)) return '';
-    
-    $query = "SELECT bank_abbreviation FROM mldb.bank_table WHERE bank_name = ?";
+
+    $bank_name = trim($bank_name);
+    $bank_name_upper = strtoupper($bank_name);
+
+    // Try 1: exact match in mldb.bank_table
+    $query = "SELECT bank_abbreviation FROM mldb.bank_table WHERE bank_name = ? LIMIT 1";
     $stmt = $conn->prepare($query);
     if ($stmt) {
         $stmt->bind_param("s", $bank_name);
         $stmt->execute();
         $result = $stmt->get_result();
         if ($row = $result->fetch_assoc()) {
-            return $row['bank_abbreviation'];
+            if (!empty($row['bank_abbreviation'])) {
+                $stmt->close();
+                return strtoupper(trim($row['bank_abbreviation']));
+            }
+        }
+        $stmt->close();
+    }
+
+    // Try 2: LIKE match in mldb.bank_table
+    $query = "SELECT bank_abbreviation FROM mldb.bank_table 
+              WHERE UPPER(bank_name) LIKE CONCAT('%', UPPER(?), '%') 
+                 OR UPPER(?) LIKE CONCAT('%', UPPER(bank_name), '%')
+              LIMIT 1";
+    $stmt = $conn->prepare($query);
+    if ($stmt) {
+        $stmt->bind_param("ss", $bank_name, $bank_name);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            if (!empty($row['bank_abbreviation'])) {
+                $stmt->close();
+                return strtoupper(trim($row['bank_abbreviation']));
+            }
+        }
+        $stmt->close();
+    }
+
+    // Try 3: partner_masterfile exact + LIKE
+    $query2 = "SELECT DISTINCT bank_abbreviation FROM masterdata.partner_masterfile 
+               WHERE (bank = ? OR UPPER(bank) LIKE CONCAT('%', UPPER(?), '%'))
+                 AND bank_abbreviation IS NOT NULL AND bank_abbreviation != '' 
+               LIMIT 1";
+    $stmt2 = $conn->prepare($query2);
+    if ($stmt2) {
+        $stmt2->bind_param("ss", $bank_name, $bank_name);
+        $stmt2->execute();
+        $result2 = $stmt2->get_result();
+        if ($row2 = $result2->fetch_assoc()) {
+            if (!empty($row2['bank_abbreviation'])) {
+                $stmt2->close();
+                return strtoupper(trim($row2['bank_abbreviation']));
+            }
+        }
+        $stmt2->close();
+    }
+
+    // Try 4: Known bank abbreviations (expanded)
+    $known_banks = [
+        'ASIA UNITED BANK CORPORATION' => 'AUB',
+        'ASIA UNITED BANK CORPORATION (AUB)' => 'AUB',
+        'ASIA UNITED BANK' => 'AUB',
+        'ASIA UNITED' => 'AUB',
+        'AUB' => 'AUB',
+        'BANK OF THE PHILIPPINE ISLANDS' => 'BPI',
+        'BANK OF THE PHILIPPINE ISLANDS (BPI)' => 'BPI',
+        'BPI' => 'BPI',
+        'BANCO DE ORO' => 'BDO',
+        'BANCO DE ORO (BDO)' => 'BDO',
+        'BDO UNIBANK' => 'BDO',
+        'BDO' => 'BDO',
+        'METROPOLITAN BANK & TRUST COMPANY' => 'MBT',
+        'METROPOLITAN BANK AND TRUST COMPANY' => 'MBT',
+        'METROPOLITAN BANK & TRUST COMPANY (METROBANK)' => 'MBT',
+        'METROBANK' => 'MBT',
+        'MBT' => 'MBT',
+        'PHILIPPINE NATIONAL BANK' => 'PNB',
+        'PHILIPPINE NATIONAL BANK (PNB)' => 'PNB',
+        'PNB' => 'PNB',
+        'UNION BANK OF THE PHILIPPINES' => 'UBP',
+        'UNION BANK OF THE PHILIPPINES (UNIONBANK)' => 'UBP',
+        'UNIONBANK' => 'UBP',
+        'UBP' => 'UBP',
+        'SECURITY BANK CORPORATION' => 'SBC',
+        'SECURITY BANK' => 'SBC',
+        'SBC' => 'SBC',
+        'CHINA BANKING CORPORATION' => 'CBC',
+        'CHINA BANK' => 'CBC',
+        'CBC' => 'CBC',
+        'LAND BANK OF THE PHILIPPINES' => 'LBP',
+        'LAND BANK OF THE PHILIPPINES (LBP)' => 'LBP',
+        'LANDBANK' => 'LBP',
+        'LBP' => 'LBP',
+        'DEVELOPMENT BANK OF THE PHILIPPINES' => 'DBP',
+        'DEVELOPMENT BANK OF THE PHILIPPINES (DBP)' => 'DBP',
+        'DBP' => 'DBP',
+    ];
+
+    foreach ($known_banks as $known_name => $abbr) {
+        if (stripos($bank_name_upper, $known_name) !== false || stripos($known_name, $bank_name_upper) !== false) {
+            return $abbr;
         }
     }
+
+    // Try 5: first-letter fallback
+    $words = preg_split('/[\s,()&\-]+/', $bank_name);
+    $abbr = '';
+    foreach ($words as $word) {
+        $word = trim($word);
+        if (!empty($word) && strlen($word) > 1 && !in_array(strtoupper($word), ['OF','THE','AND','BANK','CORPORATION','CORP','INC','LTD'])) {
+            $abbr .= strtoupper($word[0]);
+        }
+    }
+    if (strlen($abbr) >= 2) {
+        return substr($abbr, 0, 4);
+    }
+
     return '';
 }
 
 /**
  * Get settlement type abbreviation
- * 
- * @param string $settlement_type Settlement type (CHECK or ONLINE)
- * @return string Abbreviation (CHK or ONL) or empty string
  */
 function getSettlementAbbreviation(string $settlement_type): string {
     if (empty($settlement_type)) return '';
-    return strtoupper(trim($settlement_type)) === 'CHECK' ? 'CHK' : 'ONL';
+    $type = strtoupper(trim($settlement_type));
+    if ($type === 'CHECK' || $type === 'CHEQUE') return 'CHK';
+    if ($type === 'ONLINE' || $type === 'ONL') return 'ONL';
+    return strtoupper(substr($type, 0, 3));
 }
 
 /**
- * Format date for CAD number
- * 
- * @param string|null $date_from Start date
- * @param string|null $date_to End date
- * @return string Formatted date string (YYYY-MM-DD or YYYY-MM-DDDD)
+ * Format date for CAD number (YYYY-MM-000DD)
  */
 function formatCADDate(?string $date_from, ?string $date_to): string {
     if (empty($date_from) && empty($date_to)) {
-        return date('Y-m-d');
+        return date('Y-m') . '-' . sprintf('%05d', (int)date('d'));
     }
-    
-    // Use the last day of the period for the CAD number
+
     $date = !empty($date_to) ? $date_to : $date_from;
     $timestamp = strtotime($date);
-    return date('Y-m', $timestamp) . '-' . sprintf('%05d', date('d', $timestamp));
+    if ($timestamp === false) {
+        return date('Y-m') . '-' . sprintf('%05d', (int)date('d'));
+    }
+    return date('Y-m', $timestamp) . '-' . sprintf('%05d', (int)date('d', $timestamp));
 }
 
 /**
  * Format date range for display
- * 
- * @param string|null $date_from Start date
- * @param string|null $date_to End date
- * @return string Formatted date range
  */
 function formatDateRange(?string $date_from, ?string $date_to): string {
     if (empty($date_from) && empty($date_to)) {
@@ -129,55 +240,24 @@ function formatDateRange(?string $date_from, ?string $date_to): string {
     $to = !empty($date_to) ? strtotime($date_to) : $from;
     
     if ($from == $to) {
-        // Single date: June 12, 2026
         return strtoupper(date('F d, Y', $from));
     } else {
-        // Date range: June 01 - 10, 2026
         $from_month = date('F', $from);
         $to_month = date('F', $to);
         $from_day = date('d', $from);
         $to_day = date('d', $to);
         $to_year = date('Y', $to);
         
-        // Check if months are the same
         if ($from_month == $to_month) {
-            // Same month: June 01 - 10, 2026
             return strtoupper($from_month . ' ' . $from_day . ' - ' . $to_day . ', ' . $to_year);
         } else {
-            // Different months: June 01 - July 10, 2026
             return strtoupper(date('F d', $from) . ' - ' . date('F d, Y', $to));
         }
     }
 }
 
-/**
- * Get bank details from database
- * 
- * @param mysqli $conn Database connection
- * @param string $bank_name Bank name to look up
- * @return array|null Bank details or null if not found
- */
-function getBankDetails(mysqli $conn, string $bank_name): ?array {
-    if (empty($bank_name)) return null;
-    
-    $query = "SELECT bank_abbreviation FROM mldb.bank_table WHERE bank_name = ?";
-    $stmt = $conn->prepare($query);
-    if ($stmt) {
-        $stmt->bind_param("s", $bank_name);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        if ($row = $result->fetch_assoc()) {
-            return $row;
-        }
-    }
-    return null;
-}
-
-// Build the queries - ADAPTED from settlement-per-bank.php logic
+// Build the queries
 try {
-    // ============================================
-    // BUILD SEPARATE WHERE CONDITIONS FOR REGULAR AND ADJUSTMENT
-    // ============================================
     $where_conditions_regular = [];
     $where_conditions_adjustment = [];
     $params_regular = [];
@@ -185,7 +265,6 @@ try {
     $types_regular = "";
     $types_adjustment = "";
     
-    // Partner filter - applies to both
     if (!empty($selected_partner)) {
         $where_conditions_regular[] = "bt.partner_id_kpx = ?";
         $params_regular[] = $selected_partner;
@@ -196,7 +275,6 @@ try {
         $types_adjustment .= "s";
     }
     
-    // Bank filter - applies to both
     if (!empty($selected_bank)) {
         $where_conditions_regular[] = "pm.bank = ?";
         $params_regular[] = $selected_bank;
@@ -207,7 +285,6 @@ try {
         $types_adjustment .= "s";
     }
     
-    // Settlement type filter - applies to both
     if (!empty($selected_settlement_type)) {
         $where_conditions_regular[] = "pm.settled_online_check = ?";
         $params_regular[] = $selected_settlement_type;
@@ -218,9 +295,6 @@ try {
         $types_adjustment .= "s";
     }
     
-    // ============================================
-    // REGULAR TRANSACTIONS: Based on datetime, NOT cancelled
-    // ============================================
     if (!empty($selected_date_from) && !empty($selected_date_to)) {
         $where_conditions_regular[] = "bt.datetime BETWEEN ? AND ?";
         $params_regular[] = $selected_date_from . ' 00:00:00';
@@ -236,12 +310,8 @@ try {
         $types_regular .= "s";
     }
     
-    // Regular transactions: EXCLUDE cancelled/voided
     $where_conditions_regular[] = "(bt.status IS NULL OR bt.status = '')";
     
-    // ============================================
-    // ADJUSTMENTS: Based on cancellation_date, ONLY cancelled
-    // ============================================
     if (!empty($selected_date_from) && !empty($selected_date_to)) {
         $where_conditions_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
         $params_adjustment[] = $selected_date_from . ' 00:00:00';
@@ -257,12 +327,8 @@ try {
         $types_adjustment .= "s";
     }
     
-    // Adjustments: ONLY cancelled/voided
     $where_conditions_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
     
-    // ============================================
-    // QUERY 1: Regular transactions (not cancelled)
-    // ============================================
     $regular_sql = "SELECT 
                     bt.partner_id_kpx,
                     pm.partner_name,
@@ -296,9 +362,6 @@ try {
                          pm.charge_to, 
                          pm.serviceCharge";
     
-    // ============================================
-    // QUERY 2: Adjustments (cancelled transactions)
-    // ============================================
     $adjustment_sql = "SELECT 
                             bt.partner_id_kpx,
                             SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment
@@ -307,11 +370,6 @@ try {
                         WHERE " . implode(" AND ", $where_conditions_adjustment) . "
                         GROUP BY bt.partner_id_kpx";
     
-    // ============================================
-    // EXECUTE QUERIES
-    // ============================================
-    
-    // Execute regular query
     $regular_result = null;
     if (!empty($params_regular)) {
         $stmt = $conn->prepare($regular_sql);
@@ -327,7 +385,6 @@ try {
         $regular_result = $conn->query($regular_sql);
     }
     
-    // Execute adjustment query
     $adjustment_result = null;
     if (!empty($params_adjustment)) {
         $stmt = $conn->prepare($adjustment_sql);
@@ -343,9 +400,6 @@ try {
         $adjustment_result = $conn->query($adjustment_sql);
     }
     
-    // ============================================
-    // COMBINE RESULTS IN PHP
-    // ============================================
     $combined_data = [];
     
     if ($regular_result && $regular_result->num_rows > 0) {
@@ -380,8 +434,6 @@ try {
             if (isset($combined_data[$partner_id])) {
                 $combined_data[$partner_id]['total_adjustment'] = (float)($row['total_adjustment'] ?? 0);
             } else {
-                // Partner has only adjustments, no regular transactions
-                // Fetch partner details separately
                 $partner_details_sql = "SELECT 
                                             partner_name,
                                             partner_accName,
@@ -425,14 +477,10 @@ try {
         }
     }
     
-    // ============================================
-    // PROCESS COMBINED DATA
-    // ============================================
     $data_array = [];
     if (!empty($combined_data)) {
         $data_array = array_values($combined_data);
         
-        // Sort by charge_to and serviceCharge
         usort($data_array, function($a, $b) {
             $order = [
                 'CUSTOMER_DAILY' => 1,
@@ -465,63 +513,20 @@ try {
         });
     }
     
-    // Define groups - same as settlement-per-bank.php
     $groups = [
-        'CHARGE BY CUSTOMER DAILY' => [
-            'display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY CUSTOMER WEEKLY' => [
-            'display_name' => 'NOTE: CHARGE BY CUSTOMER WEEKLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY PARTNER DAILY' => [
-            'display_name' => 'NOTE: CHARGE BY PARTNER DAILY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY PARTNER WEEKLY' => [
-            'display_name' => 'NOTE: CHARGE BY PARTNER WEEKLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY PARTNER SEMI MONTHLY' => [
-            'display_name' => 'NOTE: CHARGE BY PARTNER SEMI-MONTHLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY PARTNER MONTHLY' => [
-            'display_name' => 'NOTE: CHARGE BY PARTNER MONTHLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY BOTH DAILY' => [
-            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) DAILY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY BOTH WEEKLY' => [
-            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) WEEKLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY BOTH MONTHLY' => [
-            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) MONTHLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'UNCATEGORIZED' => [
-            'display_name' => '⚠️ PARTNERS WITHOUT CHARGE TYPE (UNCATEGORIZED)',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ]
+        'CHARGE BY CUSTOMER DAILY' => ['display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY CUSTOMER WEEKLY' => ['display_name' => 'NOTE: CHARGE BY CUSTOMER WEEKLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY PARTNER DAILY' => ['display_name' => 'NOTE: CHARGE BY PARTNER DAILY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY PARTNER WEEKLY' => ['display_name' => 'NOTE: CHARGE BY PARTNER WEEKLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY PARTNER SEMI MONTHLY' => ['display_name' => 'NOTE: CHARGE BY PARTNER SEMI-MONTHLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY PARTNER MONTHLY' => ['display_name' => 'NOTE: CHARGE BY PARTNER MONTHLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY BOTH DAILY' => ['display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) DAILY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY BOTH WEEKLY' => ['display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) WEEKLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY BOTH MONTHLY' => ['display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) MONTHLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'UNCATEGORIZED' => ['display_name' => '⚠️ PARTNERS WITHOUT CHARGE TYPE (UNCATEGORIZED)', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]]
     ];
     
     $grand_totals = ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0];
-    
-    // Store all rows with their indices for filtering
     $all_rows = [];
     $row_index = 0;
     
@@ -529,41 +534,25 @@ try {
         $charge_to = strtoupper(trim($row['charge_to'] ?? ''));
         $serviceCharge = strtoupper(trim($row['serviceCharge'] ?? ''));
         
-        // Determine which group this belongs to
         $group_key = null;
         
         if (empty($charge_to)) {
             $group_key = 'UNCATEGORIZED';
         } elseif ($charge_to === 'CUSTOMER') {
-            if ($serviceCharge === 'DAILY') {
-                $group_key = 'CHARGE BY CUSTOMER DAILY';
-            } elseif ($serviceCharge === 'WEEKLY') {
-                $group_key = 'CHARGE BY CUSTOMER WEEKLY';
-            } else {
-                $group_key = 'UNCATEGORIZED';
-            }
+            if ($serviceCharge === 'DAILY') $group_key = 'CHARGE BY CUSTOMER DAILY';
+            elseif ($serviceCharge === 'WEEKLY') $group_key = 'CHARGE BY CUSTOMER WEEKLY';
+            else $group_key = 'UNCATEGORIZED';
         } elseif ($charge_to === 'PARTNER') {
-            if ($serviceCharge === 'DAILY') {
-                $group_key = 'CHARGE BY PARTNER DAILY';
-            } elseif ($serviceCharge === 'WEEKLY') {
-                $group_key = 'CHARGE BY PARTNER WEEKLY';
-            } elseif ($serviceCharge === 'SEMI-MONTHLY') {
-                $group_key = 'CHARGE BY PARTNER SEMI MONTHLY';
-            } elseif ($serviceCharge === 'MONTHLY') {
-                $group_key = 'CHARGE BY PARTNER MONTHLY';
-            } else {
-                $group_key = 'UNCATEGORIZED';
-            }
+            if ($serviceCharge === 'DAILY') $group_key = 'CHARGE BY PARTNER DAILY';
+            elseif ($serviceCharge === 'WEEKLY') $group_key = 'CHARGE BY PARTNER WEEKLY';
+            elseif ($serviceCharge === 'SEMI-MONTHLY') $group_key = 'CHARGE BY PARTNER SEMI MONTHLY';
+            elseif ($serviceCharge === 'MONTHLY') $group_key = 'CHARGE BY PARTNER MONTHLY';
+            else $group_key = 'UNCATEGORIZED';
         } elseif ($charge_to === 'BOTH') {
-            if ($serviceCharge === 'DAILY') {
-                $group_key = 'CHARGE BY BOTH DAILY';
-            } elseif ($serviceCharge === 'WEEKLY') {
-                $group_key = 'CHARGE BY BOTH WEEKLY';
-            } elseif ($serviceCharge === 'MONTHLY') {
-                $group_key = 'CHARGE BY BOTH MONTHLY';
-            } else {
-                $group_key = 'UNCATEGORIZED';
-            }
+            if ($serviceCharge === 'DAILY') $group_key = 'CHARGE BY BOTH DAILY';
+            elseif ($serviceCharge === 'WEEKLY') $group_key = 'CHARGE BY BOTH WEEKLY';
+            elseif ($serviceCharge === 'MONTHLY') $group_key = 'CHARGE BY BOTH MONTHLY';
+            else $group_key = 'UNCATEGORIZED';
         } else {
             $group_key = 'UNCATEGORIZED';
         }
@@ -578,14 +567,8 @@ try {
         $charge_to_partner = (float)($row['charge_to_partner'] ?? 0);
         $adjustment = (float)($row['total_adjustment'] ?? 0);
         
-        // Calculate settlement amount based on charge type
         $settlement_amount = calculateSettlementAmount(
-            $charge_to,
-            $serviceCharge,
-            $principal,
-            $charge_to_customer,
-            $charge_to_partner,
-            $adjustment
+            $charge_to, $serviceCharge, $principal, $charge_to_customer, $charge_to_partner, $adjustment
         );
         
         $settled_count = (int)($row['settled_count'] ?? 0);
@@ -593,14 +576,9 @@ try {
         $is_fully_settled = ($settled_count > 0 && $unsettled_count == 0);
         $is_partially_settled = ($settled_count > 0 && $unsettled_count > 0);
         
-        // Determine status text
-        if ($is_fully_settled) {
-            $status = 'Settled';
-        } elseif ($is_partially_settled) {
-            $status = 'Partial';
-        } else {
-            $status = 'Unsettled';
-        }
+        if ($is_fully_settled) $status = 'Settled';
+        elseif ($is_partially_settled) $status = 'Partial';
+        else $status = 'Unsettled';
         
         $row_data = [
             'row_index' => $row_index,
@@ -627,80 +605,32 @@ try {
         $row_index++;
     }
     
-    // Filter out excluded rows based on row_index
     $excluded_rows_set = array_flip($excluded_rows);
     $filtered_rows = array_filter($all_rows, function($row) use ($excluded_rows_set) {
         return !isset($excluded_rows_set[$row['row_index']]);
     });
     
-    // Rebuild groups with filtered rows
+    // Rebuild groups
     $groups = [
-        'CHARGE BY CUSTOMER DAILY' => [
-            'display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY CUSTOMER WEEKLY' => [
-            'display_name' => 'NOTE: CHARGE BY CUSTOMER WEEKLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY PARTNER DAILY' => [
-            'display_name' => 'NOTE: CHARGE BY PARTNER DAILY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY PARTNER WEEKLY' => [
-            'display_name' => 'NOTE: CHARGE BY PARTNER WEEKLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY PARTNER SEMI MONTHLY' => [
-            'display_name' => 'NOTE: CHARGE BY PARTNER SEMI-MONTHLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY PARTNER MONTHLY' => [
-            'display_name' => 'NOTE: CHARGE BY PARTNER MONTHLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY BOTH DAILY' => [
-            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) DAILY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY BOTH WEEKLY' => [
-            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) WEEKLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'CHARGE BY BOTH MONTHLY' => [
-            'display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) MONTHLY',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ],
-        'UNCATEGORIZED' => [
-            'display_name' => '⚠️ PARTNERS WITHOUT CHARGE TYPE (UNCATEGORIZED)',
-            'rows' => [],
-            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]
-        ]
+        'CHARGE BY CUSTOMER DAILY' => ['display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY CUSTOMER WEEKLY' => ['display_name' => 'NOTE: CHARGE BY CUSTOMER WEEKLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY PARTNER DAILY' => ['display_name' => 'NOTE: CHARGE BY PARTNER DAILY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY PARTNER WEEKLY' => ['display_name' => 'NOTE: CHARGE BY PARTNER WEEKLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY PARTNER SEMI MONTHLY' => ['display_name' => 'NOTE: CHARGE BY PARTNER SEMI-MONTHLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY PARTNER MONTHLY' => ['display_name' => 'NOTE: CHARGE BY PARTNER MONTHLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY BOTH DAILY' => ['display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) DAILY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY BOTH WEEKLY' => ['display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) WEEKLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY BOTH MONTHLY' => ['display_name' => 'NOTE: CHARGE BY BOTH (CUSTOMER & PARTNER) MONTHLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'UNCATEGORIZED' => ['display_name' => '⚠️ PARTNERS WITHOUT CHARGE TYPE (UNCATEGORIZED)', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]]
     ];
     
-    // Populate groups and calculate totals from filtered rows
     $grand_totals = ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0];
     
     foreach ($filtered_rows as $row_data) {
         $group_key = $row_data['group_key'];
+        if (!isset($groups[$group_key])) continue;
         
-        if (!isset($groups[$group_key])) {
-            continue;
-        }
-        
-        // Add to group
         $groups[$group_key]['rows'][] = $row_data;
-        
-        // Update group totals
         $groups[$group_key]['totals']['txn_count'] += $row_data['txn_count'];
         $groups[$group_key]['totals']['principal'] += $row_data['principal'];
         $groups[$group_key]['totals']['charge_to_customer'] += $row_data['charge_to_customer'];
@@ -708,7 +638,6 @@ try {
         $groups[$group_key]['totals']['adjustment'] += $row_data['adjustment'];
         $groups[$group_key]['totals']['settlement'] += $row_data['settlement_amount'];
         
-        // Update grand totals
         $grand_totals['txn_count'] += $row_data['txn_count'];
         $grand_totals['principal'] += $row_data['principal'];
         $grand_totals['charge_to_customer'] += $row_data['charge_to_customer'];
@@ -717,38 +646,100 @@ try {
         $grand_totals['settlement'] += $row_data['settlement_amount'];
     }
     
-    // Remove empty groups
     $groups = array_filter($groups, function($group) {
         return !empty($group['rows']);
     });
-    
-    // Get bank abbreviation and settlement type
-    // Later in the code, replace the settlement abbreviation logic with:
-$bank_abbreviation = '';
-$settlement_abbr = '';
 
-if (!empty($selected_bank)) {
-    $bank_details = getBankDetails($conn, $selected_bank);
-    if ($bank_details) {
-        $bank_abbreviation = $bank_details['bank_abbreviation'];
+    // CHECK FOR UNSETTLED TRANSACTIONS
+    $has_unsettled = false;
+    foreach ($groups as $group_data) {
+        foreach ($group_data['rows'] as $row_data) {
+            if ($row_data['status'] !== 'Settled') {
+                $has_unsettled = true;
+                break 2;
+            }
+        }
     }
-}
 
-// Only add settlement abbreviation if a specific settlement type is selected
-if (!empty($selected_settlement_type)) {
-    $settlement_abbr = getSettlementAbbreviation($selected_settlement_type);
-}
-// If settlement type is NOT selected (All Types), leave $settlement_abbr empty
-
-// Generate CAD number - build it conditionally
-$cad_date = formatCADDate($selected_date_from, $selected_date_to);
-$cad_number = $bank_abbreviation;
-if (!empty($settlement_abbr)) {
-    $cad_number .= '-' . $settlement_abbr;
-}
-$cad_number .= '-' . $cad_date;
+    if ($has_unsettled) {
+        die("Cannot export Excel: There are unsettled transactions. Please settle all transactions before exporting.");
+    }
     
-    // Format date range for display
+    // ============================================
+    // CAD NUMBER GENERATION - FIXED (matches settlement-per-bank.php)
+    // ============================================
+    
+    $existing_cad = '';
+    if (!empty($selected_rfp_no)) {
+        $cad_query = "SELECT DISTINCT cad_no FROM mldb.billspayment_transaction 
+                      WHERE rfp_no = ? AND cad_no IS NOT NULL AND cad_no != '' LIMIT 1";
+        $cad_stmt = $conn->prepare($cad_query);
+        if ($cad_stmt) {
+            $cad_stmt->bind_param("s", $selected_rfp_no);
+            $cad_stmt->execute();
+            $cad_result = $cad_stmt->get_result();
+            if ($cad_row = $cad_result->fetch_assoc()) {
+                $existing_cad = trim($cad_row['cad_no']);
+            }
+            $cad_stmt->close();
+        }
+    }
+
+    $bank_abbreviation = '';
+    if (!empty($selected_bank)) {
+        $bank_abbreviation = getBankAbbreviation($conn, $selected_bank);
+    }
+    if (empty($bank_abbreviation) && !empty($selected_partner)) {
+        $abbr_query = "SELECT DISTINCT bank_abbreviation FROM masterdata.partner_masterfile 
+                       WHERE partner_id_kpx = ? AND bank_abbreviation IS NOT NULL AND bank_abbreviation != '' LIMIT 1";
+        $abbr_stmt = $conn->prepare($abbr_query);
+        if ($abbr_stmt) {
+            $abbr_stmt->bind_param("s", $selected_partner);
+            $abbr_stmt->execute();
+            $abbr_result = $abbr_stmt->get_result();
+            if ($abbr_row = $abbr_result->fetch_assoc()) {
+                $bank_abbreviation = strtoupper(trim($abbr_row['bank_abbreviation']));
+            }
+            $abbr_stmt->close();
+        }
+    }
+
+    $cad_number = '';
+    $use_existing = false;
+    if (!empty($existing_cad) && !empty($bank_abbreviation)) {
+        if (stripos($existing_cad, $bank_abbreviation . '-') === 0) {
+            $use_existing = true;
+            $cad_number = $existing_cad;
+        }
+    } elseif (!empty($existing_cad) && empty($bank_abbreviation) && stripos($existing_cad, 'RFP-') !== 0) {
+        $use_existing = true;
+        $cad_number = $existing_cad;
+    }
+
+    if (!$use_existing) {
+        $settlement_abbr = '';
+        if (!empty($selected_settlement_type)) {
+            $settlement_abbr = getSettlementAbbreviation($selected_settlement_type);
+        }
+
+        $cad_date = formatCADDate($selected_date_from, $selected_date_to);
+
+        if (!empty($bank_abbreviation)) {
+            $cad_number = $bank_abbreviation;
+        } else {
+            error_log("Excel Export - WARNING: No bank abbreviation found for bank='$selected_bank' partner='$selected_partner'. Using 'RFP' as fallback.");
+            $cad_number = 'RFP';
+        }
+
+        if (!empty($settlement_abbr)) {
+            $cad_number .= '-' . $settlement_abbr;
+        }
+
+        $cad_number .= '-' . $cad_date;
+    }
+
+    error_log("Excel Export - Final CAD Number: " . $cad_number);
+    
     $date_range_display = formatDateRange($selected_date_from, $selected_date_to);
     $current_date = strtoupper(date('F d, Y'));
 
@@ -770,56 +761,47 @@ use PhpOffice\PhpSpreadsheet\Style\Color;
 $spreadsheet = new Spreadsheet();
 $sheet = $spreadsheet->getActiveSheet();
 
-// Set column widths for 4 visible columns (A, B, C, D)
-// D will be the "AMOUNT FOR SETTLEMENT" column
 $sheet->getColumnDimension('A')->setWidth(35);
 $sheet->getColumnDimension('B')->setWidth(25);
 $sheet->getColumnDimension('C')->setWidth(20);
 $sheet->getColumnDimension('D')->setWidth(22);
 
-// Set column C (Account Number) as text to prevent scientific notation
 $sheet->getStyle('C:C')->getNumberFormat()->setFormatCode('@');
 
-// Row 1: REQUEST FOR PAYMENT FORM (merged A-D)
+// Row 1: REQUEST FOR PAYMENT FORM
 $sheet->mergeCells('A1:D1');
 $sheet->setCellValue('A1', 'REQUEST FOR PAYMENT FORM');
 $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14);
 $sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
 
-// Row 2: M. LHUILLIER PHILIPPINES, INC. (A2) and DATE (D2)
+// Row 2
 $sheet->setCellValue('A2', 'M. LHUILLIER PHILIPPINES, INC.');
 $sheet->getStyle('A2')->getFont()->setBold(true)->setSize(12);
-
 $sheet->setCellValue('D2', 'DATE: ' . $current_date);
 $sheet->getStyle('D2')->getFont()->setBold(true)->setSize(12);
 $sheet->getStyle('D2')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
 
-// Row 3: BILLS PAYMENT SETTLEMENT (A3) and CAD NO. (D3)
+// Row 3
 $sheet->setCellValue('A3', 'BILLS PAYMENT SETTLEMENT');
 $sheet->getStyle('A3')->getFont()->setBold(true)->setSize(12);
-
 $sheet->setCellValue('D3', 'CAD NO.: ' . $cad_number);
 $sheet->getStyle('D3')->getFont()->setBold(true)->setSize(12);
 $sheet->getStyle('D3')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
 
-// Row 4: RFP NO. (D4)
-$sheet->setCellValue('D4', 'RFP NO.: ');
+// Row 4
+$sheet->setCellValue('D4', 'RFP NO.: ' . $selected_rfp_no);
 $sheet->getStyle('D4')->getFont()->setBold(true)->setSize(12);
 $sheet->getStyle('D4')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
 
-// Row 6: BANK NAME (A6)
+// Row 6-8
 $sheet->setCellValue('A6', 'BANK NAME: ' . ($selected_bank ?: ''));
 $sheet->getStyle('A6')->getFont()->setBold(true)->setSize(14);
-
-// Row 7: DATE OF TRANSACTION (A7)
 $sheet->setCellValue('A7', 'DATE OF TRANSACTION: ' . $date_range_display);
 $sheet->getStyle('A7')->getFont()->setBold(true)->setSize(12);
-
-// Row 8: MODE OF PAYMENT (A8)
 $sheet->setCellValue('A8', 'MODE OF PAYMENT: ');
 $sheet->getStyle('A8')->getFont()->setBold(true)->setSize(12);
 
-// Row 10: Headers - Only 4 visible columns (A, B, C, D)
+// Headers
 $headers = ['LIST OF BILLS PAYMENT PARTNER', 'ACCOUNT NAME', 'ACCOUNT NUMBER', 'AMOUNT FOR SETTLEMENT'];
 $col = 'A';
 foreach ($headers as $header) {
@@ -830,189 +812,138 @@ foreach ($headers as $header) {
     $col++;
 }
 
-// Row 11+: Data rows
 $row = 11;
 
-// Only output groups that have rows
 foreach ($groups as $group_key => $group_data) {
-    // Skip empty groups
-    if (empty($group_data['rows'])) {
-        continue;
-    }
+    if (empty($group_data['rows'])) continue;
     
-    // Check if this is the UNCATEGORIZED group
     $is_uncategorized = ($group_key === 'UNCATEGORIZED');
     $is_both = (strpos($group_key, 'BOTH') !== false);
     
-    // Group header with styling - merge A through D
     $sheet->mergeCells('A' . $row . ':D' . $row);
     $sheet->setCellValue('A' . $row, $group_data['display_name']);
     $sheet->getStyle('A' . $row)->getFont()->setBold(true);
     
-    // Apply group-specific styling
     if ($is_uncategorized) {
         $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFF3CD');
         $sheet->getStyle('A' . $row)->getFont()->getColor()->setARGB(Color::COLOR_DARKYELLOW);
     } elseif ($is_both) {
-        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('D1ECF1');
+        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFFFFF');
         $sheet->getStyle('A' . $row)->getFont()->getColor()->setARGB(Color::COLOR_DARKBLUE);
     }
     
     $sheet->getStyle('A' . $row . ':D' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
     $row++;
     
-    // Data rows - only 4 columns now
     foreach ($group_data['rows'] as $row_data) {
         $sheet->setCellValue('A' . $row, $row_data['partner_name']);
         $sheet->setCellValue('B' . $row, $row_data['account_name']);
-        
-        // Set account number as text to prevent scientific notation
         $sheet->setCellValueExplicit('C' . $row, $row_data['account_number'], DataType::TYPE_STRING);
-        
-        // Settlement amount in column D
         $sheet->setCellValue('D' . $row, $row_data['settlement_amount']);
-        
-        // Apply number formatting to settlement amount
         $sheet->getStyle('D' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
-        
         $sheet->getStyle('A' . $row . ':D' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
         $row++;
     }
     
-    // Group subtotal row with styling - merged A through C
+    // Group subtotal
     $sheet->mergeCells('A' . $row . ':C' . $row);
     $sheet->setCellValue('A' . $row, 'Subtotal - ' . $group_data['display_name']);
     $sheet->getStyle('A' . $row . ':D' . $row)->getFont()->setBold(true);
     $sheet->setCellValue('D' . $row, $group_data['totals']['settlement']);
-    
     $sheet->getStyle('D' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     
-    // Apply subtotal styling
     if ($is_uncategorized) {
         $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFF3CD');
     } elseif ($is_both) {
-        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('D1ECF1');
+        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFFFFF');
     } else {
-        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('E8F4FD');
+        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFFFFF');
     }
     
     $sheet->getStyle('A' . $row . ':D' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
     $row++;
-    
-    // Add a blank row between groups (except after the last group)
-    $row++;
+    $row++; // blank row between groups
 }
 
-// Grand Total - merged A through C
+// Grand Total
 $sheet->mergeCells('A' . $row . ':C' . $row);
 $sheet->setCellValue('A' . $row, 'GRAND TOTAL');
 $sheet->getStyle('A' . $row . ':D' . $row)->getFont()->setBold(true);
 $sheet->setCellValue('D' . $row, $grand_totals['settlement']);
-
 $sheet->getStyle('D' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
 $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('F8F9FA');
 $sheet->getStyle('A' . $row . ':D' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
 
-// Add blank rows before signature
 $row += 2;
 
-// ============================================
-// SIGNATURE SECTION
-// ============================================
-
-// Signature Section - Prepared by and Checked by (Row 1)
+// Signature Section
 $sheet->setCellValue('A' . $row, 'Prepared by :');
 $sheet->getStyle('A' . $row)->getFont()->setBold(true)->setSize(10);
 $sheet->setCellValue('C' . $row, 'Checked by :');
 $sheet->getStyle('C' . $row)->getFont()->setBold(true)->setSize(10);
 $row++;
 
-// Names
 $sheet->setCellValue('A' . $row, $display_name);
 $sheet->getStyle('A' . $row)->getFont()->setBold(true)->setSize(10);
 $sheet->setCellValue('C' . $row, '{Accounting Staff}');
 $sheet->getStyle('C' . $row)->getFont()->setBold(true)->setSize(10);
 $row++;
 
-// Titles
 $sheet->setCellValue('A' . $row, 'Accounting Staff');
 $sheet->getStyle('A' . $row)->getFont()->setSize(9);
 $sheet->setCellValue('C' . $row, 'Accounting Staff');
 $sheet->getStyle('C' . $row)->getFont()->setSize(9);
 $row += 2;
 
-// Reviewed by and Noted by (Row 2)
 $sheet->setCellValue('A' . $row, 'Reviewed by :');
 $sheet->getStyle('A' . $row)->getFont()->setBold(true)->setSize(10);
 $sheet->setCellValue('C' . $row, 'Noted by :');
 $sheet->getStyle('C' . $row)->getFont()->setBold(true)->setSize(10);
 $row++;
 
-// Names
 $sheet->setCellValue('A' . $row, 'ELVIE CILLO');
 $sheet->getStyle('A' . $row)->getFont()->setBold(true)->setSize(10);
 $sheet->setCellValue('C' . $row, 'LUELLA PERALTA');
 $sheet->getStyle('C' . $row)->getFont()->setBold(true)->setSize(10);
 $row++;
 
-// Titles
 $sheet->setCellValue('A' . $row, 'Department Manager');
 $sheet->getStyle('A' . $row)->getFont()->setSize(9);
 $sheet->setCellValue('C' . $row, 'Division Manager');
 $sheet->getStyle('C' . $row)->getFont()->setSize(9);
 
-// Merge cells for better formatting
 $start_row = $row - 5;
-
-// Prepared by
 $sheet->mergeCells('A' . $start_row . ':B' . $start_row);
-// Checked by
 $sheet->mergeCells('C' . $start_row . ':D' . $start_row);
-// Prepared by name
 $sheet->mergeCells('A' . ($start_row+1) . ':B' . ($start_row+1));
-// Checked by name
 $sheet->mergeCells('C' . ($start_row+1) . ':D' . ($start_row+1));
-// Prepared by title
 $sheet->mergeCells('A' . ($start_row+2) . ':B' . ($start_row+2));
-// Checked by title
 $sheet->mergeCells('C' . ($start_row+2) . ':D' . ($start_row+2));
-// Reviewed by
 $sheet->mergeCells('A' . ($start_row+4) . ':B' . ($start_row+4));
-// Noted by
 $sheet->mergeCells('C' . ($start_row+4) . ':D' . ($start_row+4));
-// Reviewed by name
 $sheet->mergeCells('A' . ($start_row+5) . ':B' . ($start_row+5));
-// Noted by name
 $sheet->mergeCells('C' . ($start_row+5) . ':D' . ($start_row+5));
-// Reviewed by title
 $sheet->mergeCells('A' . ($start_row+6) . ':B' . ($start_row+6));
-// Noted by title
 $sheet->mergeCells('C' . ($start_row+6) . ':D' . ($start_row+6));
 
-// Apply borders to the signature section
 $sheet->getStyle('A' . $start_row . ':D' . ($start_row+6))->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_NONE);
 
-// Adjust row heights for signature section
 for ($i = $start_row; $i <= $start_row+6; $i++) {
     $sheet->getRowDimension($i)->setRowHeight(22);
 }
 
-// Auto-size columns for better display
 foreach (range('A', 'D') as $col) {
     $sheet->getColumnDimension($col)->setAutoSize(true);
 }
 
-// Set the filename to the CAD number
 $filename = $cad_number . '.xlsx';
 
-// Set headers for download
 header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 header('Content-Disposition: attachment; filename="' . $filename . '"');
 header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Pragma: no-cache');
 header('Expires: 0');
 
-// Create and output the file
 $writer = new Xlsx($spreadsheet);
 $writer->save('php://output');
 exit;

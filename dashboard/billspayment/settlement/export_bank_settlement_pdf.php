@@ -20,6 +20,9 @@ use Dompdf\Dompdf;
 use Dompdf\Options;
 
 // Function to calculate settlement amount based on charge type (same as main file)
+// ============================================
+// FUNCTION: Calculate settlement amount based on charge type
+// ============================================
 function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment) {
     $charge_to_upper = strtoupper(trim($charge_to));
     $service_charge_upper = strtoupper(trim($service_charge));
@@ -34,12 +37,17 @@ function calculateSettlementAmount($charge_to, $service_charge, $principal, $cha
         return $principal - $charge_to_partner + $adjustment;
     }
     
-    // For BOTH charge types: Use the original calculation (Principal + both charges + adjustment)
+    // For BOTH DAILY: Amount = Principal - Charge to Partner + Adjustment
+    if ($charge_to_upper === 'BOTH' && $service_charge_upper === 'DAILY') {
+        return $principal - $charge_to_partner + $adjustment;
+    }
+    
+    // For BOTH charge types (WEEKLY/MONTHLY): Use the original calculation (Principal + both charges + adjustment)
     if ($charge_to_upper === 'BOTH') {
         return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
     }
     
-    // Default fallback: Original calculation
+    // Default fallback
     return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
 }
 
@@ -49,6 +57,12 @@ $selected_bank = isset($_GET['bank']) ? trim($_GET['bank']) : '';
 $selected_settlement_type = isset($_GET['settlement_type']) ? trim($_GET['settlement_type']) : '';
 $selected_date_from = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
 $selected_date_to = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
+$selected_rfp_no = isset($_GET['rfp_no']) ? trim($_GET['rfp_no']) : '';
+
+// Validate RFP No.
+if (empty($selected_rfp_no)) {
+    die("RFP No. is required for PDF export.");
+}
 
 // Get excluded rows from GET parameters (comma-separated list of row indices)
 $excluded_rows = isset($_GET['excluded_rows']) ? explode(',', trim($_GET['excluded_rows'])) : [];
@@ -65,21 +79,128 @@ if (isset($_SESSION['user_type'])) {
 }
 
 /**
- * Get bank abbreviation from database
+ * Get bank abbreviation from multiple sources (IMPROVED - matches settlement-per-bank.php)
  */
 function getBankAbbreviation(mysqli $conn, string $bank_name): string {
     if (empty($bank_name)) return '';
-    
-    $query = "SELECT bank_abbreviation FROM mldb.bank_table WHERE bank_name = ?";
+
+    $bank_name = trim($bank_name);
+    $bank_name_upper = strtoupper($bank_name);
+
+    // Try 1: exact match in mldb.bank_table
+    $query = "SELECT bank_abbreviation FROM mldb.bank_table WHERE bank_name = ? LIMIT 1";
     $stmt = $conn->prepare($query);
     if ($stmt) {
         $stmt->bind_param("s", $bank_name);
         $stmt->execute();
         $result = $stmt->get_result();
         if ($row = $result->fetch_assoc()) {
-            return $row['bank_abbreviation'];
+            if (!empty($row['bank_abbreviation'])) {
+                $stmt->close();
+                return strtoupper(trim($row['bank_abbreviation']));
+            }
+        }
+        $stmt->close();
+    }
+
+    // Try 2: LIKE match in mldb.bank_table
+    $query = "SELECT bank_abbreviation FROM mldb.bank_table 
+              WHERE UPPER(bank_name) LIKE CONCAT('%', UPPER(?), '%') 
+                 OR UPPER(?) LIKE CONCAT('%', UPPER(bank_name), '%')
+              LIMIT 1";
+    $stmt = $conn->prepare($query);
+    if ($stmt) {
+        $stmt->bind_param("ss", $bank_name, $bank_name);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            if (!empty($row['bank_abbreviation'])) {
+                $stmt->close();
+                return strtoupper(trim($row['bank_abbreviation']));
+            }
+        }
+        $stmt->close();
+    }
+
+    // Try 3: partner_masterfile exact + LIKE
+    $query2 = "SELECT DISTINCT bank_abbreviation FROM masterdata.partner_masterfile 
+               WHERE (bank = ? OR UPPER(bank) LIKE CONCAT('%', UPPER(?), '%'))
+                 AND bank_abbreviation IS NOT NULL AND bank_abbreviation != '' 
+               LIMIT 1";
+    $stmt2 = $conn->prepare($query2);
+    if ($stmt2) {
+        $stmt2->bind_param("ss", $bank_name, $bank_name);
+        $stmt2->execute();
+        $result2 = $stmt2->get_result();
+        if ($row2 = $result2->fetch_assoc()) {
+            if (!empty($row2['bank_abbreviation'])) {
+                $stmt2->close();
+                return strtoupper(trim($row2['bank_abbreviation']));
+            }
+        }
+        $stmt2->close();
+    }
+
+    // Try 4: Known bank abbreviations (expanded)
+    $known_banks = [
+        'ASIA UNITED BANK CORPORATION' => 'AUB',
+        'ASIA UNITED BANK CORPORATION (AUB)' => 'AUB',
+        'ASIA UNITED BANK' => 'AUB',
+        'ASIA UNITED' => 'AUB',
+        'AUB' => 'AUB',
+        'BANK OF THE PHILIPPINE ISLANDS' => 'BPI',
+        'BANK OF THE PHILIPPINE ISLANDS (BPI)' => 'BPI',
+        'BPI' => 'BPI',
+        'BANCO DE ORO' => 'BDO',
+        'BANCO DE ORO (BDO)' => 'BDO',
+        'BDO UNIBANK' => 'BDO',
+        'BDO' => 'BDO',
+        'METROPOLITAN BANK & TRUST COMPANY' => 'MBT',
+        'METROPOLITAN BANK AND TRUST COMPANY' => 'MBT',
+        'METROPOLITAN BANK & TRUST COMPANY (METROBANK)' => 'MBT',
+        'METROBANK' => 'MBT',
+        'MBT' => 'MBT',
+        'PHILIPPINE NATIONAL BANK' => 'PNB',
+        'PHILIPPINE NATIONAL BANK (PNB)' => 'PNB',
+        'PNB' => 'PNB',
+        'UNION BANK OF THE PHILIPPINES' => 'UBP',
+        'UNION BANK OF THE PHILIPPINES (UNIONBANK)' => 'UBP',
+        'UNIONBANK' => 'UBP',
+        'UBP' => 'UBP',
+        'SECURITY BANK CORPORATION' => 'SBC',
+        'SECURITY BANK' => 'SBC',
+        'SBC' => 'SBC',
+        'CHINA BANKING CORPORATION' => 'CBC',
+        'CHINA BANK' => 'CBC',
+        'CBC' => 'CBC',
+        'LAND BANK OF THE PHILIPPINES' => 'LBP',
+        'LAND BANK OF THE PHILIPPINES (LBP)' => 'LBP',
+        'LANDBANK' => 'LBP',
+        'LBP' => 'LBP',
+        'DEVELOPMENT BANK OF THE PHILIPPINES' => 'DBP',
+        'DEVELOPMENT BANK OF THE PHILIPPINES (DBP)' => 'DBP',
+        'DBP' => 'DBP',
+    ];
+
+    foreach ($known_banks as $known_name => $abbr) {
+        if (stripos($bank_name_upper, $known_name) !== false || stripos($known_name, $bank_name_upper) !== false) {
+            return $abbr;
         }
     }
+
+    // Try 5: first-letter fallback
+    $words = preg_split('/[\s,()&\-]+/', $bank_name);
+    $abbr = '';
+    foreach ($words as $word) {
+        $word = trim($word);
+        if (!empty($word) && strlen($word) > 1 && !in_array(strtoupper($word), ['OF','THE','AND','BANK','CORPORATION','CORP','INC','LTD'])) {
+            $abbr .= strtoupper($word[0]);
+        }
+    }
+    if (strlen($abbr) >= 2) {
+        return substr($abbr, 0, 4);
+    }
+
     return '';
 }
 
@@ -88,20 +209,26 @@ function getBankAbbreviation(mysqli $conn, string $bank_name): string {
  */
 function getSettlementAbbreviation(string $settlement_type): string {
     if (empty($settlement_type)) return '';
-    return strtoupper(trim($settlement_type)) === 'CHECK' ? 'CHK' : 'ONL';
+    $type = strtoupper(trim($settlement_type));
+    if ($type === 'CHECK' || $type === 'CHEQUE') return 'CHK';
+    if ($type === 'ONLINE' || $type === 'ONL') return 'ONL';
+    return strtoupper(substr($type, 0, 3));
 }
 
 /**
- * Format date for CAD number
+ * Format date for CAD number (YYYY-MM-000DD)
  */
 function formatCADDate(?string $date_from, ?string $date_to): string {
     if (empty($date_from) && empty($date_to)) {
-        return date('Y-m-d');
+        return date('Y-m') . '-' . sprintf('%05d', (int)date('d'));
     }
-    
+
     $date = !empty($date_to) ? $date_to : $date_from;
     $timestamp = strtotime($date);
-    return date('Y-m', $timestamp) . '-' . sprintf('%05d', date('d', $timestamp));
+    if ($timestamp === false) {
+        return date('Y-m') . '-' . sprintf('%05d', (int)date('d'));
+    }
+    return date('Y-m', $timestamp) . '-' . sprintf('%05d', (int)date('d', $timestamp));
 }
 
 /**
@@ -130,25 +257,6 @@ function formatDateRange(?string $date_from, ?string $date_to): string {
             return strtoupper(date('F d', $from) . ' - ' . date('F d, Y', $to));
         }
     }
-}
-
-/**
- * Get bank details from database
- */
-function getBankDetails(mysqli $conn, string $bank_name): ?array {
-    if (empty($bank_name)) return null;
-    
-    $query = "SELECT bank_abbreviation FROM mldb.bank_table WHERE bank_name = ?";
-    $stmt = $conn->prepare($query);
-    if ($stmt) {
-        $stmt->bind_param("s", $bank_name);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        if ($row = $result->fetch_assoc()) {
-            return $row;
-        }
-    }
-    return null;
 }
 
 // Build the queries - ADAPTED from settlement-per-bank.php logic
@@ -550,7 +658,6 @@ try {
         $charge_to_partner = (float)($row['charge_to_partner'] ?? 0);
         $adjustment = (float)($row['total_adjustment'] ?? 0);
         
-        // Calculate settlement amount based on charge type
         $settlement_amount = calculateSettlementAmount(
             $charge_to,
             $serviceCharge,
@@ -687,44 +794,99 @@ try {
     $groups = array_filter($groups, function($group) {
         return !empty($group['rows']);
     });
-    
-    // ============================================
-    // CAD NUMBER GENERATION - CORRECTED
-    // ============================================
-    
-    // Get bank abbreviation
-    $bank_abbreviation = '';
-    if (!empty($selected_bank)) {
-        $bank_details = getBankDetails($conn, $selected_bank);
-        if ($bank_details) {
-            $bank_abbreviation = $bank_details['bank_abbreviation'];
+
+    // CHECK FOR UNSETTLED TRANSACTIONS
+    $has_unsettled = false;
+    foreach ($groups as $group_data) {
+        foreach ($group_data['rows'] as $row_data) {
+            if ($row_data['status'] !== 'Settled') {
+                $has_unsettled = true;
+                break 2;
+            }
         }
     }
-    
-    // Get settlement type abbreviation - only if a specific type is selected
-    $settlement_abbr = '';
-    if (!empty($selected_settlement_type)) {
-        $settlement_abbr = getSettlementAbbreviation($selected_settlement_type);
+
+    if ($has_unsettled) {
+        die("Cannot export PDF: There are unsettled transactions. Please settle all transactions before exporting.");
     }
     
-    // Generate CAD number - conditionally include settlement abbreviation
-    $cad_date = formatCADDate($selected_date_from, $selected_date_to);
+    // ============================================
+    // CAD NUMBER GENERATION - FIXED (matches settlement-per-bank.php)
+    // ============================================
     
-    // Start building CAD number with bank abbreviation or default
-    if (!empty($bank_abbreviation)) {
-        $cad_number = $bank_abbreviation;
-    } else {
-        // If no bank selected, use a default prefix
-        $cad_number = 'RFP';
+    // Prefer existing CAD from DB if it is valid for this RFP + bank
+    $existing_cad = '';
+    if (!empty($selected_rfp_no)) {
+        $cad_query = "SELECT DISTINCT cad_no FROM mldb.billspayment_transaction 
+                      WHERE rfp_no = ? AND cad_no IS NOT NULL AND cad_no != '' LIMIT 1";
+        $cad_stmt = $conn->prepare($cad_query);
+        if ($cad_stmt) {
+            $cad_stmt->bind_param("s", $selected_rfp_no);
+            $cad_stmt->execute();
+            $cad_result = $cad_stmt->get_result();
+            if ($cad_row = $cad_result->fetch_assoc()) {
+                $existing_cad = trim($cad_row['cad_no']);
+            }
+            $cad_stmt->close();
+        }
     }
-    
-    // Add settlement type if selected
-    if (!empty($settlement_abbr)) {
-        $cad_number .= '-' . $settlement_abbr;
+
+    // Resolve bank abbreviation
+    $bank_abbreviation = '';
+    if (!empty($selected_bank)) {
+        $bank_abbreviation = getBankAbbreviation($conn, $selected_bank);
     }
-    
-    // Add the date part
-    $cad_number .= '-' . $cad_date;
+    if (empty($bank_abbreviation) && !empty($selected_partner)) {
+        $abbr_query = "SELECT DISTINCT bank_abbreviation FROM masterdata.partner_masterfile 
+                       WHERE partner_id_kpx = ? AND bank_abbreviation IS NOT NULL AND bank_abbreviation != '' LIMIT 1";
+        $abbr_stmt = $conn->prepare($abbr_query);
+        if ($abbr_stmt) {
+            $abbr_stmt->bind_param("s", $selected_partner);
+            $abbr_stmt->execute();
+            $abbr_result = $abbr_stmt->get_result();
+            if ($abbr_row = $abbr_result->fetch_assoc()) {
+                $bank_abbreviation = strtoupper(trim($abbr_row['bank_abbreviation']));
+            }
+            $abbr_stmt->close();
+        }
+    }
+
+    // Decide whether the existing CAD is usable
+    $cad_number = '';
+    $use_existing = false;
+    if (!empty($existing_cad) && !empty($bank_abbreviation)) {
+        if (stripos($existing_cad, $bank_abbreviation . '-') === 0) {
+            $use_existing = true;
+            $cad_number = $existing_cad;
+        }
+    } elseif (!empty($existing_cad) && empty($bank_abbreviation) && stripos($existing_cad, 'RFP-') !== 0) {
+        $use_existing = true;
+        $cad_number = $existing_cad;
+    }
+
+    if (!$use_existing) {
+        $settlement_abbr = '';
+        if (!empty($selected_settlement_type)) {
+            $settlement_abbr = getSettlementAbbreviation($selected_settlement_type);
+        }
+
+        $cad_date = formatCADDate($selected_date_from, $selected_date_to);
+
+        if (!empty($bank_abbreviation)) {
+            $cad_number = $bank_abbreviation;
+        } else {
+            error_log("PDF Export - WARNING: No bank abbreviation found for bank='$selected_bank' partner='$selected_partner'. Using 'RFP' as fallback.");
+            $cad_number = 'RFP';
+        }
+
+        if (!empty($settlement_abbr)) {
+            $cad_number .= '-' . $settlement_abbr;
+        }
+
+        $cad_number .= '-' . $cad_date;
+    }
+
+    error_log("PDF Export - Final CAD Number: " . $cad_number);
     
     // Format date range for display
     $date_range_display = formatDateRange($selected_date_from, $selected_date_to);
@@ -816,7 +978,7 @@ $html = '<!DOCTYPE html>
         .text-left { text-align: left; }
         .group-header td {
             font-weight: bold;
-            background-color: #f1f3f5;
+            background-color: #ffffff;
             padding: 4px 8px;
             font-size: 8pt;
         }
@@ -825,8 +987,8 @@ $html = '<!DOCTYPE html>
             color: #856404;
         }
         .group-header-both td {
-            background-color: #d1ecf1;
-            color: #0c5460;
+            background-color: #FFFFFF;
+            color: #000000;
         }
         .subtotal-row td {
             font-weight: bold;
@@ -837,7 +999,7 @@ $html = '<!DOCTYPE html>
             background-color: #fff3cd;
         }
         .subtotal-both td {
-            background-color: #d1ecf1;
+            background-color: #FFFFFF;
         }
         .grand-total td {
             font-weight: bold;
@@ -917,14 +1079,14 @@ $html .= '
 
 <div class="clearfix" style="margin-top: 2px;">
     <div style="float: left; font-size: 10pt; font-weight: bold;">BILLS PAYMENT SETTLEMENT</div>
-    <div style="float: right; font-size: 9pt; font-weight: bold;">CAD NO.: ' . $cad_number . '</div>
+    <div style="float: right; font-size: 9pt; font-weight: bold;">CAD NO.: ' . htmlspecialchars($cad_number) . '</div>
 </div>
 
-<div style="text-align: right; font-size: 9pt; font-weight: bold; margin-top: 2px;">RFP NO.: </div>
+<div style="text-align: right; font-size: 9pt; font-weight: bold; margin-top: 2px;">RFP NO.: ' . htmlspecialchars($selected_rfp_no) . '</div>
 
 <div class="section-spacer"></div>
 
-<div class="info-row"><strong>BANK NAME:</strong> ' . ($selected_bank ?: '') . '</div>
+<div class="info-row"><strong>BANK NAME:</strong> ' . htmlspecialchars($selected_bank ?: '') . '</div>
 <div class="info-row"><strong>DATE OF TRANSACTION:</strong> ' . $date_range_display . '</div>
 <div class="info-row"><strong>MODE OF PAYMENT:</strong> </div>
 
@@ -975,22 +1137,6 @@ foreach ($groups as $group_key => $group_data) {
         $html .= '<td class="text-right amount-col ' . $settlement_class . '"> ' . number_format($settlement, 2) . '</td>';
         $html .= '</tr>';
     }
-    
-    // Group subtotal
-    $subtotal_class = '';
-    if ($is_uncategorized) {
-        $subtotal_class = 'subtotal-uncategorized';
-    } elseif ($is_both) {
-        $subtotal_class = 'subtotal-both';
-    }
-    
-    $totals = $group_data['totals'];
-    $settlement_class = ($totals['settlement'] < 0) ? 'negative-amount' : '';
-    
-    // $html .= '<tr class="Subtotal ' . $subtotal_class . '">';
-    // $html .= '<td colspan="3" class="text-right"><strong>Subtotal - ' . htmlspecialchars($group_data['display_name']) . '</strong></td>';
-    // $html .= '<td class="text-right amount-col ' . $settlement_class . '"> ' . number_format($totals['settlement'], 2) . '</td>';
-    // $html .= '</tr>';
 }
 
 // GRAND TOTAL
@@ -1003,7 +1149,7 @@ $html .= '</tr>';
 
 $html .= '</tbody></table>';
 
-// SIGNATURE SECTION - Matches the Excel sample format
+// SIGNATURE SECTION
 $html .= '
 <div class="signature-section">
     <table class="signature-table">
@@ -1066,7 +1212,8 @@ try {
     $dompdf->render();
     
     // Output PDF
-    $filename = $cad_number . '.pdf';
+    // Output PDF
+$filename = $cad_number . '.pdf';
     header('Content-Type: application/pdf');
     header('Content-Disposition: inline; filename="' . $filename . '"');
     header('Cache-Control: no-cache, no-store, must-revalidate');

@@ -20,7 +20,173 @@ if (!function_exists('has_any_permission') || !has_any_permission(['Settlement P
 // prefer explicit session values for current user email; don't gate on role
 $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
 
-// Fetch filter data using MySQLi
+// ============================================
+// FUNCTION: Get bank abbreviation from multiple sources
+// ============================================
+function getBankAbbreviation(mysqli $conn, string $bank_name): string {
+    if (empty($bank_name)) return '';
+
+    $bank_name = trim($bank_name);
+    $bank_name_upper = strtoupper($bank_name);
+
+    // Try 1: exact match in mldb.bank_table
+    $query = "SELECT bank_abbreviation FROM mldb.bank_table WHERE bank_name = ? LIMIT 1";
+    $stmt = $conn->prepare($query);
+    if ($stmt) {
+        $stmt->bind_param("s", $bank_name);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            if (!empty($row['bank_abbreviation'])) {
+                $stmt->close();
+                return strtoupper(trim($row['bank_abbreviation']));
+            }
+        }
+        $stmt->close();
+    }
+
+    // Try 2: LIKE match in mldb.bank_table (more tolerant)
+    $query = "SELECT bank_abbreviation FROM mldb.bank_table 
+              WHERE UPPER(bank_name) LIKE CONCAT('%', UPPER(?), '%') 
+                 OR UPPER(?) LIKE CONCAT('%', UPPER(bank_name), '%')
+              LIMIT 1";
+    $stmt = $conn->prepare($query);
+    if ($stmt) {
+        $stmt->bind_param("ss", $bank_name, $bank_name);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            if (!empty($row['bank_abbreviation'])) {
+                $stmt->close();
+                return strtoupper(trim($row['bank_abbreviation']));
+            }
+        }
+        $stmt->close();
+    }
+
+    // Try 3: partner_masterfile exact + LIKE
+    $query2 = "SELECT DISTINCT bank_abbreviation FROM masterdata.partner_masterfile 
+               WHERE (bank = ? OR UPPER(bank) LIKE CONCAT('%', UPPER(?), '%'))
+                 AND bank_abbreviation IS NOT NULL AND bank_abbreviation != '' 
+               LIMIT 1";
+    $stmt2 = $conn->prepare($query2);
+    if ($stmt2) {
+        $stmt2->bind_param("ss", $bank_name, $bank_name);
+        $stmt2->execute();
+        $result2 = $stmt2->get_result();
+        if ($row2 = $result2->fetch_assoc()) {
+            if (!empty($row2['bank_abbreviation'])) {
+                $stmt2->close();
+                return strtoupper(trim($row2['bank_abbreviation']));
+            }
+        }
+        $stmt2->close();
+    }
+
+    // Try 4: Known bank abbreviations (expanded + normalized)
+    $known_banks = [
+        // AUB
+        'ASIA UNITED BANK CORPORATION' => 'AUB',
+        'ASIA UNITED BANK CORPORATION (AUB)' => 'AUB',
+        'ASIA UNITED BANK' => 'AUB',
+        'ASIA UNITED' => 'AUB',
+        'AUB' => 'AUB',
+        // BPI
+        'BANK OF THE PHILIPPINE ISLANDS' => 'BPI',
+        'BANK OF THE PHILIPPINE ISLANDS (BPI)' => 'BPI',
+        'BPI' => 'BPI',
+        // BDO
+        'BANCO DE ORO' => 'BDO',
+        'BANCO DE ORO (BDO)' => 'BDO',
+        'BDO UNIBANK' => 'BDO',
+        'BDO' => 'BDO',
+        // Metrobank
+        'METROPOLITAN BANK & TRUST COMPANY' => 'MBT',
+        'METROPOLITAN BANK AND TRUST COMPANY' => 'MBT',
+        'METROPOLITAN BANK & TRUST COMPANY (METROBANK)' => 'MBT',
+        'METROBANK' => 'MBT',
+        'MBT' => 'MBT',
+        // PNB
+        'PHILIPPINE NATIONAL BANK' => 'PNB',
+        'PHILIPPINE NATIONAL BANK (PNB)' => 'PNB',
+        'PNB' => 'PNB',
+        // UnionBank
+        'UNION BANK OF THE PHILIPPINES' => 'UBP',
+        'UNION BANK OF THE PHILIPPINES (UNIONBANK)' => 'UBP',
+        'UNIONBANK' => 'UBP',
+        'UBP' => 'UBP',
+        // Security Bank
+        'SECURITY BANK CORPORATION' => 'SBC',
+        'SECURITY BANK' => 'SBC',
+        'SBC' => 'SBC',
+        // China Bank
+        'CHINA BANKING CORPORATION' => 'CBC',
+        'CHINA BANK' => 'CBC',
+        'CBC' => 'CBC',
+        // Land Bank
+        'LAND BANK OF THE PHILIPPINES' => 'LBP',
+        'LAND BANK OF THE PHILIPPINES (LBP)' => 'LBP',
+        'LANDBANK' => 'LBP',
+        'LBP' => 'LBP',
+        // DBP
+        'DEVELOPMENT BANK OF THE PHILIPPINES' => 'DBP',
+        'DEVELOPMENT BANK OF THE PHILIPPINES (DBP)' => 'DBP',
+        'DBP' => 'DBP',
+    ];
+
+    foreach ($known_banks as $known_name => $abbr) {
+        if (stripos($bank_name_upper, $known_name) !== false || stripos($known_name, $bank_name_upper) !== false) {
+            return $abbr;
+        }
+    }
+
+    // Try 5: first-letter fallback (last resort)
+    $words = preg_split('/[\s,()&\-]+/', $bank_name);
+    $abbr = '';
+    foreach ($words as $word) {
+        $word = trim($word);
+        if (!empty($word) && strlen($word) > 1 && !in_array(strtoupper($word), ['OF','THE','AND','BANK','CORPORATION','CORP','INC','LTD'])) {
+            $abbr .= strtoupper($word[0]);
+        }
+    }
+    if (strlen($abbr) >= 2) {
+        return substr($abbr, 0, 4);
+    }
+
+    return '';
+}
+
+// ============================================
+// FUNCTION: Get settlement type abbreviation
+// ============================================
+function getSettlementAbbreviation(string $settlement_type): string {
+    if (empty($settlement_type)) return '';
+    $type = strtoupper(trim($settlement_type));
+    if ($type === 'CHECK' || $type === 'CHEQUE') return 'CHK';
+    if ($type === 'ONLINE' || $type === 'ONL') return 'ONL';
+    return strtoupper(substr($type, 0, 3));
+}
+
+// ============================================
+// FUNCTION: Format date for CAD number (YYYY-MM-000DD)
+// ============================================
+function formatCADDate(?string $date_from, ?string $date_to): string {
+    if (empty($date_from) && empty($date_to)) {
+        return date('Y-m') . '-' . sprintf('%05d', (int)date('d'));
+    }
+
+    $date = !empty($date_to) ? $date_to : $date_from;
+    $timestamp = strtotime($date);
+    if ($timestamp === false) {
+        return date('Y-m') . '-' . sprintf('%05d', (int)date('d'));
+    }
+    // YYYY-MM-000DD  (day padded to 5 digits)
+    return date('Y-m', $timestamp) . '-' . sprintf('%05d', (int)date('d', $timestamp));
+}
+
+// ============================================
+// FETCH FILTER DATA
+// ============================================
 try {
     // Get distinct partners (partner_id_kpx + partner_name)
     $partners_query = "SELECT DISTINCT partner_id_kpx, partner_name FROM masterdata.partner_masterfile WHERE partner_id_kpx IS NOT NULL AND partner_id_kpx != '' ORDER BY partner_name";
@@ -59,33 +225,172 @@ $selected_bank = isset($_GET['bank']) ? trim($_GET['bank']) : '';
 $selected_settlement_type = isset($_GET['settlement_type']) ? trim($_GET['settlement_type']) : '';
 $selected_date_from = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
 $selected_date_to = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
-
-// Debug: Log the actual GET parameters
-error_log("Settlement Page - GET parameters: " . print_r($_GET, true));
-error_log("Settlement Page - Selected bank: " . $selected_bank);
-
-// Store filters in session to maintain state
-if (!empty(array_filter($_GET))) {
-    $_SESSION['settlement_filters'] = $_GET;
-    error_log("Settlement Page - Stored filters in session: " . print_r($_SESSION['settlement_filters'], true));
-}
+$selected_rfp_no = isset($_GET['rfp_no']) ? trim($_GET['rfp_no']) : '';
 
 // Flag to check if filters are applied
 $has_filters = !empty(array_filter($_GET));
 
+// ============================================
+// RETRIEVE RFP NO. FROM DATABASE IF NOT PROVIDED
+// ============================================
+if (empty($selected_rfp_no) && $has_filters) {
+    $rfp_query = "SELECT DISTINCT rfp_no FROM mldb.billspayment_transaction bt 
+                  LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+                  WHERE 1=1";
+    
+    $rfp_params = [];
+    $rfp_types = "";
+    
+    if (!empty($selected_partner)) {
+        $rfp_query .= " AND bt.partner_id_kpx = ?";
+        $rfp_params[] = $selected_partner;
+        $rfp_types .= "s";
+    }
+    if (!empty($selected_bank)) {
+        $rfp_query .= " AND pm.bank = ?";
+        $rfp_params[] = $selected_bank;
+        $rfp_types .= "s";
+    }
+    if (!empty($selected_settlement_type)) {
+        $rfp_query .= " AND pm.settled_online_check = ?";
+        $rfp_params[] = $selected_settlement_type;
+        $rfp_types .= "s";
+    }
+    if (!empty($selected_date_from) && !empty($selected_date_to)) {
+        $rfp_query .= " AND bt.datetime BETWEEN ? AND ?";
+        $rfp_params[] = $selected_date_from . ' 00:00:00';
+        $rfp_params[] = $selected_date_to . ' 23:59:59';
+        $rfp_types .= "ss";
+    } elseif (!empty($selected_date_from)) {
+        $rfp_query .= " AND bt.datetime >= ?";
+        $rfp_params[] = $selected_date_from . ' 00:00:00';
+        $rfp_types .= "s";
+    } elseif (!empty($selected_date_to)) {
+        $rfp_query .= " AND bt.datetime <= ?";
+        $rfp_params[] = $selected_date_to . ' 23:59:59';
+        $rfp_types .= "s";
+    }
+    
+    $rfp_query .= " AND rfp_no IS NOT NULL AND rfp_no != '' LIMIT 1";
+    
+    $rfp_stmt = $conn->prepare($rfp_query);
+    if ($rfp_stmt && !empty($rfp_params)) {
+        $rfp_stmt->bind_param($rfp_types, ...$rfp_params);
+        $rfp_stmt->execute();
+        $rfp_result = $rfp_stmt->get_result();
+        if ($rfp_row = $rfp_result->fetch_assoc()) {
+            $selected_rfp_no = $rfp_row['rfp_no'];
+            $_GET['rfp_no'] = $selected_rfp_no;
+        }
+        $rfp_stmt->close();
+    }
+}
+
+// ============================================
+// GENERATE CAD NUMBER - FIXED
+// ============================================
+$bank_abbreviation = '';
+$cad_number = '';
+
+// Prefer generating a fresh CAD from the current filters.
+// Only reuse a DB value when it already looks correct (starts with a real bank abbr).
+$existing_cad = '';
+if (!empty($selected_rfp_no)) {
+    $cad_query = "SELECT DISTINCT cad_no FROM mldb.billspayment_transaction 
+                  WHERE rfp_no = ? AND cad_no IS NOT NULL AND cad_no != '' LIMIT 1";
+    $cad_stmt = $conn->prepare($cad_query);
+    if ($cad_stmt) {
+        $cad_stmt->bind_param("s", $selected_rfp_no);
+        $cad_stmt->execute();
+        $cad_result = $cad_stmt->get_result();
+        if ($cad_row = $cad_result->fetch_assoc()) {
+            $existing_cad = trim($cad_row['cad_no']);
+        }
+        $cad_stmt->close();
+    }
+}
+
+// Resolve bank abbreviation first (needed for both generation and validation)
+if (!empty($selected_bank)) {
+    $bank_abbreviation = getBankAbbreviation($conn, $selected_bank);
+    error_log("Settlement Page - Bank abbreviation for '$selected_bank': '$bank_abbreviation'");
+}
+if (empty($bank_abbreviation) && !empty($selected_partner)) {
+    $abbr_query = "SELECT DISTINCT bank_abbreviation FROM masterdata.partner_masterfile 
+                   WHERE partner_id_kpx = ? AND bank_abbreviation IS NOT NULL AND bank_abbreviation != '' LIMIT 1";
+    $abbr_stmt = $conn->prepare($abbr_query);
+    if ($abbr_stmt) {
+        $abbr_stmt->bind_param("s", $selected_partner);
+        $abbr_stmt->execute();
+        $abbr_result = $abbr_stmt->get_result();
+        if ($abbr_row = $abbr_result->fetch_assoc()) {
+            $bank_abbreviation = strtoupper(trim($abbr_row['bank_abbreviation']));
+            error_log("Settlement Page - Bank abbreviation from partner: '$bank_abbreviation'");
+        }
+        $abbr_stmt->close();
+    }
+}
+
+// Decide whether the existing CAD is usable
+$use_existing = false;
+if (!empty($existing_cad) && !empty($bank_abbreviation)) {
+    // Accept only if it starts with the correct bank abbr (reject old RFP- fallbacks)
+    if (stripos($existing_cad, $bank_abbreviation . '-') === 0) {
+        $use_existing = true;
+        $cad_number = $existing_cad;
+    }
+} elseif (!empty($existing_cad) && empty($bank_abbreviation) && stripos($existing_cad, 'RFP-') !== 0) {
+    // No bank selected – keep non-RFP existing value
+    $use_existing = true;
+    $cad_number = $existing_cad;
+}
+
+if (!$use_existing) {
+    // Generate a new CAD
+    $settlement_abbr = '';
+    if (!empty($selected_settlement_type)) {
+        $settlement_abbr = getSettlementAbbreviation($selected_settlement_type);
+    }
+
+    $cad_date = formatCADDate($selected_date_from, $selected_date_to);
+
+    if (!empty($bank_abbreviation)) {
+        $cad_number = $bank_abbreviation;
+    } else {
+        error_log("Settlement Page - WARNING: No bank abbreviation found for bank='$selected_bank' partner='$selected_partner'. Using 'RFP' as fallback.");
+        $cad_number = 'RFP';
+    }
+
+    if (!empty($settlement_abbr)) {
+        $cad_number .= '-' . $settlement_abbr;
+    }
+
+    $cad_number .= '-' . $cad_date;
+}
+
+error_log("Settlement Page - Final CAD Number: " . $cad_number);
+
+// Store filters in session to maintain state
+if (!empty(array_filter($_GET))) {
+    $_SESSION['settlement_filters'] = $_GET;
+}
+
 // Check if date range exists and if dates are different (not the same day)
 $has_date_range = false;
 if (!empty($selected_date_from) && !empty($selected_date_to)) {
-    // Only consider it a date range if the dates are different
     if ($selected_date_from !== $selected_date_to) {
         $has_date_range = true;
     }
 } elseif (!empty($selected_date_from) || !empty($selected_date_to)) {
-    // Single date filter - no daily breakdown needed
     $has_date_range = false;
 }
 
-// Function to calculate settlement amount based on charge type
+// ============================================
+// FUNCTION: Calculate settlement amount based on charge type
+// ============================================
+// ============================================
+// FUNCTION: Calculate settlement amount based on charge type
+// ============================================
 function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment) {
     $charge_to_upper = strtoupper(trim($charge_to));
     $service_charge_upper = strtoupper(trim($service_charge));
@@ -100,24 +405,28 @@ function calculateSettlementAmount($charge_to, $service_charge, $principal, $cha
         return $principal - $charge_to_partner + $adjustment;
     }
     
-    // For BOTH charge types: Use the original calculation (Principal + both charges + adjustment)
+    // For BOTH DAILY: Amount = Principal - Charge to Partner + Adjustment
+    if ($charge_to_upper === 'BOTH' && $service_charge_upper === 'DAILY') {
+        return $principal - $charge_to_partner + $adjustment;
+    }
+    
+    // For BOTH charge types (WEEKLY/MONTHLY): Use the original calculation (Principal + both charges + adjustment)
     if ($charge_to_upper === 'BOTH') {
         return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
     }
     
-    // Default fallback: Original calculation
+    // Default fallback
     return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
 }
 
-// Function to get daily breakdown for a partner
-// MODIFIED: Separate logic for regular transactions and adjustments
-function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, string $settlement_type, string $date_from, string $date_to) {
-    // Return empty array if partner_id is invalid
+// ============================================
+// FUNCTION: Get daily breakdown for a partner
+// ============================================
+function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, string $settlement_type, string $date_from, string $date_to) {
     if (empty($partner_id)) {
         return [];
     }
     
-    // Separate conditions for regular and adjustment
     $where_conditions_regular = [];
     $where_conditions_adjustment = [];
     $params_regular = [];
@@ -125,7 +434,6 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
     $types_regular = "";
     $types_adjustment = "";
     
-    // Partner filter - required for both
     $where_conditions_regular[] = "bt.partner_id_kpx = ?";
     $params_regular[] = $partner_id;
     $types_regular .= "s";
@@ -134,7 +442,6 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
     $params_adjustment[] = $partner_id;
     $types_adjustment .= "s";
     
-    // Bank filter - join with partner_masterfile
     if (!empty($bank)) {
         $where_conditions_regular[] = "pm.bank = ?";
         $params_regular[] = $bank;
@@ -145,7 +452,6 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
         $types_adjustment .= "s";
     }
     
-    // Settlement type filter - from partner_masterfile
     if (!empty($settlement_type)) {
         $where_conditions_regular[] = "pm.settled_online_check = ?";
         $params_regular[] = $settlement_type;
@@ -156,7 +462,6 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
         $types_adjustment .= "s";
     }
     
-    // Regular transactions: based on datetime AND NOT cancelled
     if (!empty($date_from) && !empty($date_to)) {
         $where_conditions_regular[] = "bt.datetime BETWEEN ? AND ?";
         $params_regular[] = $date_from . ' 00:00:00';
@@ -172,10 +477,8 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
         $types_regular .= "s";
     }
     
-    // Regular transactions: EXCLUDE cancelled/voided
     $where_conditions_regular[] = "(bt.status IS NULL OR bt.status = '')";
     
-    // Adjustments: based on cancellation_date
     if (!empty($date_from) && !empty($date_to)) {
         $where_conditions_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
         $params_adjustment[] = $date_from . ' 00:00:00';
@@ -191,11 +494,8 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
         $types_adjustment .= "s";
     }
     
-    // Adjustments: ONLY cancelled/voided
     $where_conditions_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
     
-    // Build the daily breakdown query using UNION ALL
-    // Note: We're not calculating amount_for_settlement in SQL, we'll do it in PHP
     $sql = "SELECT 
                 transaction_date,
                 SUM(txn_count) as txn_count,
@@ -205,7 +505,6 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
                 SUM(total_adjustment) as total_adjustment,
                 MAX(settle_status) as settle_status
             FROM (
-                -- Regular transactions (not cancelled)
                 SELECT 
                     DATE(bt.datetime) as transaction_date,
                     COUNT(*) as txn_count,
@@ -221,7 +520,6 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
                 
                 UNION ALL
                 
-                -- Adjustments (cancelled transactions)
                 SELECT 
                     DATE(bt.cancellation_date) as transaction_date,
                     0 as txn_count,
@@ -238,7 +536,6 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
             GROUP BY transaction_date
             ORDER BY transaction_date ASC";
     
-    // Execute with prepared statement
     $all_params = array_merge($params_regular, $params_adjustment);
     $all_types = $types_regular . $types_adjustment;
     
@@ -253,7 +550,6 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
                 $status = $row['settle_status'] ?? '';
                 $is_settled = (strtoupper(trim($status)) === 'SETTLED');
                 
-                // Get partner's charge type to calculate settlement amount correctly
                 $charge_to = '';
                 $service_charge = '';
                 $partner_sql = "SELECT COALESCE(charge_to, '') as charge_to, COALESCE(serviceCharge, '') as serviceCharge 
@@ -276,7 +572,6 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
                 $charge_to_partner = (float)($row['charge_to_partner'] ?? 0);
                 $adjustment = (float)($row['total_adjustment'] ?? 0);
                 
-                // Calculate settlement amount using the same logic
                 $amount_for_settlement = calculateSettlementAmount(
                     $charge_to,
                     $service_charge,
@@ -304,7 +599,9 @@ function getDailyBreakdown( mysqli $conn, string $partner_id, string $bank, stri
     return [];
 }
 
-// Function to generate daily breakdown HTML with status column
+// ============================================
+// FUNCTION: Generate daily breakdown HTML
+// ============================================
 function generateDailyBreakdownHTML(array $data): string {
     if (empty($data)) {
         return '<div style="text-align: center; padding: 10px; color: #6c757d;">No daily transactions found for this date range.</div>';
@@ -362,7 +659,6 @@ function generateDailyBreakdownHTML(array $data): string {
         
         $settleClass = $daily['amount_for_settlement'] < 0 ? 'color: #dc3545;' : '';
         
-        // Status badge
         $statusBadge = $daily['is_settled'] 
             ? '<span class="settled-status"><i class="fas fa-check-circle"></i> Settled</span>'
             : '<span class="unsettled-status"><i class="fas fa-clock"></i> Unsettled</span>';
@@ -379,7 +675,6 @@ function generateDailyBreakdownHTML(array $data): string {
         $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . 
             number_format($daily['charge_to_partner'], 2) . '</td>';
         
-        // Adjustment - only show if not zero
         if ($daily['total_adjustment'] != 0) {
             $html .= '<td style="padding: 6px 12px; text-align: right; ' . $adjClass . '">' . 
                 $adjSign . '₱ ' . number_format($daily['total_adjustment'], 2) . '</td>';
@@ -393,7 +688,6 @@ function generateDailyBreakdownHTML(array $data): string {
         $html .= '</tr>';
     }
     
-    // Daily subtotal with status summary
     $adjClass = $dailyTotals['adjustment'] < 0 ? 'color: #dc3545;' : ($dailyTotals['adjustment'] > 0 ? 'color: #28a745;' : '');
     $adjSign = $dailyTotals['adjustment'] >= 0 ? '+' : '';
     $settleClass = $dailyTotals['settlement'] < 0 ? 'color: #dc3545;' : '';
@@ -405,7 +699,6 @@ function generateDailyBreakdownHTML(array $data): string {
     $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . number_format($dailyTotals['charge_to_customer'], 2) . '</td>';
     $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . number_format($dailyTotals['charge_to_partner'], 2) . '</td>';
     
-    // Adjustment subtotal - only show if not zero
     if ($dailyTotals['adjustment'] != 0) {
         $html .= '<td style="padding: 6px 12px; text-align: right; ' . $adjClass . '">' . 
             $adjSign . '₱ ' . number_format($dailyTotals['adjustment'], 2) . '</td>';
@@ -450,7 +743,6 @@ if (isset($_SESSION['user_type'])) {
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Settlement Per Bank | <?php if($_SESSION['user_type'] === 'admin' || $_SESSION['user_type'] === 'user') echo ucfirst($_SESSION['user_type']); else echo "Guest";?></title>
-    <!-- custom CSS file link  -->
     <link rel="stylesheet" href="../../../assets/css/templates/style.css?v=<?php echo time(); ?>">
     <script src="https://kit.fontawesome.com/30b908cc5a.js" crossorigin="anonymous"></script>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -514,7 +806,6 @@ if (isset($_SESSION['user_type'])) {
     <!-- Main Content - Hidden initially -->
     <div class="main-container main-content-hidden" id="mainContent">
         <?php include '../../../templates/header_ui.php'; ?>
-        <!-- Show and Hide Side Nav Menu -->
         <?php include '../../../templates/sidebar.php'; ?>
 
         <div class="bp-section-header" role="region" aria-label="Page title">
@@ -584,6 +875,15 @@ if (isset($_SESSION['user_type'])) {
                            value="<?php echo htmlspecialchars($selected_date_to); ?>">
                 </div>
 
+                <!-- RFP No. Field -->
+                <div class="filter-group" style="flex: 0 0 200px;">
+                    <label for="rfp_no">RFP No.</label>
+                    <input type="text" id="rfp_no" name="rfp_no" 
+                           placeholder="Enter RFP No." 
+                           value="<?php echo htmlspecialchars($selected_rfp_no); ?>"
+                           style="width: 100%; padding: 8px 12px; border: 1px solid #ced4da; border-radius: 4px;">
+                </div>
+
                 <!-- Action Buttons -->
                 <div class="filter-actions">
                     <button type="submit" class="btn-filter" id="filterBtn">
@@ -600,9 +900,6 @@ if (isset($_SESSION['user_type'])) {
         // Process the filters and display results
         if ($has_filters) {
             try {
-                // ============================================
-                // BUILD SEPARATE WHERE CONDITIONS FOR REGULAR AND ADJUSTMENT
-                // ============================================
                 $where_conditions_regular = [];
                 $where_conditions_adjustment = [];
                 $params_regular = [];
@@ -610,7 +907,6 @@ if (isset($_SESSION['user_type'])) {
                 $types_regular = "";
                 $types_adjustment = "";
                 
-                // Partner filter - applies to both
                 if (!empty($selected_partner)) {
                     $where_conditions_regular[] = "bt.partner_id_kpx = ?";
                     $params_regular[] = $selected_partner;
@@ -621,7 +917,6 @@ if (isset($_SESSION['user_type'])) {
                     $types_adjustment .= "s";
                 }
                 
-                // Bank filter - applies to both
                 if (!empty($selected_bank)) {
                     $where_conditions_regular[] = "pm.bank = ?";
                     $params_regular[] = $selected_bank;
@@ -632,7 +927,6 @@ if (isset($_SESSION['user_type'])) {
                     $types_adjustment .= "s";
                 }
                 
-                // Settlement type filter - applies to both
                 if (!empty($selected_settlement_type)) {
                     $where_conditions_regular[] = "pm.settled_online_check = ?";
                     $params_regular[] = $selected_settlement_type;
@@ -643,9 +937,6 @@ if (isset($_SESSION['user_type'])) {
                     $types_adjustment .= "s";
                 }
                 
-                // ============================================
-                // REGULAR TRANSACTIONS: Based on datetime, NOT cancelled
-                // ============================================
                 if (!empty($selected_date_from) && !empty($selected_date_to)) {
                     $where_conditions_regular[] = "bt.datetime BETWEEN ? AND ?";
                     $params_regular[] = $selected_date_from . ' 00:00:00';
@@ -661,12 +952,8 @@ if (isset($_SESSION['user_type'])) {
                     $types_regular .= "s";
                 }
                 
-                // Regular transactions: EXCLUDE cancelled/voided
                 $where_conditions_regular[] = "(bt.status IS NULL OR bt.status = '')";
                 
-                // ============================================
-                // ADJUSTMENTS: Based on cancellation_date, ONLY cancelled
-                // ============================================
                 if (!empty($selected_date_from) && !empty($selected_date_to)) {
                     $where_conditions_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
                     $params_adjustment[] = $selected_date_from . ' 00:00:00';
@@ -682,12 +969,8 @@ if (isset($_SESSION['user_type'])) {
                     $types_adjustment .= "s";
                 }
                 
-                // Adjustments: ONLY cancelled/voided
                 $where_conditions_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
                 
-                // ============================================
-                // QUERY 1: Regular transactions (not cancelled)
-                // ============================================
                 $regular_sql = "SELECT 
                     bt.partner_id_kpx,
                     pm.partner_name,
@@ -721,9 +1004,6 @@ if (isset($_SESSION['user_type'])) {
                          pm.charge_to, 
                          pm.serviceCharge";
                 
-                // ============================================
-                // QUERY 2: Adjustments (cancelled transactions)
-                // ============================================
                 $adjustment_sql = "SELECT 
                                         bt.partner_id_kpx,
                                         SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment
@@ -732,11 +1012,6 @@ if (isset($_SESSION['user_type'])) {
                                     WHERE " . implode(" AND ", $where_conditions_adjustment) . "
                                     GROUP BY bt.partner_id_kpx";
                 
-                // ============================================
-                // EXECUTE QUERIES
-                // ============================================
-                
-                // Execute regular query
                 $regular_result = null;
                 if (!empty($params_regular)) {
                     $stmt = $conn->prepare($regular_sql);
@@ -752,7 +1027,6 @@ if (isset($_SESSION['user_type'])) {
                     $regular_result = $conn->query($regular_sql);
                 }
                 
-                // Execute adjustment query
                 $adjustment_result = null;
                 if (!empty($params_adjustment)) {
                     $stmt = $conn->prepare($adjustment_sql);
@@ -768,9 +1042,6 @@ if (isset($_SESSION['user_type'])) {
                     $adjustment_result = $conn->query($adjustment_sql);
                 }
                 
-                // ============================================
-                // COMBINE RESULTS IN PHP
-                // ============================================
                 $combined_data = [];
                 
                 if ($regular_result && $regular_result->num_rows > 0) {
@@ -790,7 +1061,7 @@ if (isset($_SESSION['user_type'])) {
                             'total_principal' => (float)($row['total_principal'] ?? 0),
                             'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
                             'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
-                            'total_adjustment' => 0, // Will be updated from adjustment query
+                            'total_adjustment' => 0,
                             'settled_count' => (int)($row['settled_count'] ?? 0),
                             'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
                             'last_transaction_date' => $row['last_transaction_date'] ?? null,
@@ -805,8 +1076,6 @@ if (isset($_SESSION['user_type'])) {
                         if (isset($combined_data[$partner_id])) {
                             $combined_data[$partner_id]['total_adjustment'] = (float)($row['total_adjustment'] ?? 0);
                         } else {
-                            // Partner has only adjustments, no regular transactions
-                            // Fetch partner details separately
                             $partner_details_sql = "SELECT 
                                                         partner_name,
                                                         partner_accName,
@@ -850,14 +1119,9 @@ if (isset($_SESSION['user_type'])) {
                     }
                 }
                 
-                // ============================================
-                // PROCESS COMBINED DATA
-                // ============================================
                 if (!empty($combined_data)) {
-                    // Convert to array for processing
                     $data_array = array_values($combined_data);
                     
-                    // Sort by charge_to and serviceCharge
                     usort($data_array, function($a, $b) {
                         $order = [
                             'CUSTOMER_DAILY' => 1,
@@ -889,7 +1153,6 @@ if (isset($_SESSION['user_type'])) {
                         return $order_a - $order_b;
                     });
                     
-                    // Initialize arrays for grouping
                     $groups = [
                         'CHARGE BY CUSTOMER DAILY' => [
                             'display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY',
@@ -957,14 +1220,11 @@ if (isset($_SESSION['user_type'])) {
                         ]
                     ];
                     
-                    // Initialize grand totals
                     $grand_totals = ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0];
                     
                     $row_index = 0;
-                    // Pre-fetch daily breakdown data for all partners (only if date range is selected AND dates are different)
                     $daily_breakdown_cache = [];
                     if ($has_date_range) {
-                        // Collect all valid partner IDs from combined data
                         $valid_partners = [];
                         foreach ($data_array as $row) {
                             $partner_id = $row['partner_id_kpx'];
@@ -973,7 +1233,6 @@ if (isset($_SESSION['user_type'])) {
                             }
                         }
                         
-                        // Now fetch daily breakdown for each valid partner
                         foreach ($valid_partners as $partner_id) {
                             $daily_data = getDailyBreakdown(
                                 $conn, 
@@ -993,7 +1252,6 @@ if (isset($_SESSION['user_type'])) {
                         $charge_to = strtoupper(trim($row['charge_to'] ?? ''));
                         $serviceCharge = strtoupper(trim($row['serviceCharge'] ?? ''));
                         
-                        // Determine which group this belongs to
                         $group_key = null;
                         
                         if (empty($charge_to)) {
@@ -1042,7 +1300,6 @@ if (isset($_SESSION['user_type'])) {
                         $charge_to_partner = (float)($row['charge_to_partner'] ?? 0);
                         $adjustment = (float)($row['total_adjustment'] ?? 0);
                         
-                        // Calculate settlement amount based on charge type
                         $settlement_amount = calculateSettlementAmount(
                             $charge_to,
                             $serviceCharge,
@@ -1054,11 +1311,9 @@ if (isset($_SESSION['user_type'])) {
                         
                         $settled_count = (int)($row['settled_count'] ?? 0);
                         $unsettled_count = (int)($row['unsettled_count'] ?? 0);
-                        $settle_status = $row['settle_unsettle'] ?? '';
                         $is_fully_settled = ($settled_count > 0 && $unsettled_count == 0);
                         $is_partially_settled = ($settled_count > 0 && $unsettled_count > 0);
                         
-                        // Add to group totals
                         $groups[$group_key]['totals']['txn_count'] += $txn_count;
                         $groups[$group_key]['totals']['principal'] += $principal;
                         $groups[$group_key]['totals']['charge_to_customer'] += $charge_to_customer;
@@ -1068,7 +1323,6 @@ if (isset($_SESSION['user_type'])) {
                         $groups[$group_key]['totals']['settled_count'] += $settled_count;
                         $groups[$group_key]['totals']['unsettled_count'] += $unsettled_count;
                         
-                        // Add to grand totals
                         $grand_totals['txn_count'] += $txn_count;
                         $grand_totals['principal'] += $principal;
                         $grand_totals['charge_to_customer'] += $charge_to_customer;
@@ -1078,17 +1332,14 @@ if (isset($_SESSION['user_type'])) {
                         $grand_totals['settled_count'] += $settled_count;
                         $grand_totals['unsettled_count'] += $unsettled_count;
                         
-                        // Get daily breakdown from cache
                         $partner_id = $row['partner_id_kpx'];
                         $daily_data = $has_date_range && isset($daily_breakdown_cache[$partner_id]) 
                             ? $daily_breakdown_cache[$partner_id] 
                             : [];
                         $daily_html = !empty($daily_data) ? generateDailyBreakdownHTML($daily_data) : '';
                         
-                        // Determine if row should be excluded from settlement (fully settled)
                         $is_excluded = $is_fully_settled;
                         
-                        // Store row data with daily breakdown included
                         $groups[$group_key]['rows'][] = [
                             'row_index' => $row_index,
                             'partner_id' => $partner_id,
@@ -1115,14 +1366,11 @@ if (isset($_SESSION['user_type'])) {
                         $row_index++;
                     }
                     
-                    // Remove empty groups (but keep UNCATEGORIZED and BOTH if they have data)
                     $groups = array_filter($groups, function($group) {
                         return !empty($group['rows']);
                     });
                     
-                    // Check if there are uncategorized partners
                     $has_uncategorized = isset($groups['UNCATEGORIZED']) && !empty($groups['UNCATEGORIZED']['rows']);
-                    // Check if there are BOTH partners
                     $has_both = false;
                     foreach ($groups as $key => $group) {
                         if (isset($group['is_both']) && $group['is_both'] === true && !empty($group['rows'])) {
@@ -1147,12 +1395,24 @@ if (isset($_SESSION['user_type'])) {
                                 ?>
                             </span>
                             <?php if (!empty($selected_bank)): ?>
-                            <span class="table-badge" style="background: #007bff; color: white;">
+                            <span class="table-badge">
                                 <i class="fas fa-university"></i> Bank: <?php echo htmlspecialchars($selected_bank); ?>
                             </span>
                             <?php endif; ?>
+                            <?php if (!empty($selected_rfp_no)): ?>
+                            <span class="table-badge">
+                                <i class="fas fa-file-invoice"></i> RFP No.: <?php echo htmlspecialchars($selected_rfp_no); ?>
+                            </span>
+                            <?php endif; ?>
+                            <?php if (!empty($cad_number)): ?>
+                            <span class="table-badge" id="currentCadBadge">
+                                <i class="fas fa-hashtag"></i> CAD No.: <?php echo htmlspecialchars($cad_number); ?>
+                            </span>
+                            <!-- Hidden input so JS can always read the CURRENT CAD after AJAX filter -->
+                            <input type="hidden" id="currentCadNo" value="<?php echo htmlspecialchars($cad_number); ?>">
+                            <?php endif; ?>
                             <?php if ($has_date_range): ?>
-                            <span class="table-badge" style="background: #009022; color: white;">
+                            <span class="table-badge">
                                 <i class="fas fa-calendar-alt"></i> 
                                 <?php 
                                 $date_range = '';
@@ -1239,7 +1499,6 @@ if (isset($_SESSION['user_type'])) {
                                         </td>
                                     </tr>
                                     
-                                    <!-- Group Data Rows -->
                                     <?php foreach ($group_data['rows'] as $row_data): 
                                         $is_settled = $row_data['is_fully_settled'];
                                         $is_partial = $row_data['is_partially_settled'];
@@ -1260,11 +1519,11 @@ if (isset($_SESSION['user_type'])) {
                                             data-charge-to="<?php echo $row_data['charge_to']; ?>"
                                             data-service-charge="<?php echo $row_data['service_charge']; ?>">
                                             <td class="center checkbox-cell">
-                                                <input type="checkbox" class="row-checkbox" 
-                                                       data-row-index="<?php echo $row_data['row_index']; ?>"
-                                                       onchange="updateTotals()" 
-                                                       <?php echo ($is_settled || $row_data['excluded']) ? 'disabled checked' : 'checked'; ?>>
-                                            </td>
+    <input type="checkbox" class="row-checkbox" 
+           data-row-index="<?php echo $row_data['row_index']; ?>"
+           onchange="updateTotals()" 
+           <?php echo ($is_settled || $row_data['excluded']) ? 'disabled checked' : ''; ?>>
+</td>
                                             <td class="center">
                                                 <?php if ($row_data['has_daily_breakdown'] && !empty($row_data['daily_html'])): ?>
                                                     <span class="chevron-toggle" 
@@ -1322,7 +1581,6 @@ if (isset($_SESSION['user_type'])) {
                                             </td>
                                         </tr>
                                         
-                                        <!-- Daily Breakdown Container (pre-loaded with HTML) -->
                                         <?php if ($row_data['has_daily_breakdown'] && !empty($row_data['daily_html'])): ?>
                                             <tr class="daily-breakdown-container" 
                                                 id="dailyBreakdown_<?php echo $row_data['row_index']; ?>" 
@@ -1343,7 +1601,6 @@ if (isset($_SESSION['user_type'])) {
                                         <?php endif; ?>
                                     <?php endforeach; ?>
                                     
-                                    <!-- Group Subtotal -->
                                     <tr class="group-subtotal-row <?php echo $is_uncategorized ? 'uncategorized-subtotal' : ''; ?> <?php echo $is_both ? 'both-subtotal' : ''; ?>" data-group="<?php echo $group_key; ?>">
                                         <td colspan="5" style="text-align: right;">
                                             <strong>Subtotal - <?php echo htmlspecialchars($group_data['display_name']); ?></strong>
@@ -1381,7 +1638,6 @@ if (isset($_SESSION['user_type'])) {
                                     <?php endif; ?>
                                 <?php endforeach; ?>
                                 
-                                <!-- Grand Total Row -->
                                 <tr class="grand-total-row">
                                     <td colspan="5" style="text-align: right;">GRAND TOTAL</td>
                                     <td class="center grand-txn-count"><?php echo number_format($grand_totals['txn_count']); ?></td>
@@ -1462,13 +1718,14 @@ if (isset($_SESSION['user_type'])) {
     var stepInterval = null;
     var isPageLoaded = false;
     
+    // NOTE: Do NOT store CAD number here from PHP – it becomes stale after AJAX filter.
+    // Always read the live value from #currentCadNo (updated with the results).
+    
     $(document).ready(function() {
-        // Get initial values from PHP data attributes
         var initialPartner = $('#partner').data('selected') || '';
         var initialBank = $('#bank').data('selected') || '';
         var initialSettlement = $('#settlement_type').data('selected') || '';
         
-        // Initialize Select2 for better dropdowns
         $('.select2-dropdown').select2({
             placeholder: function() {
                 return $(this).data('placeholder') || 'Select an option';
@@ -1477,7 +1734,6 @@ if (isset($_SESSION['user_type'])) {
             width: '100%'
         });
         
-        // Set initial values for Select2
         if (initialPartner) {
             $('#partner').val(initialPartner).trigger('change');
         }
@@ -1488,13 +1744,9 @@ if (isset($_SESSION['user_type'])) {
             $('#settlement_type').val(initialSettlement).trigger('change');
         }
 
-        // Start the loading timer immediately
         startLoadingTimer();
-        
-        // Start step animation
         startStepAnimation();
 
-        // Hide loading modal and show content when page is fully loaded
         $(window).on('load', function() {
             isPageLoaded = true;
             setTimeout(function() {
@@ -1503,7 +1755,6 @@ if (isset($_SESSION['user_type'])) {
             }, 500);
         });
 
-        // Also hide loading if there's an error or no content after timeout
         setTimeout(function() {
             if (!isPageLoaded) {
                 var hasContent = $('#resultsContainer').children().length > 0;
@@ -1514,12 +1765,11 @@ if (isset($_SESSION['user_type'])) {
             }
         }, 10000);
 
-        // Handle form submission
         $('#filterForm').on('submit', function(e) {
             e.preventDefault();
             
             var hasFilters = false;
-            $(this).find('select, input[type="date"]').each(function() {
+            $(this).find('select, input[type="date"], input[name="rfp_no"]').each(function() {
                 var val = $(this).val();
                 if (val && val.trim() !== '' && val !== '0') {
                     hasFilters = true;
@@ -1701,55 +1951,6 @@ if (isset($_SESSION['user_type'])) {
         }, 2000);
     }
 
-    function resetFilters() {
-        document.getElementById('partner').value = '';
-        document.getElementById('bank').value = '';
-        document.getElementById('settlement_type').value = '';
-        document.getElementById('date_from').value = '';
-        document.getElementById('date_to').value = '';
-        
-        $('.select2-dropdown').val('').trigger('change');
-        
-        showLoadingModal();
-        hideMainContent();
-        resetAndStartTimer();
-        
-        var cleanUrl = window.location.pathname;
-        
-        $.ajax({
-            url: cleanUrl,
-            type: 'GET',
-            dataType: 'html',
-            cache: false,
-            timeout: 60000,
-            success: function(response) {
-                var tempDiv = $('<div>').html(response);
-                var newContent = tempDiv.find('#resultsContainer').html();
-                if (newContent) {
-                    $('#resultsContainer').html(newContent);
-                }
-                setTimeout(function() {
-                    hideLoadingModal();
-                    showMainContent();
-                }, 300);
-            },
-            error: function() {
-                hideLoadingModal();
-                showMainContent();
-                Swal.fire({
-                    icon: 'error',
-                    title: 'Error',
-                    text: 'Failed to reset filters. Please try again.',
-                    confirmButtonColor: '#dc3545'
-                });
-            }
-        });
-    }
-
-    // ============================================
-    // DAILY BREAKDOWN TOGGLE FUNCTION
-    // ============================================
-    
     function toggleDailyBreakdown(element, rowIndex) {
         var breakdownRow = document.getElementById('dailyBreakdown_' + rowIndex);
         var chevron = element;
@@ -1770,10 +1971,6 @@ if (isset($_SESSION['user_type'])) {
         chevron.innerHTML = '<i class="fas fa-chevron-up"></i>';
     }
 
-    // ============================================
-    // CHECKBOX AND TOTALS RECALCULATION FUNCTIONS
-    // ============================================
-    
     function toggleAllRows(checkbox) {
         var isChecked = $(checkbox).prop('checked');
         $('.row-checkbox:not(:disabled)').prop('checked', isChecked);
@@ -1823,7 +2020,6 @@ if (isset($_SESSION['user_type'])) {
                 };
             }
             
-            // Always add to group totals regardless of checkbox (but separate settled/unsettled)
             if (isSettled) {
                 groupTotals[groupKey].settled_count += txnCount;
             } else {
@@ -1852,14 +2048,13 @@ if (isset($_SESSION['user_type'])) {
                 grandTotals.unsettled_count += txnCount;
             }
             
-            if (isChecked) {
-                row.removeClass('excluded-row');
-            } else {
-                row.addClass('excluded-row');
-            }
+            // if (isChecked) {
+            //     row.removeClass('excluded-row');
+            // } else {
+            //     row.addClass('excluded-row');
+            // }
         });
         
-        // Update group subtotals
         $('.group-subtotal-row').each(function() {
             var groupRow = $(this);
             var displayText = groupRow.find('td').first().text().trim();
@@ -1878,7 +2073,6 @@ if (isset($_SESSION['user_type'])) {
                 groupRow.find('.group-charge-to-customer').text('₱ ' + formatNumberDecimal(totals.charge_to_customer));
                 groupRow.find('.group-charge-to-partner').text('₱ ' + formatNumberDecimal(totals.charge_to_partner));
                 
-                // Adjustment - only show if not zero
                 if (totals.adjustment != 0) {
                     var adjText = (totals.adjustment >= 0 ? '+' : '') + '₱ ' + formatNumberDecimal(totals.adjustment);
                     groupRow.find('.group-adjustment').text(adjText);
@@ -1899,7 +2093,6 @@ if (isset($_SESSION['user_type'])) {
                     groupRow.find('.group-settlement').addClass('negative-amount');
                 }
                 
-                // Update group status
                 var gSettled = totals.settled_count || 0;
                 var gUnsettled = totals.unsettled_count || 0;
                 var statusHtml = '';
@@ -1914,13 +2107,11 @@ if (isset($_SESSION['user_type'])) {
             }
         });
         
-        // Update grand totals
         $('.grand-total-row').find('.grand-txn-count').text(formatNumberInt(grandTotals.txn_count));
         $('.grand-total-row').find('.grand-principal').text('₱ ' + formatNumberDecimal(grandTotals.principal));
         $('.grand-total-row').find('.grand-charge-to-customer').text('₱ ' + formatNumberDecimal(grandTotals.charge_to_customer));
         $('.grand-total-row').find('.grand-charge-to-partner').text('₱ ' + formatNumberDecimal(grandTotals.charge_to_partner));
         
-        // Grand total adjustment - only show if not zero
         if (grandTotals.adjustment != 0) {
             var grandAdjText = (grandTotals.adjustment >= 0 ? '+' : '') + '₱ ' + formatNumberDecimal(grandTotals.adjustment);
             $('.grand-total-row').find('.grand-adjustment').text(grandAdjText);
@@ -1941,7 +2132,6 @@ if (isset($_SESSION['user_type'])) {
             $('.grand-total-row').find('.grand-settlement').addClass('negative-amount');
         }
         
-        // Update grand status
         var gSettled = grandTotals.settled_count || 0;
         var gUnsettled = grandTotals.unsettled_count || 0;
         var statusHtml = '';
@@ -1954,7 +2144,6 @@ if (isset($_SESSION['user_type'])) {
         }
         $('.grand-total-row').find('.grand-status').html(statusHtml);
         
-        // Update select all checkbox state
         var totalCheckboxes = $('.row-checkbox:not(:disabled)').length;
         var checkedCheckboxes = $('.row-checkbox:not(:disabled):checked').length;
         var selectAllHeader = $('#selectAllHeader');
@@ -2004,6 +2193,36 @@ if (isset($_SESSION['user_type'])) {
     }
 
     function exportToExcel() {
+        var rfpNo = $('#rfp_no').val().trim();
+        if (!rfpNo) {
+            Swal.fire({
+                icon: 'warning',
+                title: 'RFP No. Required',
+                text: 'Please enter an RFP No. before exporting.',
+                confirmButtonColor: '#ffc107'
+            });
+            return;
+        }
+        
+        var hasUnsettled = false;
+        $('.data-row').each(function() {
+            var isSettled = $(this).data('is-settled') === true;
+            if (!isSettled) {
+                hasUnsettled = true;
+                return false;
+            }
+        });
+        
+        if (hasUnsettled) {
+            Swal.fire({
+                icon: 'warning',
+                title: 'Unsettled Transactions',
+                text: 'Cannot export. Please settle all transactions before exporting.',
+                confirmButtonColor: '#ffc107'
+            });
+            return;
+        }
+        
         showLoadingModal();
         setTimeout(function() {
             var table = document.getElementById('settlementTable');
@@ -2027,7 +2246,7 @@ if (isset($_SESSION['user_type'])) {
             var excludedRows = [];
             $('.data-row').each(function() {
                 var checkbox = $(this).find('.row-checkbox');
-                if (!checkbox.prop('checked') || checkbox.prop('disabled')) {
+                if (!checkbox.prop('checked')) {
                     var rowIndex = $(this).data('row-index');
                     if (rowIndex !== undefined) {
                         excludedRows.push(rowIndex);
@@ -2041,6 +2260,7 @@ if (isset($_SESSION['user_type'])) {
             exportUrl += '&settlement_type=' + encodeURIComponent(settlementType);
             exportUrl += '&date_from=' + encodeURIComponent(dateFrom);
             exportUrl += '&date_to=' + encodeURIComponent(dateTo);
+            exportUrl += '&rfp_no=' + encodeURIComponent(rfpNo);
             
             if (excludedRows.length > 0) {
                 exportUrl += '&excluded_rows=' + encodeURIComponent(excludedRows.join(','));
@@ -2055,6 +2275,36 @@ if (isset($_SESSION['user_type'])) {
     }
 
     function exportToPDF() {
+        var rfpNo = $('#rfp_no').val().trim();
+        if (!rfpNo) {
+            Swal.fire({
+                icon: 'warning',
+                title: 'RFP No. Required',
+                text: 'Please enter an RFP No. before exporting.',
+                confirmButtonColor: '#ffc107'
+            });
+            return;
+        }
+        
+        var hasUnsettled = false;
+        $('.data-row').each(function() {
+            var isSettled = $(this).data('is-settled') === true;
+            if (!isSettled) {
+                hasUnsettled = true;
+                return false;
+            }
+        });
+        
+        if (hasUnsettled) {
+            Swal.fire({
+                icon: 'warning',
+                title: 'Unsettled Transactions',
+                text: 'Cannot export. Please settle all transactions before exporting.',
+                confirmButtonColor: '#ffc107'
+            });
+            return;
+        }
+        
         showLoadingModal();
         setTimeout(function() {
             var table = document.getElementById('settlementTable');
@@ -2078,7 +2328,7 @@ if (isset($_SESSION['user_type'])) {
             var excludedRows = [];
             $('.data-row').each(function() {
                 var checkbox = $(this).find('.row-checkbox');
-                if (!checkbox.prop('checked') || checkbox.prop('disabled')) {
+                if (!checkbox.prop('checked')) {
                     var rowIndex = $(this).data('row-index');
                     if (rowIndex !== undefined) {
                         excludedRows.push(rowIndex);
@@ -2092,6 +2342,7 @@ if (isset($_SESSION['user_type'])) {
             exportUrl += '&settlement_type=' + encodeURIComponent(settlementType);
             exportUrl += '&date_from=' + encodeURIComponent(dateFrom);
             exportUrl += '&date_to=' + encodeURIComponent(dateTo);
+            exportUrl += '&rfp_no=' + encodeURIComponent(rfpNo);
             
             if (excludedRows.length > 0) {
                 exportUrl += '&excluded_rows=' + encodeURIComponent(excludedRows.join(','));
@@ -2106,10 +2357,45 @@ if (isset($_SESSION['user_type'])) {
     }
 
     // ============================================
-    // SETTLE FUNCTION - Only unsettled rows
+    // SETTLE FUNCTION - FIXED with CAD number
     // ============================================
     
     function settleSelected() {
+        // Get RFP No. from input
+        var rfpNo = $('#rfp_no').val().trim();
+        
+        if (!rfpNo) {
+            Swal.fire({
+                icon: 'warning',
+                title: 'RFP No. Required',
+                text: 'Please enter an RFP No. before settling transactions.',
+                confirmButtonColor: '#ffc107'
+            });
+            return;
+        }
+        
+        // ★★★ Read the CURRENT CAD number from the results area (survives AJAX filter) ★★★
+        var cadNo = $('#currentCadNo').val() || '';
+        
+        // Fallback – extract from the badge text if the hidden input is missing
+        if (!cadNo) {
+            var badgeText = $('#currentCadBadge').text() || $('.table-badge:contains("CAD No.")').first().text() || '';
+            var match = badgeText.match(/CAD No\.:\s*([A-Z0-9\-]+)/i);
+            if (match) {
+                cadNo = match[1].trim();
+            }
+        }
+        
+        if (!cadNo) {
+            Swal.fire({
+                icon: 'warning',
+                title: 'CAD No. Missing',
+                text: 'CAD No. is not available. Please refresh the page and try again.',
+                confirmButtonColor: '#ffc107'
+            });
+            return;
+        }
+        
         // Get all checked rows that are NOT settled
         var checkedRows = [];
         var totalVolume = 0;
@@ -2121,7 +2407,6 @@ if (isset($_SESSION['user_type'])) {
             var isSettled = $(this).data('is-settled') === true;
             
             if (checkbox.prop('checked') && !checkbox.prop('disabled')) {
-                // Skip if already settled
                 if (isSettled) {
                     skippedSettled++;
                     return;
@@ -2157,13 +2442,14 @@ if (isset($_SESSION['user_type'])) {
             return;
         }
         
-        // Show confirmation dialog
         var skipMsg = skippedSettled > 0 ? `<p style="color: #856404; margin-top: 10px;"><i class="fas fa-info-circle"></i> ${skippedSettled} already settled row(s) were skipped.</p>` : '';
         
         Swal.fire({
             title: 'Settle Selected Transactions?',
             html: `
                 <div style="text-align: left; max-height: 300px; overflow-y: auto;">
+                    <p><strong>RFP No.:</strong> ${rfpNo}</p>
+                    <p><strong>CAD No.:</strong> ${cadNo}</p>
                     <p><strong>You are about to settle:</strong></p>
                     <ul style="margin: 10px 0; padding-left: 20px;">
                         ${checkedRows.map(row => 
@@ -2219,6 +2505,8 @@ if (isset($_SESSION['user_type'])) {
                         data: {
                             partner_ids: partnerIds,
                             settled_by: settledBy,
+                            rfp_no: rfpNo,
+                            cad_no: cadNo,
                             partner_filter: partner,
                             bank_filter: bank,
                             settlement_type_filter: settlementType,
@@ -2256,6 +2544,8 @@ if (isset($_SESSION['user_type'])) {
                                 <div style="text-align: left; margin-top: 15px; background: #f8f9fa; padding: 15px; border-radius: 4px;">
                                     <strong>Settlement Details:</strong>
                                     <ul style="margin-top: 10px; padding-left: 20px;">
+                                        <li>RFP No.: ${rfpNo}</li>
+                                        <li>CAD No.: ${cadNo}</li>
                                         <li>Total Partners: ${result.value.data.total_partners}</li>
                                         <li>Total Transactions: ${result.value.data.total_transactions.toLocaleString()}</li>
                                         <li>Total Amount: ₱ ${result.value.data.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</li>
