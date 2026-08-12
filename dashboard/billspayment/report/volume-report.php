@@ -146,46 +146,89 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
     // FIX: Use separate conditions for normal and cancelled transactions
     $where_clause = buildWhereClause($time_frame, $partner_id, $date_from, $date_to, $month_from, $month_to, $selected_day, $selected_month);
     
-        if (!empty($where_clause) && !empty($start_datetime) && !empty($end_datetime)) {
+    if (!empty($where_clause) && !empty($start_datetime) && !empty($end_datetime)) {
         // ============================================
-        // FIX: Updated query - Normal transactions based on datetime with status NULL/empty
+        // FIX: Updated query - Transactions based on datetime with status NULL/empty
         // Cancelled transactions based on cancellation_date
+        // ORDER BY partner_name ASC for proper alphabetical sorting
         // ============================================
         $query = "SELECT 
-    -- FIX: Use COALESCE to handle NULL/empty partner_id_kpx
-    COALESCE(NULLIF(bt.partner_id_kpx, ''), CONCAT('UNKNOWN_', bt.sub_billers_name, '_', bt.id)) as partner_id_kpx,
-    CASE 
-        WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
-        ELSE bt.sub_billers_name
-    END as sub_billers_name,
-    -- Normal Transactions (based on datetime AND status IS NULL OR status = '')
-    COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as datetime_volume,
-    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as datetime_amount_paid,
-    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as datetime_charge,
-    -- Cancelled Transactions (based on cancellation_date)
-    COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancellation_volume,
-    SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancellation_amount_paid,
-    SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancellation_charge,
-    -- NET values (datetime - cancellation)
-    (COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) - 
-     COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as total_volume,
-    (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) + 
-     SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
-    (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) - 
-     SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge,
-    -- SETTLEMENT Transactions (include all settled based on datetime and status NULL/empty)
-    COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN 1 END) as settlement_volume,
-    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN bt.amount_paid ELSE 0 END) as settlement_amount_paid,
-    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
-  FROM mldb.billspayment_transaction bt
-  $where_clause
-  GROUP BY 
-    COALESCE(NULLIF(bt.partner_id_kpx, ''), CONCAT('UNKNOWN_', bt.sub_billers_name, '_', bt.id)),
-    CASE 
-        WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
-        ELSE bt.sub_billers_name
-    END
-  ORDER BY partner_id_kpx, total_volume DESC";
+            -- FIX: Use COALESCE to handle NULL/empty partner_id_kpx
+            COALESCE(NULLIF(bt.partner_id_kpx, ''), CONCAT('UNKNOWN_', bt.sub_billers_name, '_', bt.id)) as partner_id_kpx,
+            CASE 
+                WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
+                ELSE bt.sub_billers_name
+            END as sub_billers_name,
+            -- Get partner_name and charge type fields from masterdata table using LEFT JOIN
+            pm.partner_name,
+            pm.serviceCharge,
+            pm.charge_to,
+            -- Transactions (based on datetime AND status IS NULL OR status = '')
+            COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as datetime_volume,
+            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as datetime_amount_paid,
+            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_partner ELSE 0 END) as datetime_charge_partner,
+            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_customer ELSE 0 END) as datetime_charge_customer,
+            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as datetime_charge_total,
+            -- Cancelled Transactions (based on cancellation_date)
+            COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancellation_volume,
+            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancellation_amount_paid,
+            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_partner ELSE 0 END) as cancellation_charge_partner,
+            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_customer ELSE 0 END) as cancellation_charge_customer,
+            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancellation_charge_total,
+            -- NET values (datetime - cancellation)
+            (COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) - 
+             COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as total_volume,
+            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) + 
+             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
+            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_partner ELSE 0 END) - 
+             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_partner ELSE 0 END)) as total_charge_partner,
+            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_customer ELSE 0 END) - 
+             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_customer ELSE 0 END)) as total_charge_customer,
+            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) - 
+             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge,
+            -- SETTLEMENT Transactions (include all settled based on datetime and status NULL/empty)
+            -- Settlement Amount adjusted by charge type:
+            --   CHARGE BY PARTNER / BOTH / CHARGE BY CUSTOMER DAILY → amount_paid - charge_to_partner
+            --   CHARGE BY CUSTOMER (Monthly / Semi-monthly / Weekly) → amount_paid (same as Net Amount)
+            COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN 1 END) as settlement_volume,
+            SUM(CASE 
+                WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' 
+                     AND (bt.status IS NULL OR bt.status = '') 
+                     AND bt.settle_unsettle = 'Settled' 
+                THEN 
+                    CASE 
+                        -- Charge by Partner, Both, or Customer+Daily → deduct partner charge
+                        WHEN UPPER(COALESCE(pm.charge_to, '')) IN ('PARTNER', 'BOTH')
+                          OR (UPPER(COALESCE(pm.charge_to, '')) = 'CUSTOMER' AND UPPER(COALESCE(pm.serviceCharge, '')) = 'DAILY')
+                          OR UPPER(COALESCE(pm.serviceCharge, '')) LIKE '%BOTH%'
+                        THEN bt.amount_paid - IFNULL(bt.charge_to_partner, 0)
+                        -- Charge by Customer (Monthly / Semi-monthly / Weekly / other) → full amount_paid
+                        ELSE bt.amount_paid
+                    END
+                ELSE 0 
+            END) as settlement_amount_paid,
+            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN bt.charge_to_partner ELSE 0 END) as settlement_charge_partner,
+            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN bt.charge_to_customer ELSE 0 END) as settlement_charge_customer,
+            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
+          FROM mldb.billspayment_transaction bt
+          LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+          $where_clause
+          GROUP BY 
+            COALESCE(NULLIF(bt.partner_id_kpx, ''), CONCAT('UNKNOWN_', bt.sub_billers_name, '_', bt.id)),
+            CASE 
+                WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
+                ELSE bt.sub_billers_name
+            END,
+            pm.partner_name,
+            pm.serviceCharge,
+            pm.charge_to
+          ORDER BY 
+            -- Put NULL partner names (unassigned) at the top
+            CASE WHEN pm.partner_name IS NULL THEN 1 ELSE 0 END,
+            -- Then sort alphabetically by partner name
+            pm.partner_name ASC,
+            -- Then by total volume descending within each partner
+            total_volume DESC";
         
         $results = mysqli_query($conn, $query);
         
@@ -401,6 +444,44 @@ function cleanPartnerName($partner_id, $sub_billers_name = '') {
     // Fallback: return the partner_id
     return $partner_id;
 }
+
+// ============================================
+// FUNCTION TO GET CHARGE TYPE DISPLAY
+// ============================================
+function getChargeTypeDisplay($serviceCharge, $charge_to) {
+    // Handle NULL or empty values
+    if (empty($serviceCharge) && empty($charge_to)) {
+        return 'N/A';
+    }
+    
+    // Build the charge type string based on available data
+    $charge_parts = [];
+    
+    // Add charge_to description
+    if (!empty($charge_to)) {
+        if (strtoupper($charge_to) === 'PARTNER') {
+            $charge_parts[] = 'CHARGE BY PARTNER';
+        } elseif (strtoupper($charge_to) === 'CUSTOMER') {
+            $charge_parts[] = 'CHARGE BY CUSTOMER';
+        } else {
+            $charge_parts[] = strtoupper($charge_to);
+        }
+    }
+    
+    // Add serviceCharge description
+    if (!empty($serviceCharge)) {
+        $charge_parts[] = strtoupper($serviceCharge);
+    }
+    
+    return !empty($charge_parts) ? implode(' ', $charge_parts) : 'N/A';
+}
+
+// ============================================
+// FUNCTION TO CALCULATE VARIANCE
+// ============================================
+function calculateVariance($net_value, $settlement_value) {
+    return $net_value - $settlement_value;
+}
 ?>
 
 <!DOCTYPE html>
@@ -419,6 +500,83 @@ function cleanPartnerName($partner_id, $sub_billers_name = '') {
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="css/volume.css?v=<?= time(); ?>">
 
+    <style>
+        /* Variance column styling */
+        .variance-negative {
+            color: #d93025;
+            font-weight: bold;
+        }
+        .variance-positive {
+            color: #1e8e3e;
+            font-weight: bold;
+        }
+        .variance-zero {
+            color: #666;
+        }
+        .variance-header {
+            background: #f3e5f5 !important;
+            color: #6a1b9a !important;
+        }
+        .variance-cell {
+            background: #f3e5f5;
+        }
+        /* Charge Type styling */
+        .charge-type-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        .charge-type-partner {
+            background: #e3f2fd;
+           
+        }
+        .charge-type-customer {
+            background: #f3e5f5;
+            color: #6a1b9a;
+        }
+        .charge-type-daily {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+        .charge-type-weekly {
+            background: #fff3e0;
+            color: #e65100;
+        }
+        .charge-type-monthly {
+            background: #fce4ec;
+            color: #c62828;
+        }
+        .charge-type-default {
+            background: #f5f5f5;
+            color: #616161;
+        }
+        /* Charge column headers */
+        .charge-partner-header {
+            background: #e3f2fd !important;
+            color: #1565c0 !important;
+        }
+        .charge-customer-header {
+            background: #f3e5f5 !important;
+            color: #6a1b9a !important;
+        }
+        .charge-total-header {
+            background: #e8f5e9 !important;
+            color: #2e7d32 !important;
+        }
+        .charge-partner-cell {
+            background: #e3f2fd;
+        }
+        .charge-customer-cell {
+            background: #f3e5f5;
+        }
+        .charge-total-cell {
+            background: #e8f5e9;
+        }
+    </style>
 </head>
 <body>
     <div class="main-container">
@@ -440,7 +598,7 @@ function cleanPartnerName($partner_id, $sub_billers_name = '') {
                 <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
                 <div>
                     <h2>Volume Report</h2>
-                    <p class="bp-section-sub">Summary of transaction volumes by partner and period</p>
+                    <!-- <p class="bp-section-sub">Summary of transaction volumes by partner and period</p> -->
                 </div>
             </div>
         </div>
@@ -581,34 +739,62 @@ function cleanPartnerName($partner_id, $sub_billers_name = '') {
                     $total_records = mysqli_num_rows($results);
                     $total_datetime_volume = 0;
                     $total_datetime_amount = 0;
-                    $total_datetime_charge = 0;
+                    $total_datetime_charge_partner = 0;
+                    $total_datetime_charge_customer = 0;
+                    $total_datetime_charge_total = 0;
                     $total_cancellation_volume = 0;
                     $total_cancellation_amount = 0;
-                    $total_cancellation_charge = 0;
+                    $total_cancellation_charge_partner = 0;
+                    $total_cancellation_charge_customer = 0;
+                    $total_cancellation_charge_total = 0;
                     $total_volume = 0;
                     $total_amount = 0;
+                    $total_charge_partner = 0;
+                    $total_charge_customer = 0;
                     $total_charge = 0;
                     $total_settlement_volume = 0;
                     $total_settlement_amount = 0;
+                    $total_settlement_charge_partner = 0;
+                    $total_settlement_charge_customer = 0;
                     $total_settlement_charge = 0;
+                    $total_variance_volume = 0;
+                    $total_variance_amount = 0;
                     
                     $display_results = [];
                     while ($row = mysqli_fetch_assoc($results)) {
+                        // Calculate variance for this row
+                        $row['variance_volume'] = calculateVariance($row['total_volume'], $row['settlement_volume']);
+                        $row['variance_amount'] = calculateVariance($row['total_amount_paid'], ($row['settlement_amount_paid'] + $row['settlement_charge']));
+                        
+                        // Get charge type display
+                        $row['charge_type_display'] = getChargeTypeDisplay($row['serviceCharge'] ?? '', $row['charge_to'] ?? '');
+                        
                         $display_results[] = $row;
                         $total_datetime_volume += $row['datetime_volume'];
                         $total_datetime_amount += $row['datetime_amount_paid'];
-                        $total_datetime_charge += $row['datetime_charge'];
+                        $total_datetime_charge_partner += $row['datetime_charge_partner'];
+                        $total_datetime_charge_customer += $row['datetime_charge_customer'];
+                        $total_datetime_charge_total += $row['datetime_charge_total'];
                         $total_cancellation_volume += $row['cancellation_volume'];
                         $total_cancellation_amount += $row['cancellation_amount_paid'];
-                        $total_cancellation_charge += $row['cancellation_charge'];
+                        $total_cancellation_charge_partner += $row['cancellation_charge_partner'];
+                        $total_cancellation_charge_customer += $row['cancellation_charge_customer'];
+                        $total_cancellation_charge_total += $row['cancellation_charge_total'];
                         // FIX: These are now NET values (datetime - cancellation)
                         $total_volume += $row['total_volume'];
                         $total_amount += $row['total_amount_paid'];
+                        $total_charge_partner += $row['total_charge_partner'];
+                        $total_charge_customer += $row['total_charge_customer'];
                         $total_charge += $row['total_charge'];
                         // Settlement totals
                         $total_settlement_volume += $row['settlement_volume'];
                         $total_settlement_amount += $row['settlement_amount_paid'];
+                        $total_settlement_charge_partner += $row['settlement_charge_partner'];
+                        $total_settlement_charge_customer += $row['settlement_charge_customer'];
                         $total_settlement_charge += $row['settlement_charge'];
+                        // Variance totals
+                        $total_variance_volume += $row['variance_volume'];
+                        $total_variance_amount += $row['variance_amount'];
                     }
                 ?>
                     <!-- Summary Statistics -->
@@ -629,6 +815,14 @@ function cleanPartnerName($partner_id, $sub_billers_name = '') {
                             <div class="stat-value"><?php echo number_format($total_charge, 2); ?></div>
                             <div class="stat-label">Net Charge</div>
                         </div>
+                        <div class="stat-card">
+                            <div class="stat-value" style="color: #6a1b9a;"><?php echo number_format($total_variance_volume); ?></div>
+                            <div class="stat-label">Variance Volume</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" style="color: #6a1b9a;"><?php echo number_format($total_variance_amount, 2); ?></div>
+                            <div class="stat-label">Variance Amount</div>
+                        </div>
                     </div>
 
                     <!-- Table with Scroll -->
@@ -636,28 +830,48 @@ function cleanPartnerName($partner_id, $sub_billers_name = '') {
                         <table class="results-table">
                             <thead>
                                 <tr>
-                                    <th rowspan="2" style="min-width: 50px;">No.</th>
-                                    <th rowspan="2" style="min-width: 180px;">Partner Name</th>
-                                    <th rowspan="2" style="min-width: 160px;">Biller's Name</th>
-                                    <th colspan="3" style="background: #e6f4ea; color: #1e8e3e;">Normal Transaction</th>
-                                    <th colspan="3" style="background: #fce8e6; color: #d93025;">Cancelled Transaction</th>
-                                    <th colspan="3" style="background: #e8f0fe; color: #1a73e8;">NET</th>
-                                    <th colspan="3" style="background: #fff3cd; color: #856404;">Settlement</th>
+                                    <th rowspan="3" style="min-width: 50px;">No.</th>
+                                    <th rowspan="3" style="min-width: 180px;">Partner Name</th>
+                                    <th rowspan="3" style="min-width: 140px;">Charge Type</th>
+                                    <th rowspan="3" style="min-width: 160px;">Biller's Name</th>
+                                    <th colspan="4" style="background: #e6f4ea; color: #1e8e3e;">Transaction</th>
+                                    <th colspan="4" style="background: #fce8e6; color: #d93025;">Cancelled Transaction</th>
+                                    <th colspan="4" style="background: #e8f0fe; color: #1a73e8;">NET</th>
+                                    <th colspan="4" style="background: #fff3cd; color: #856404;">Settlement</th>
+                                    <th colspan="2" style="background: #f3e5f5; color: #6a1b9a;">Variance</th>
                                 </tr>
                                 <tr>
-                                    <th style="background: #e6f4ea;">Vol.</th>
-                                    <th style="background: #e6f4ea;">₱ Amount</th>
-                                    <th style="background: #e6f4ea;">₱ Charge</th>
-                                    <th style="background: #fce8e6;">Vol.</th>
-                                    <th style="background: #fce8e6;">₱ Amount</th>
-                                    <th style="background: #fce8e6;">₱ Charge</th>
-                                    <th style="background: #e8f0fe;">Vol.</th>
-                                    <th style="background: #e8f0fe;">₱ Amount</th>
-                                    <th style="background: #e8f0fe;">₱ Charge</th>
-                                    <th style="background: #fff3cd;">Vol.</th>
-                                    <th style="background: #fff3cd;">₱ Amount</th>
-                                    <th style="background: #fff3cd;">₱ Charge</th>
+                                    <th colspan="2"></th>
+                                    <th colspan="2">₱ Charge</th>
+                                    <th colspan="2"></th>
+                                    <th colspan="2">₱ Charge</th>
+                                    <th colspan="2"></th>
+                                    <th colspan="2">₱ Charge</th>
+                                    <th colspan="2"></th>
+                                    <th colspan="2">₱ Charge</th>
+                                    <th colspan="2"></th>
                                 </tr>
+                                <tr>
+                                    <th>Vol.</th>
+                                    <th>₱ Amount</th>
+                                    <th>Partner</th>
+                                    <th>Customer</th>
+                                    <th>Vol.</th>
+                                    <th>₱ Amount</th>
+                                    <th>Partner</th>
+                                    <th>Customer</th>
+                                    <th>Vol.</th>
+                                    <th>₱ Amount</th>
+                                    <th>Partner</th>
+                                    <th>Customer</th>
+                                    <th>Vol.</th>
+                                    <th>₱ Amount</th>
+                                    <th>Partner</th>
+                                    <th>Customer</th>
+                                    <th>Vol.</th>
+                                    <th>₱ Amount</th>
+                                </tr>
+
                             </thead>
                             <tbody>
                                 <?php 
@@ -677,6 +891,48 @@ function cleanPartnerName($partner_id, $sub_billers_name = '') {
                                     if ($is_unassigned && $display_sub_biller === '-') {
                                         $display_sub_biller = 'Unassigned Partner Transaction';
                                     }
+                                    
+                                    // Calculate variance values
+                                    $variance_volume = $row['variance_volume'];
+                                    $variance_amount = $row['variance_amount'];
+                                    
+                                    // Determine variance styling
+                                    $volume_class = '';
+                                    $amount_class = '';
+                                    if ($variance_volume > 0) {
+                                        $volume_class = 'variance-positive';
+                                    } elseif ($variance_volume < 0) {
+                                        $volume_class = 'variance-negative';
+                                    } else {
+                                        $volume_class = 'variance-zero';
+                                    }
+                                    
+                                    if ($variance_amount > 0) {
+                                        $amount_class = 'variance-positive';
+                                    } elseif ($variance_amount < 0) {
+                                        $amount_class = 'variance-negative';
+                                    } else {
+                                        $amount_class = 'variance-zero';
+                                    }
+                                    
+                                    // Get charge type display
+                                    $charge_type_display = $row['charge_type_display'];
+                                    
+                                    // Determine charge type CSS class for styling
+                                    $charge_type_class = 'charge-type-default';
+                                    if (stripos($charge_type_display, 'PARTNER') !== false) {
+                                        $charge_type_class = 'charge-type-partner';
+                                    } elseif (stripos($charge_type_display, 'CUSTOMER') !== false) {
+                                        $charge_type_class = 'charge-type-customer';
+                                    }
+                                    
+                                    if (stripos($charge_type_display, 'DAILY') !== false) {
+                                        $charge_type_class .= ' charge-type-daily';
+                                    } elseif (stripos($charge_type_display, 'WEEKLY') !== false) {
+                                        $charge_type_class .= ' charge-type-weekly';
+                                    } elseif (stripos($charge_type_display, 'MONTHLY') !== false) {
+                                        $charge_type_class .= ' charge-type-monthly';
+                                    }
                                 ?>
                                     <tr>
                                         <td><?php echo $counter++; ?></td>
@@ -686,43 +942,71 @@ function cleanPartnerName($partner_id, $sub_billers_name = '') {
                                                 <span style="font-size: 10px; color: #d93025; display: block;">(No Partner ID)</span>
                                             <?php endif; ?>
                                         </td>
+                                        <td style="text-align: center;">
+                                            <span class="charge-type-badge <?php echo $charge_type_class; ?>">
+                                                <?php echo htmlspecialchars($charge_type_display); ?>
+                                            </span>
+                                        </td>
                                         <td style="text-align: left; padding-left: 15px;"><?php echo htmlspecialchars($display_sub_biller); ?></td>
+                                        <!-- Transaction -->
                                         <td><?php echo number_format($row['datetime_volume']); ?></td>
                                         <td style="text-align: right;"><?php echo number_format($row['datetime_amount_paid'], 2); ?></td>
-                                        <td style="text-align: right;"><?php echo number_format($row['datetime_charge'], 2); ?></td>
-                                        <!-- FIX: Display cancellation values as positive numbers (absolute values) -->
+                                        <td><?php echo number_format($row['datetime_charge_partner'], 2); ?></td>
+                                        <td><?php echo number_format($row['datetime_charge_customer'], 2); ?></td>
+                                        <!-- Cancelled Transaction -->
                                         <td><?php echo number_format($row['cancellation_volume']); ?></td>
                                         <td style="text-align: right;"><?php echo number_format(abs($row['cancellation_amount_paid']), 2); ?></td>
-                                        <td style="text-align: right;"><?php echo number_format(abs($row['cancellation_charge']), 2); ?></td>
-                                        <!-- FIX: Display NET values (datetime - cancellation) -->
+                                        <td><?php echo number_format(abs($row['cancellation_charge_partner']), 2); ?></td>
+                                        <td><?php echo number_format(abs($row['cancellation_charge_customer']), 2); ?></td>
+                                        <!-- NET -->
                                         <td><strong><?php echo number_format($row['total_volume']); ?></strong></td>
                                         <td><strong><?php echo number_format($row['total_amount_paid'], 2); ?></strong></td>
-                                        <td><strong><?php echo number_format($row['total_charge'], 2); ?></strong></td>
-                                        <!-- Settlement Section - Now populated with actual data -->
-                                        <td style="background: #fff8e1;"><?php echo number_format($row['settlement_volume']); ?></td>
-                                        <td style="background: #fff8e1; text-align: right;"><?php echo number_format($row['settlement_amount_paid'], 2); ?></td>
-                                        <td style="background: #fff8e1; text-align: right;"><?php echo number_format($row['settlement_charge'], 2); ?></td>
+                                        <td><strong><?php echo number_format($row['total_charge_partner'], 2); ?></strong></td>
+                                        <td><strong><?php echo number_format($row['total_charge_customer'], 2); ?></strong></td>
+                                        <!-- Settlement -->
+                                        <td><?php echo number_format($row['settlement_volume']); ?></td>
+                                        <td><?php echo number_format($row['settlement_amount_paid'], 2); ?></td>
+                                        <td><?php echo number_format($row['settlement_charge_partner'], 2); ?></td>
+                                        <td><?php echo number_format($row['settlement_charge_customer'], 2); ?></td>
+                                        <!-- Variance -->
+                                        <td class="<?php echo $volume_class; ?>">
+                                            <?php echo number_format($variance_volume); ?>
+                                        </td>
+                                        <td class="<?php echo $amount_class; ?>">
+                                            <?php echo number_format($variance_amount, 2); ?>
+                                        </td>
                                     </tr>
                                 <?php endforeach; ?>
                                 
                                 <!-- FIX: TOTAL now uses NET values -->
                                 <tr class="grand-total">
-                                    <td colspan="3" style="text-align: right; padding-right: 20px;">TOTAL</td>
+                                    <td colspan="4" style="text-align: right; padding-right: 20px;">TOTAL</td>
                                     <td><?php echo number_format($total_datetime_volume); ?></td>
                                     <td style="text-align: right;"><?php echo number_format($total_datetime_amount, 2); ?></td>
-                                    <td style="text-align: right;"><?php echo number_format($total_datetime_charge, 2); ?></td>
-                                    <!-- FIX: Display cancellation totals as positive numbers -->
+                                    <td><?php echo number_format($total_datetime_charge_partner, 2); ?></td>
+                                    <td><?php echo number_format($total_datetime_charge_customer, 2); ?></td>
+                                    <!-- Cancellation totals -->
                                     <td><?php echo number_format($total_cancellation_volume); ?></td>
                                     <td style="text-align: right;"><?php echo number_format(abs($total_cancellation_amount), 2); ?></td>
-                                    <td style="text-align: right;"><?php echo number_format(abs($total_cancellation_charge), 2); ?></td>
-                                    <!-- FIX: TOTAL NET values -->
+                                    <td><?php echo number_format(abs($total_cancellation_charge_partner), 2); ?></td>
+                                    <td><?php echo number_format(abs($total_cancellation_charge_customer), 2); ?></td>
+                                    <!-- NET totals -->
                                     <td><strong><?php echo number_format($total_volume); ?></strong></td>
                                     <td><strong><?php echo number_format($total_amount, 2); ?></strong></td>
-                                    <td><strong><?php echo number_format($total_charge, 2); ?></strong></td>
-                                    <!-- Settlement Total - Now populated with actual data -->
-                                    <td style="background: #fff8e1;"><strong><?php echo number_format($total_settlement_volume); ?></strong></td>
-                                    <td style="background: #fff8e1; text-align: right;"><strong><?php echo number_format($total_settlement_amount, 2); ?></strong></td>
-                                    <td style="background: #fff8e1; text-align: right;"><strong><?php echo number_format($total_settlement_charge, 2); ?></strong></td>
+                                    <td><strong><?php echo number_format($total_charge_partner, 2); ?></strong></td>
+                                    <td><strong><?php echo number_format($total_charge_customer, 2); ?></strong></td>
+                                    <!-- Settlement totals -->
+                                    <td><strong><?php echo number_format($total_settlement_volume); ?></strong></td>
+                                    <td><strong><?php echo number_format($total_settlement_amount, 2); ?></strong></td>
+                                    <td><strong><?php echo number_format($total_settlement_charge_partner, 2); ?></strong></td>
+                                    <td><strong><?php echo number_format($total_settlement_charge_customer, 2); ?></strong></td>
+                                    <!-- Variance totals -->
+                                    <td>
+                                        <strong><?php echo number_format($total_variance_volume); ?></strong>
+                                    </td>
+                                    <td>
+                                        <strong><?php echo number_format($total_variance_amount, 2); ?></strong>
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>

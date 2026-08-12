@@ -21,10 +21,12 @@ if (!function_exists('has_any_permission') || !has_any_permission(['Settlement P
 $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
 
 // ============================================
-// FUNCTION: Get bank abbreviation from multiple sources
+// FUNCTION: Get bank abbreviation from database only
 // ============================================
 function getBankAbbreviation(mysqli $conn, string $bank_name): string {
-    if (empty($bank_name)) return '';
+    if (empty($bank_name)) {
+        return '';
+    }
 
     $bank_name = trim($bank_name);
     $bank_name_upper = strtoupper($bank_name);
@@ -83,76 +85,31 @@ function getBankAbbreviation(mysqli $conn, string $bank_name): string {
         $stmt2->close();
     }
 
-    // Try 4: Known bank abbreviations (expanded + normalized)
-    $known_banks = [
-        // AUB
-        'ASIA UNITED BANK CORPORATION' => 'AUB',
-        'ASIA UNITED BANK CORPORATION (AUB)' => 'AUB',
-        'ASIA UNITED BANK' => 'AUB',
-        'ASIA UNITED' => 'AUB',
-        'AUB' => 'AUB',
-        // BPI
-        'BANK OF THE PHILIPPINE ISLANDS' => 'BPI',
-        'BANK OF THE PHILIPPINE ISLANDS (BPI)' => 'BPI',
-        'BPI' => 'BPI',
-        // BDO
-        'BANCO DE ORO' => 'BDO',
-        'BANCO DE ORO (BDO)' => 'BDO',
-        'BDO UNIBANK' => 'BDO',
-        'BDO' => 'BDO',
-        // Metrobank
-        'METROPOLITAN BANK & TRUST COMPANY' => 'MBT',
-        'METROPOLITAN BANK AND TRUST COMPANY' => 'MBT',
-        'METROPOLITAN BANK & TRUST COMPANY (METROBANK)' => 'MBT',
-        'METROBANK' => 'MBT',
-        'MBT' => 'MBT',
-        // PNB
-        'PHILIPPINE NATIONAL BANK' => 'PNB',
-        'PHILIPPINE NATIONAL BANK (PNB)' => 'PNB',
-        'PNB' => 'PNB',
-        // UnionBank
-        'UNION BANK OF THE PHILIPPINES' => 'UBP',
-        'UNION BANK OF THE PHILIPPINES (UNIONBANK)' => 'UBP',
-        'UNIONBANK' => 'UBP',
-        'UBP' => 'UBP',
-        // Security Bank
-        'SECURITY BANK CORPORATION' => 'SBC',
-        'SECURITY BANK' => 'SBC',
-        'SBC' => 'SBC',
-        // China Bank
-        'CHINA BANKING CORPORATION' => 'CBC',
-        'CHINA BANK' => 'CBC',
-        'CBC' => 'CBC',
-        // Land Bank
-        'LAND BANK OF THE PHILIPPINES' => 'LBP',
-        'LAND BANK OF THE PHILIPPINES (LBP)' => 'LBP',
-        'LANDBANK' => 'LBP',
-        'LBP' => 'LBP',
-        // DBP
-        'DEVELOPMENT BANK OF THE PHILIPPINES' => 'DBP',
-        'DEVELOPMENT BANK OF THE PHILIPPINES (DBP)' => 'DBP',
-        'DBP' => 'DBP',
-    ];
+    // If no abbreviation found, return empty string
+    // The caller should handle this case and use 'RFP' as fallback
+    return '';
+}
 
-    foreach ($known_banks as $known_name => $abbr) {
-        if (stripos($bank_name_upper, $known_name) !== false || stripos($known_name, $bank_name_upper) !== false) {
-            return $abbr;
+// ============================================
+// FUNCTION: Get bank for a partner
+// ============================================
+function getPartnerBank(mysqli $conn, string $partner_id): string {
+    if (empty($partner_id)) {
+        return '';
+    }
+    
+    $query = "SELECT bank FROM masterdata.partner_masterfile WHERE partner_id_kpx = ? LIMIT 1";
+    $stmt = $conn->prepare($query);
+    if ($stmt) {
+        $stmt->bind_param("s", $partner_id);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            $stmt->close();
+            return trim($row['bank'] ?? '');
         }
+        $stmt->close();
     }
-
-    // Try 5: first-letter fallback (last resort)
-    $words = preg_split('/[\s,()&\-]+/', $bank_name);
-    $abbr = '';
-    foreach ($words as $word) {
-        $word = trim($word);
-        if (!empty($word) && strlen($word) > 1 && !in_array(strtoupper($word), ['OF','THE','AND','BANK','CORPORATION','CORP','INC','LTD'])) {
-            $abbr .= strtoupper($word[0]);
-        }
-    }
-    if (strlen($abbr) >= 2) {
-        return substr($abbr, 0, 4);
-    }
-
     return '';
 }
 
@@ -189,7 +146,7 @@ function formatCADDate(?string $date_from, ?string $date_to): string {
 // ============================================
 try {
     // Get distinct partners (partner_id_kpx + partner_name)
-    $partners_query = "SELECT DISTINCT partner_id_kpx, partner_name FROM masterdata.partner_masterfile WHERE partner_id_kpx IS NOT NULL AND partner_id_kpx != '' ORDER BY partner_name";
+    $partners_query = "SELECT DISTINCT partner_id_kpx, partner_name, bank FROM masterdata.partner_masterfile WHERE partner_id_kpx IS NOT NULL AND partner_id_kpx != '' ORDER BY partner_name";
     $partners_result = $conn->query($partners_query);
     $partners = [];
     while ($row = $partners_result->fetch_assoc()) {
@@ -229,6 +186,18 @@ $selected_rfp_no = isset($_GET['rfp_no']) ? trim($_GET['rfp_no']) : '';
 
 // Flag to check if filters are applied
 $has_filters = !empty(array_filter($_GET));
+
+// ============================================
+// AUTO-POPULATE BANK FROM PARTNER
+// ============================================
+$auto_selected_bank = '';
+if (!empty($selected_partner) && empty($selected_bank)) {
+    $auto_selected_bank = getPartnerBank($conn, $selected_partner);
+    if (!empty($auto_selected_bank)) {
+        $selected_bank = $auto_selected_bank;
+        $_GET['bank'] = $auto_selected_bank;
+    }
+}
 
 // ============================================
 // RETRIEVE RFP NO. FROM DATABASE IF NOT PROVIDED
@@ -287,10 +256,11 @@ if (empty($selected_rfp_no) && $has_filters) {
 }
 
 // ============================================
-// GENERATE CAD NUMBER - FIXED
+// GENERATE CAD NUMBER
 // ============================================
 $bank_abbreviation = '';
 $cad_number = '';
+$cad_generated = false;
 
 // Prefer generating a fresh CAD from the current filters.
 // Only reuse a DB value when it already looks correct (starts with a real bank abbr).
@@ -315,6 +285,8 @@ if (!empty($selected_bank)) {
     $bank_abbreviation = getBankAbbreviation($conn, $selected_bank);
     error_log("Settlement Page - Bank abbreviation for '$selected_bank': '$bank_abbreviation'");
 }
+
+// If we still don't have a bank abbreviation, try to get it from the partner
 if (empty($bank_abbreviation) && !empty($selected_partner)) {
     $abbr_query = "SELECT DISTINCT bank_abbreviation FROM masterdata.partner_masterfile 
                    WHERE partner_id_kpx = ? AND bank_abbreviation IS NOT NULL AND bank_abbreviation != '' LIMIT 1";
@@ -338,11 +310,13 @@ if (!empty($existing_cad) && !empty($bank_abbreviation)) {
     if (stripos($existing_cad, $bank_abbreviation . '-') === 0) {
         $use_existing = true;
         $cad_number = $existing_cad;
+        $cad_generated = true;
     }
 } elseif (!empty($existing_cad) && empty($bank_abbreviation) && stripos($existing_cad, 'RFP-') !== 0) {
     // No bank selected – keep non-RFP existing value
     $use_existing = true;
     $cad_number = $existing_cad;
+    $cad_generated = true;
 }
 
 if (!$use_existing) {
@@ -356,9 +330,11 @@ if (!$use_existing) {
 
     if (!empty($bank_abbreviation)) {
         $cad_number = $bank_abbreviation;
+        $cad_generated = true;
     } else {
         error_log("Settlement Page - WARNING: No bank abbreviation found for bank='$selected_bank' partner='$selected_partner'. Using 'RFP' as fallback.");
         $cad_number = 'RFP';
+        $cad_generated = false; // CAD is not valid for settlement
     }
 
     if (!empty($settlement_abbr)) {
@@ -369,6 +345,7 @@ if (!$use_existing) {
 }
 
 error_log("Settlement Page - Final CAD Number: " . $cad_number);
+error_log("Settlement Page - CAD Generated: " . ($cad_generated ? 'Yes' : 'No'));
 
 // Store filters in session to maintain state
 if (!empty(array_filter($_GET))) {
@@ -385,9 +362,6 @@ if (!empty($selected_date_from) && !empty($selected_date_to)) {
     $has_date_range = false;
 }
 
-// ============================================
-// FUNCTION: Calculate settlement amount based on charge type
-// ============================================
 // ============================================
 // FUNCTION: Calculate settlement amount based on charge type
 // ============================================
@@ -735,6 +709,16 @@ if (isset($_SESSION['user_type'])) {
         $display_email = $_SESSION['user_email'] ?? '';
     }
 }
+
+// ============================================
+// REASON NOT SETTLED OPTIONS
+// ============================================
+$reason_options = [
+    '' => 'Select Reason',
+    'For Partner Verification' => 'For Partner Verification',
+    'System Error' => 'System Error',
+    'For Further Checking' => 'For Further Checking'
+];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -827,6 +811,7 @@ if (isset($_SESSION['user_type'])) {
                         <option value="">All Partners</option>
                         <?php foreach ($partners as $partner): ?>
                             <option value="<?php echo htmlspecialchars($partner['partner_id_kpx']); ?>" 
+                                data-bank="<?php echo htmlspecialchars($partner['bank'] ?? ''); ?>"
                                 <?php echo ($selected_partner == $partner['partner_id_kpx']) ? 'selected' : ''; ?>>
                                 <?php echo htmlspecialchars($partner['partner_id_kpx'] . ' - ' . $partner['partner_name']); ?>
                             </option>
@@ -1410,6 +1395,7 @@ if (isset($_SESSION['user_type'])) {
                             </span>
                             <!-- Hidden input so JS can always read the CURRENT CAD after AJAX filter -->
                             <input type="hidden" id="currentCadNo" value="<?php echo htmlspecialchars($cad_number); ?>">
+                            <input type="hidden" id="cadGenerated" value="<?php echo $cad_generated ? 'true' : 'false'; ?>">
                             <?php endif; ?>
                             <?php if ($has_date_range): ?>
                             <span class="table-badge">
@@ -1422,7 +1408,22 @@ if (isset($_SESSION['user_type'])) {
                                 ?>
                             </span>
                             <?php endif; ?>
+                            <?php if (!$cad_generated && !empty($selected_partner)): ?>
+                            <span class="table-badge" style="background: #dc3545; color: #fff;">
+                                <i class="fas fa-exclamation-triangle"></i> Invalid Bank - Cannot Settle
+                            </span>
+                            <?php endif; ?>
                         </div>
+                        
+                        <?php if (!$cad_generated && !empty($selected_partner)): ?>
+                        <div class="alert-danger-custom">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            <strong>Error:</strong> 
+                            The selected partner does not have a valid bank abbreviation configured. 
+                            Please ensure the partner's bank is properly set in the partner masterfile and bank abbreviations are configured in the bank table.
+                            <strong>Settlement is disabled until this is fixed.</strong>
+                        </div>
+                        <?php endif; ?>
                         
                         <?php if ($has_both): ?>
                         <div class="alert-info-custom">
@@ -1460,16 +1461,22 @@ if (isset($_SESSION['user_type'])) {
                                         <input type="checkbox" id="selectAllHeader" onchange="toggleAllRows(this)">
                                     </th>
                                     <th class="center" style="width: 30px;"></th>
-                                    <th class="center">LIST OF BILLS PAYMENT PARTNER</th>
+                                    <th class="center">PARTNER</th>
                                     <th class="center">ACCOUNT NAME</th>
                                     <th class="center">ACCOUNT NUMBER</th>
                                     <th class="center">VOLUME COUNT</th>
                                     <th class="center">PRINCIPAL</th>
-                                    <th class="center">CHARGE TO CUSTOMER</th>
-                                    <th class="center">CHARGE TO PARTNER</th>
+                                    <th class="center" colspan="2">CHARGE</th>
                                     <th class="center">ADJUSTMENT (add/less)</th>
                                     <th class="center settlement-col">AMOUNT FOR SETTLEMENT</th>
                                     <th class="center">STATUS</th>
+                                    <th class="center" style="min-width: 180px;">REASON NOT SETTLED</th>
+                                </tr>
+                                <tr>
+                                    <th colspan="7" style="font-style: italic; font-size: 12px; color: #ff0000;">Check Partners to Proceed Settlement</th>
+                                    <th class="center">CUSTOMER</th>
+                                    <th class="center">PARTNER</th>
+                                    <th colspan="4"></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1483,7 +1490,7 @@ if (isset($_SESSION['user_type'])) {
                                 ?>
                                     <!-- Group Header -->
                                     <tr class="group-header-row <?php echo $is_uncategorized ? 'uncategorized' : ''; ?> <?php echo $is_both ? 'both' : ''; ?>">
-                                        <td colspan="12">
+                                        <td colspan="13">
                                             <i class="fas <?php echo $group_data['icon']; ?>"></i>
                                             <?php echo htmlspecialchars($group_data['display_name']); ?>
                                             <?php if ($is_uncategorized): ?>
@@ -1519,11 +1526,12 @@ if (isset($_SESSION['user_type'])) {
                                             data-charge-to="<?php echo $row_data['charge_to']; ?>"
                                             data-service-charge="<?php echo $row_data['service_charge']; ?>">
                                             <td class="center checkbox-cell">
-    <input type="checkbox" class="row-checkbox" 
-           data-row-index="<?php echo $row_data['row_index']; ?>"
-           onchange="updateTotals()" 
-           <?php echo ($is_settled || $row_data['excluded']) ? 'disabled checked' : ''; ?>>
-</td>
+                                                <input type="checkbox" class="row-checkbox" 
+                                                       data-row-index="<?php echo $row_data['row_index']; ?>"
+                                                       onchange="updateTotals(); toggleReasonDropdown(this)"
+                                                       <?php echo ($is_settled || $row_data['excluded']) ? 'disabled checked' : ''; ?>
+                                                       <?php echo (!$cad_generated && !$is_settled) ? 'disabled' : ''; ?>>
+                                            </td>
                                             <td class="center">
                                                 <?php if ($row_data['has_daily_breakdown'] && !empty($row_data['daily_html'])): ?>
                                                     <span class="chevron-toggle" 
@@ -1579,13 +1587,33 @@ if (isset($_SESSION['user_type'])) {
                                                     <?php endif; ?>
                                                 </span>
                                             </td>
+                                            <td class="center reason-cell">
+                                                <?php if ($is_settled): ?>
+                                                    <span style="color: #6c757d; font-size: 12px;">N/A (Settled)</span>
+                                                <?php else: ?>
+                                                    <select class="reason-dropdown" 
+                                                            data-row-index="<?php echo $row_data['row_index']; ?>"
+                                                            data-partner-id="<?php echo $row_data['partner_id']; ?>"
+                                                            <?php echo ($row_data['excluded'] || $is_settled) ? 'disabled' : ''; ?>
+                                                            onchange="updateReason(this, <?php echo $row_data['row_index']; ?>)">
+                                                        <option value="">Select Reason</option>
+                                                        <?php foreach ($reason_options as $value => $label): ?>
+                                                            <?php if ($value !== ''): ?>
+                                                                <option value="<?php echo htmlspecialchars($value); ?>">
+                                                                    <?php echo htmlspecialchars($label); ?>
+                                                                </option>
+                                                            <?php endif; ?>
+                                                        <?php endforeach; ?>
+                                                    </select>
+                                                <?php endif; ?>
+                                            </td>
                                         </tr>
                                         
                                         <?php if ($row_data['has_daily_breakdown'] && !empty($row_data['daily_html'])): ?>
                                             <tr class="daily-breakdown-container" 
                                                 id="dailyBreakdown_<?php echo $row_data['row_index']; ?>" 
                                                 style="display: none;">
-                                                <td colspan="12">
+                                                <td colspan="13">
                                                     <?php echo $row_data['daily_html']; ?>
                                                 </td>
                                             </tr>
@@ -1593,7 +1621,7 @@ if (isset($_SESSION['user_type'])) {
                                             <tr class="daily-breakdown-container" 
                                                 id="dailyBreakdown_<?php echo $row_data['row_index']; ?>" 
                                                 style="display: none;">
-                                                <td colspan="12" class="daily-breakdown-error">
+                                                <td colspan="13" class="daily-breakdown-error">
                                                     <i class="fas fa-info-circle"></i>
                                                     No daily transactions found for this date range.
                                                 </td>
@@ -1629,11 +1657,12 @@ if (isset($_SESSION['user_type'])) {
                                                 <span class="unsettled-status"><i class="fas fa-clock"></i> All Unsettled</span>
                                             <?php endif; ?>
                                         </td>
+                                        <td class="center group-reason"></td>
                                     </tr>
                                     
                                     <?php if (!$is_last_group): ?>
                                         <tr style="height: 8px; background: transparent;">
-                                            <td colspan="12" style="border: none; padding: 0;"></td>
+                                            <td colspan="13" style="border: none; padding: 0;"></td>
                                         </tr>
                                     <?php endif; ?>
                                 <?php endforeach; ?>
@@ -1664,6 +1693,7 @@ if (isset($_SESSION['user_type'])) {
                                             <span class="unsettled-status"><i class="fas fa-clock"></i> All Unsettled</span>
                                         <?php endif; ?>
                                     </td>
+                                    <td class="center grand-reason"></td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1675,7 +1705,10 @@ if (isset($_SESSION['user_type'])) {
                             <button class="btn-export pdf" onclick="exportToPDF()">
                                 <i class="fa-solid fa-file-pdf"></i> Export PDF
                             </button>
-                            <button class="btn-export settle" onclick="settleSelected()" style="margin-left: 10px;">
+                            <button class="btn-export settle <?php echo !$cad_generated ? 'btn-disabled' : ''; ?>" 
+                                    onclick="settleSelected()" 
+                                    <?php echo !$cad_generated ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''; ?> 
+                                    style="margin-left: 10px;">
                                 <i class="fas fa-check-circle"></i> Settle
                             </button>
                         </div>
@@ -1717,6 +1750,7 @@ if (isset($_SESSION['user_type'])) {
     var seconds = 0;
     var stepInterval = null;
     var isPageLoaded = false;
+    var reasonData = {};
     
     // NOTE: Do NOT store CAD number here from PHP – it becomes stale after AJAX filter.
     // Always read the live value from #currentCadNo (updated with the results).
@@ -1732,6 +1766,17 @@ if (isset($_SESSION['user_type'])) {
             },
             allowClear: true,
             width: '100%'
+        });
+        
+        // Auto-populate bank when partner is selected
+        $('#partner').on('change', function() {
+            var selectedOption = $(this).find('option:selected');
+            var bank = selectedOption.data('bank') || '';
+            if (bank) {
+                $('#bank').val(bank).trigger('change');
+            } else {
+                $('#bank').val('').trigger('change');
+            }
         });
         
         if (initialPartner) {
@@ -1971,9 +2016,62 @@ if (isset($_SESSION['user_type'])) {
         chevron.innerHTML = '<i class="fas fa-chevron-up"></i>';
     }
 
+    // ============================================
+    // REASON NOT SETTLED FUNCTIONS
+    // ============================================
+    
+    function toggleReasonDropdown(checkbox) {
+        var row = $(checkbox).closest('.data-row');
+        var reasonSelect = row.find('.reason-dropdown');
+        var isChecked = $(checkbox).prop('checked');
+        var isDisabled = $(checkbox).prop('disabled');
+        
+        if (isChecked) {
+            reasonSelect.prop('disabled', true);
+            reasonSelect.val('');
+            reasonSelect.css('opacity', '0.5');
+            // Remove stored reason
+            var rowIndex = row.data('row-index');
+            if (rowIndex !== undefined) {
+                delete reasonData[rowIndex];
+            }
+        } else if (!isDisabled) {
+            reasonSelect.prop('disabled', false);
+            reasonSelect.css('opacity', '1');
+        }
+    }
+
+    function updateReason(element, rowIndex) {
+        var reason = $(element).val();
+        var partnerId = $(element).data('partner-id');
+        
+        if (reason) {
+            reasonData[rowIndex] = {
+                reason: reason,
+                partner_id: partnerId
+            };
+        } else {
+            delete reasonData[rowIndex];
+        }
+    }
+
     function toggleAllRows(checkbox) {
         var isChecked = $(checkbox).prop('checked');
-        $('.row-checkbox:not(:disabled)').prop('checked', isChecked);
+        var cadGenerated = $('#cadGenerated').val() === 'true';
+        
+        // If CAD is not generated, only allow toggling settled rows
+        $('.row-checkbox:not(:disabled)').each(function() {
+            var row = $(this).closest('.data-row');
+            var isSettled = row.data('is-settled') === true;
+            
+            if (!cadGenerated && !isSettled) {
+                // Don't toggle unsettled rows when CAD is invalid
+                return;
+            }
+            
+            $(this).prop('checked', isChecked);
+            toggleReasonDropdown(this);
+        });
         updateTotals();
     }
     
@@ -2047,12 +2145,6 @@ if (isset($_SESSION['user_type'])) {
             } else {
                 grandTotals.unsettled_count += txnCount;
             }
-            
-            // if (isChecked) {
-            //     row.removeClass('excluded-row');
-            // } else {
-            //     row.addClass('excluded-row');
-            // }
         });
         
         $('.group-subtotal-row').each(function() {
@@ -2266,6 +2358,10 @@ if (isset($_SESSION['user_type'])) {
                 exportUrl += '&excluded_rows=' + encodeURIComponent(excludedRows.join(','));
             }
             
+            // Include reason data for excluded rows
+            var reasonDataStr = JSON.stringify(reasonData);
+            exportUrl += '&reason_data=' + encodeURIComponent(reasonDataStr);
+            
             window.open(exportUrl, '_blank');
             
             setTimeout(function() {
@@ -2348,6 +2444,10 @@ if (isset($_SESSION['user_type'])) {
                 exportUrl += '&excluded_rows=' + encodeURIComponent(excludedRows.join(','));
             }
             
+            // Include reason data for excluded rows
+            var reasonDataStr = JSON.stringify(reasonData);
+            exportUrl += '&reason_data=' + encodeURIComponent(reasonDataStr);
+            
             window.open(exportUrl, '_blank');
             
             setTimeout(function() {
@@ -2357,10 +2457,22 @@ if (isset($_SESSION['user_type'])) {
     }
 
     // ============================================
-    // SETTLE FUNCTION - FIXED with CAD number
+    // SETTLE FUNCTION - FIXED with CAD number and reason data
     // ============================================
     
     function settleSelected() {
+        // Check if CAD is valid
+        var cadGenerated = $('#cadGenerated').val() === 'true';
+        if (!cadGenerated) {
+            Swal.fire({
+                icon: 'error',
+                title: 'Cannot Settle',
+                text: 'The selected partner does not have a valid bank abbreviation configured. Please fix the partner\'s bank configuration first.',
+                confirmButtonColor: '#dc3545'
+            });
+            return;
+        }
+        
         // Get RFP No. from input
         var rfpNo = $('#rfp_no').val().trim();
         
@@ -2368,7 +2480,7 @@ if (isset($_SESSION['user_type'])) {
             Swal.fire({
                 icon: 'warning',
                 title: 'RFP No. Required',
-                text: 'Please enter an RFP No. before settling transactions.',
+                text: 'Please enter an RFP No.',
                 confirmButtonColor: '#ffc107'
             });
             return;
@@ -2401,6 +2513,7 @@ if (isset($_SESSION['user_type'])) {
         var totalVolume = 0;
         var totalSettlement = 0;
         var skippedSettled = 0;
+        var unsettledReasons = [];
         
         $('.data-row').each(function() {
             var checkbox = $(this).find('.row-checkbox');
@@ -2416,15 +2529,34 @@ if (isset($_SESSION['user_type'])) {
                 var partnerName = $(this).data('partner-name') || $(this).find('.partner-name-cell').text().trim();
                 var txnCount = parseInt($(this).data('txn-count')) || 0;
                 var settlement = parseFloat($(this).data('settlement')) || 0;
+                var rowIndex = $(this).data('row-index');
                 
                 checkedRows.push({
                     partner_id: partnerId,
                     partner_name: partnerName,
                     txn_count: txnCount,
-                    settlement_amount: settlement
+                    settlement_amount: settlement,
+                    row_index: rowIndex
                 });
                 totalVolume += txnCount;
                 totalSettlement += settlement;
+            }
+        });
+        
+        // Check for unchecked rows with reasons
+        $('.data-row').each(function() {
+            var checkbox = $(this).find('.row-checkbox');
+            var isSettled = $(this).data('is-settled') === true;
+            var rowIndex = $(this).data('row-index');
+            
+            if (!checkbox.prop('checked') && !isSettled && rowIndex !== undefined) {
+                var reason = reasonData[rowIndex];
+                if (reason && reason.reason) {
+                    unsettledReasons.push({
+                        partner_id: reason.partner_id,
+                        reason: reason.reason
+                    });
+                }
             }
         });
         
@@ -2444,6 +2576,18 @@ if (isset($_SESSION['user_type'])) {
         
         var skipMsg = skippedSettled > 0 ? `<p style="color: #856404; margin-top: 10px;"><i class="fas fa-info-circle"></i> ${skippedSettled} already settled row(s) were skipped.</p>` : '';
         
+        var reasonMsg = '';
+        if (unsettledReasons.length > 0) {
+            reasonMsg = `
+                <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-top: 10px;">
+                    <p><strong>Reasons for not settling:</strong></p>
+                    <ul style="margin: 5px 0; padding-left: 20px;">
+                        ${unsettledReasons.map(r => `<li>${r.partner_id}: ${r.reason}</li>`).join('')}
+                    </ul>
+                </div>
+            `;
+        }
+        
         Swal.fire({
             title: 'Settle Selected Transactions?',
             html: `
@@ -2461,6 +2605,7 @@ if (isset($_SESSION['user_type'])) {
                         <p><strong>Total Volume Count:</strong> ${totalVolume.toLocaleString()}</p>
                         <p><strong>Total Settlement Amount:</strong> ₱ ${totalSettlement.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
                     </div>
+                    ${reasonMsg}
                     <p style="color: #856404; margin-top: 10px;">
                         <i class="fas fa-exclamation-triangle"></i> 
                         This will mark <strong>ALL</strong> unsettled transactions for the selected partners as <strong>SETTLED</strong>.
@@ -2499,6 +2644,9 @@ if (isset($_SESSION['user_type'])) {
                     var dateFrom = $('#date_from').val() || '';
                     var dateTo = $('#date_to').val() || '';
                     
+                    // Prepare reason data for unsettled rows
+                    var reasonDataStr = JSON.stringify(reasonData);
+                    
                     $.ajax({
                         url: 'settle_transactions.php',
                         type: 'POST',
@@ -2511,7 +2659,8 @@ if (isset($_SESSION['user_type'])) {
                             bank_filter: bank,
                             settlement_type_filter: settlementType,
                             date_from: dateFrom,
-                            date_to: dateTo
+                            date_to: dateTo,
+                            reason_data: reasonDataStr
                         },
                         dataType: 'json',
                         timeout: 120000,
@@ -2551,6 +2700,14 @@ if (isset($_SESSION['user_type'])) {
                                         <li>Total Amount: ₱ ${result.value.data.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</li>
                                         <li>Settled By: ${result.value.data.settled_by}</li>
                                         <li>Settlement Date: ${result.value.data.settlement_date}</li>
+                                    </ul>
+                                </div>
+                            ` : ''}
+                            ${reasonData && Object.keys(reasonData).length > 0 ? `
+                                <div style="text-align: left; margin-top: 15px; background: #fff3cd; padding: 15px; border-radius: 4px; border: 1px solid #ffc107;">
+                                    <strong><i class="fas fa-info-circle"></i> Reasons for Not Settled:</strong>
+                                    <ul style="margin-top: 10px; padding-left: 20px;">
+                                        ${Object.values(reasonData).map(r => `<li>${r.partner_id}: ${r.reason}</li>`).join('')}
                                     </ul>
                                 </div>
                             ` : ''}
