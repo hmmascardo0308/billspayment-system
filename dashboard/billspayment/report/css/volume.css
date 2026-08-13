@@ -297,7 +297,7 @@
         .stat-card .stat-value {
             font-size: 20px;
             font-weight: 700;
-            color: #1a73e8;
+            color: #000000;
         }
         
         .stat-card .stat-label {
@@ -351,16 +351,22 @@
         }
         
         /* Ensure header rows have background */
-        .results-table thead tr:first-child {
+       .results-table thead tr:first-child {
+    position: sticky;
+    top: 0;
+    z-index: 11;
+}
+
+        .results-table thead tr:nth-child(2) {
             position: sticky;
-            top: 0;
-            z-index: 11;
-        }
-        
-        .results-table thead tr:last-child {
-            position: sticky;
-            top: 38px; /* Same value as above */
+            top: 38px;
             z-index: 10;
+        }
+
+        .results-table thead tr:nth-child(3) {
+            position: sticky;
+            top: 76px;
+            z-index: 9;
         }
         
         /* Add shadow to sticky header for better visual separation */
@@ -403,7 +409,7 @@
         
         .results-table .grand-total td {
             font-weight: 700;
-            color: #1a0dab;
+            color: #7b0000;
             background: #f1f3f4;
             position: sticky;
             bottom: 0;

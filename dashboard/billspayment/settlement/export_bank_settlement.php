@@ -16,16 +16,18 @@ $id = resolve_user_identifier();
 if (empty($id)) { header('Location: ../../../login_form.php'); exit; }
 if (!function_exists('has_any_permission') || !has_any_permission(['Settlement Per Bank','Bills Payment'])) { header('Location: ../../home.php'); exit; }
 
-// Function to calculate settlement amount based on charge type (same as main file)
 // ============================================
 // FUNCTION: Calculate settlement amount based on charge type
+// MATCHES settlement-per-bank.php EXACTLY
 // ============================================
 function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment) {
     $charge_to_upper = strtoupper(trim($charge_to));
     $service_charge_upper = strtoupper(trim($service_charge));
     
     // For WEEKLY, MONTHLY, SEMI-MONTHLY: Amount = Principal + Adjustment (no charge deduction)
-    if ($charge_to_upper === 'PARTNER' && in_array($service_charge_upper, ['WEEKLY', 'MONTHLY', 'SEMI-MONTHLY'])) {
+    // This applies to both PARTNER and CUSTOMER charge types
+    if (($charge_to_upper === 'PARTNER' || $charge_to_upper === 'CUSTOMER') && 
+        in_array($service_charge_upper, ['WEEKLY', 'MONTHLY', 'SEMI-MONTHLY'])) {
         return $principal + $adjustment;
     }
     
@@ -485,14 +487,15 @@ try {
             $order = [
                 'CUSTOMER_DAILY' => 1,
                 'CUSTOMER_WEEKLY' => 2,
-                'PARTNER_DAILY' => 3,
-                'PARTNER_WEEKLY' => 4,
-                'PARTNER_SEMI-MONTHLY' => 5,
-                'PARTNER_MONTHLY' => 6,
-                'BOTH_DAILY' => 7,
-                'BOTH_WEEKLY' => 8,
-                'BOTH_MONTHLY' => 9,
-                'UNCATEGORIZED' => 10
+                'CUSTOMER_MONTHLY' => 3,
+                'PARTNER_DAILY' => 4,
+                'PARTNER_WEEKLY' => 5,
+                'PARTNER_SEMI-MONTHLY' => 6,
+                'PARTNER_MONTHLY' => 7,
+                'BOTH_DAILY' => 8,
+                'BOTH_WEEKLY' => 9,
+                'BOTH_MONTHLY' => 10,
+                'UNCATEGORIZED' => 11
             ];
             
             $charge_to = strtoupper(trim($a['charge_to'] ?? ''));
@@ -503,8 +506,8 @@ try {
             $serviceCharge_b = strtoupper(trim($b['serviceCharge'] ?? ''));
             $key_b = $charge_to_b . '_' . $serviceCharge_b;
             
-            $order_a = $order[$key_a] ?? 11;
-            $order_b = $order[$key_b] ?? 11;
+            $order_a = $order[$key_a] ?? 12;
+            $order_b = $order[$key_b] ?? 12;
             
             if ($order_a == $order_b) {
                 return strcmp($a['partner_name'] ?? '', $b['partner_name'] ?? '');
@@ -516,6 +519,7 @@ try {
     $groups = [
         'CHARGE BY CUSTOMER DAILY' => ['display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
         'CHARGE BY CUSTOMER WEEKLY' => ['display_name' => 'NOTE: CHARGE BY CUSTOMER WEEKLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY CUSTOMER MONTHLY' => ['display_name' => 'NOTE: CHARGE BY CUSTOMER MONTHLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
         'CHARGE BY PARTNER DAILY' => ['display_name' => 'NOTE: CHARGE BY PARTNER DAILY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
         'CHARGE BY PARTNER WEEKLY' => ['display_name' => 'NOTE: CHARGE BY PARTNER WEEKLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
         'CHARGE BY PARTNER SEMI MONTHLY' => ['display_name' => 'NOTE: CHARGE BY PARTNER SEMI-MONTHLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
@@ -539,20 +543,37 @@ try {
         if (empty($charge_to)) {
             $group_key = 'UNCATEGORIZED';
         } elseif ($charge_to === 'CUSTOMER') {
-            if ($serviceCharge === 'DAILY') $group_key = 'CHARGE BY CUSTOMER DAILY';
-            elseif ($serviceCharge === 'WEEKLY') $group_key = 'CHARGE BY CUSTOMER WEEKLY';
-            else $group_key = 'UNCATEGORIZED';
+            if ($serviceCharge === 'DAILY') {
+                $group_key = 'CHARGE BY CUSTOMER DAILY';
+            } elseif ($serviceCharge === 'WEEKLY') {
+                $group_key = 'CHARGE BY CUSTOMER WEEKLY';
+            } elseif ($serviceCharge === 'MONTHLY') {
+                $group_key = 'CHARGE BY CUSTOMER MONTHLY';
+            } else {
+                $group_key = 'UNCATEGORIZED';
+            }
         } elseif ($charge_to === 'PARTNER') {
-            if ($serviceCharge === 'DAILY') $group_key = 'CHARGE BY PARTNER DAILY';
-            elseif ($serviceCharge === 'WEEKLY') $group_key = 'CHARGE BY PARTNER WEEKLY';
-            elseif ($serviceCharge === 'SEMI-MONTHLY') $group_key = 'CHARGE BY PARTNER SEMI MONTHLY';
-            elseif ($serviceCharge === 'MONTHLY') $group_key = 'CHARGE BY PARTNER MONTHLY';
-            else $group_key = 'UNCATEGORIZED';
+            if ($serviceCharge === 'DAILY') {
+                $group_key = 'CHARGE BY PARTNER DAILY';
+            } elseif ($serviceCharge === 'WEEKLY') {
+                $group_key = 'CHARGE BY PARTNER WEEKLY';
+            } elseif ($serviceCharge === 'SEMI-MONTHLY') {
+                $group_key = 'CHARGE BY PARTNER SEMI MONTHLY';
+            } elseif ($serviceCharge === 'MONTHLY') {
+                $group_key = 'CHARGE BY PARTNER MONTHLY';
+            } else {
+                $group_key = 'UNCATEGORIZED';
+            }
         } elseif ($charge_to === 'BOTH') {
-            if ($serviceCharge === 'DAILY') $group_key = 'CHARGE BY BOTH DAILY';
-            elseif ($serviceCharge === 'WEEKLY') $group_key = 'CHARGE BY BOTH WEEKLY';
-            elseif ($serviceCharge === 'MONTHLY') $group_key = 'CHARGE BY BOTH MONTHLY';
-            else $group_key = 'UNCATEGORIZED';
+            if ($serviceCharge === 'DAILY') {
+                $group_key = 'CHARGE BY BOTH DAILY';
+            } elseif ($serviceCharge === 'WEEKLY') {
+                $group_key = 'CHARGE BY BOTH WEEKLY';
+            } elseif ($serviceCharge === 'MONTHLY') {
+                $group_key = 'CHARGE BY BOTH MONTHLY';
+            } else {
+                $group_key = 'UNCATEGORIZED';
+            }
         } else {
             $group_key = 'UNCATEGORIZED';
         }
@@ -614,6 +635,7 @@ try {
     $groups = [
         'CHARGE BY CUSTOMER DAILY' => ['display_name' => 'NOTE: CHARGE BY CUSTOMER DAILY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
         'CHARGE BY CUSTOMER WEEKLY' => ['display_name' => 'NOTE: CHARGE BY CUSTOMER WEEKLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
+        'CHARGE BY CUSTOMER MONTHLY' => ['display_name' => 'NOTE: CHARGE BY CUSTOMER MONTHLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
         'CHARGE BY PARTNER DAILY' => ['display_name' => 'NOTE: CHARGE BY PARTNER DAILY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
         'CHARGE BY PARTNER WEEKLY' => ['display_name' => 'NOTE: CHARGE BY PARTNER WEEKLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],
         'CHARGE BY PARTNER SEMI MONTHLY' => ['display_name' => 'NOTE: CHARGE BY PARTNER SEMI-MONTHLY', 'rows' => [], 'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0]],

@@ -142,6 +142,39 @@ function formatCADDate(?string $date_from, ?string $date_to): string {
 }
 
 // ============================================
+// FUNCTION: Calculate settlement amount based on charge type
+// ============================================
+function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment) {
+    $charge_to_upper = strtoupper(trim($charge_to));
+    $service_charge_upper = strtoupper(trim($service_charge));
+    
+    // For WEEKLY, MONTHLY, SEMI-MONTHLY: Amount = Principal + Adjustment (no charge deduction)
+    // This applies to both PARTNER and CUSTOMER charge types
+    if (($charge_to_upper === 'PARTNER' || $charge_to_upper === 'CUSTOMER') && 
+        in_array($service_charge_upper, ['WEEKLY', 'MONTHLY', 'SEMI-MONTHLY'])) {
+        return $principal + $adjustment;
+    }
+    
+    // For DAILY (both CUSTOMER and PARTNER): Amount = Principal - Charge to Partner + Adjustment
+    if (($charge_to_upper === 'CUSTOMER' || $charge_to_upper === 'PARTNER') && $service_charge_upper === 'DAILY') {
+        return $principal - $charge_to_partner + $adjustment;
+    }
+    
+    // For BOTH DAILY: Amount = Principal - Charge to Partner + Adjustment
+    if ($charge_to_upper === 'BOTH' && $service_charge_upper === 'DAILY') {
+        return $principal - $charge_to_partner + $adjustment;
+    }
+    
+    // For BOTH charge types (WEEKLY/MONTHLY): Use the original calculation (Principal + both charges + adjustment)
+    if ($charge_to_upper === 'BOTH') {
+        return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
+    }
+    
+    // Default fallback
+    return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
+}
+
+// ============================================
 // FETCH FILTER DATA
 // ============================================
 try {
@@ -360,37 +393,6 @@ if (!empty($selected_date_from) && !empty($selected_date_to)) {
     }
 } elseif (!empty($selected_date_from) || !empty($selected_date_to)) {
     $has_date_range = false;
-}
-
-// ============================================
-// FUNCTION: Calculate settlement amount based on charge type
-// ============================================
-function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment) {
-    $charge_to_upper = strtoupper(trim($charge_to));
-    $service_charge_upper = strtoupper(trim($service_charge));
-    
-    // For WEEKLY, MONTHLY, SEMI-MONTHLY: Amount = Principal + Adjustment (no charge deduction)
-    if ($charge_to_upper === 'PARTNER' && in_array($service_charge_upper, ['WEEKLY', 'MONTHLY', 'SEMI-MONTHLY'])) {
-        return $principal + $adjustment;
-    }
-    
-    // For DAILY (both CUSTOMER and PARTNER): Amount = Principal - Charge to Partner + Adjustment
-    if (($charge_to_upper === 'CUSTOMER' || $charge_to_upper === 'PARTNER') && $service_charge_upper === 'DAILY') {
-        return $principal - $charge_to_partner + $adjustment;
-    }
-    
-    // For BOTH DAILY: Amount = Principal - Charge to Partner + Adjustment
-    if ($charge_to_upper === 'BOTH' && $service_charge_upper === 'DAILY') {
-        return $principal - $charge_to_partner + $adjustment;
-    }
-    
-    // For BOTH charge types (WEEKLY/MONTHLY): Use the original calculation (Principal + both charges + adjustment)
-    if ($charge_to_upper === 'BOTH') {
-        return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
-    }
-    
-    // Default fallback
-    return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
 }
 
 // ============================================
@@ -1111,14 +1113,15 @@ $reason_options = [
                         $order = [
                             'CUSTOMER_DAILY' => 1,
                             'CUSTOMER_WEEKLY' => 2,
-                            'PARTNER_DAILY' => 3,
-                            'PARTNER_WEEKLY' => 4,
-                            'PARTNER_SEMI-MONTHLY' => 5,
-                            'PARTNER_MONTHLY' => 6,
-                            'BOTH_DAILY' => 7,
-                            'BOTH_WEEKLY' => 8,
-                            'BOTH_MONTHLY' => 9,
-                            'UNCATEGORIZED' => 10
+                            'CUSTOMER_MONTHLY' => 3,
+                            'PARTNER_DAILY' => 4,
+                            'PARTNER_WEEKLY' => 5,
+                            'PARTNER_SEMI-MONTHLY' => 6,
+                            'PARTNER_MONTHLY' => 7,
+                            'BOTH_DAILY' => 8,
+                            'BOTH_WEEKLY' => 9,
+                            'BOTH_MONTHLY' => 10,
+                            'UNCATEGORIZED' => 11
                         ];
                         
                         $charge_to = strtoupper(trim($a['charge_to'] ?? ''));
@@ -1129,8 +1132,8 @@ $reason_options = [
                         $serviceCharge_b = strtoupper(trim($b['serviceCharge'] ?? ''));
                         $key_b = $charge_to_b . '_' . $serviceCharge_b;
                         
-                        $order_a = $order[$key_a] ?? 11;
-                        $order_b = $order[$key_b] ?? 11;
+                        $order_a = $order[$key_a] ?? 12;
+                        $order_b = $order[$key_b] ?? 12;
                         
                         if ($order_a == $order_b) {
                             return strcmp($a['partner_name'] ?? '', $b['partner_name'] ?? '');
@@ -1148,6 +1151,12 @@ $reason_options = [
                         'CHARGE BY CUSTOMER WEEKLY' => [
                             'display_name' => 'NOTE: CHARGE BY CUSTOMER WEEKLY',
                             'icon' => 'fa-user-clock',
+                            'rows' => [],
+                            'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
+                        ],
+                        'CHARGE BY CUSTOMER MONTHLY' => [
+                            'display_name' => 'NOTE: CHARGE BY CUSTOMER MONTHLY',
+                            'icon' => 'fa-user-plus',
                             'rows' => [],
                             'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0]
                         ],
@@ -1246,6 +1255,8 @@ $reason_options = [
                                 $group_key = 'CHARGE BY CUSTOMER DAILY';
                             } elseif ($serviceCharge === 'WEEKLY') {
                                 $group_key = 'CHARGE BY CUSTOMER WEEKLY';
+                            } elseif ($serviceCharge === 'MONTHLY') {
+                                $group_key = 'CHARGE BY CUSTOMER MONTHLY';
                             } else {
                                 $group_key = 'UNCATEGORIZED';
                             }
@@ -2457,9 +2468,8 @@ $reason_options = [
     }
 
     // ============================================
-    // SETTLE FUNCTION - FIXED with CAD number and reason data
+    // SETTLE FUNCTION - UPDATED (No page reload)
     // ============================================
-    
     function settleSelected() {
         // Check if CAD is valid
         var cadGenerated = $('#cadGenerated').val() === 'true';
@@ -2486,7 +2496,7 @@ $reason_options = [
             return;
         }
         
-        // ★★★ Read the CURRENT CAD number from the results area (survives AJAX filter) ★★★
+        // Read the CURRENT CAD number from the results area (survives AJAX filter)
         var cadNo = $('#currentCadNo').val() || '';
         
         // Fallback – extract from the badge text if the hidden input is missing
@@ -2666,7 +2676,7 @@ $reason_options = [
                         timeout: 120000,
                         success: function(response) {
                             if (response.success) {
-                                resolve({ success: true, message: response.message, data: response.data });
+                                resolve({ success: true, message: response.message, data: response.data, partnerIds: partnerIds });
                             } else {
                                 resolve({ success: false, message: response.message || 'Settlement failed.' });
                             }
@@ -2684,6 +2694,49 @@ $reason_options = [
         }).then((result) => {
             if (result.isConfirmed && result.value) {
                 if (result.value.success) {
+                    // Update the UI to reflect settlement changes WITHOUT reloading the page
+                    var settledPartnerIds = result.value.partnerIds || [];
+                    
+                    // 1. Mark the settled rows as settled in the UI
+                    $('.data-row').each(function() {
+                        var partnerId = $(this).data('partner-id');
+                        if (settledPartnerIds.includes(partnerId)) {
+                            // Update data attribute
+                            $(this).data('is-settled', true);
+                            
+                            // Update checkbox - disable and check it
+                            var checkbox = $(this).find('.row-checkbox');
+                            checkbox.prop('disabled', true);
+                            checkbox.prop('checked', true);
+                            
+                            // Update status badge
+                            var statusCell = $(this).find('.status-badge');
+                            statusCell.removeClass('unsettled partial');
+                            statusCell.addClass('settled');
+                            statusCell.html('<i class="fas fa-check-circle"></i> Settled');
+                            
+                            // Update reason dropdown - disable and hide
+                            var reasonSelect = $(this).find('.reason-dropdown');
+                            reasonSelect.prop('disabled', true);
+                            reasonSelect.val('');
+                            reasonSelect.css('opacity', '0.5');
+                            
+                            // Update row styling
+                            $(this).removeClass('unsettled-row partial-row');
+                            $(this).addClass('settled-row');
+                            
+                            // Remove from reason data
+                            var rowIndex = $(this).data('row-index');
+                            if (rowIndex !== undefined) {
+                                delete reasonData[rowIndex];
+                            }
+                        }
+                    });
+                    
+                    // 2. Recalculate all totals
+                    updateTotals();
+                    
+                    // 3. Show success message
                     Swal.fire({
                         icon: 'success',
                         title: 'Settlement Successful',
@@ -2711,11 +2764,15 @@ $reason_options = [
                                     </ul>
                                 </div>
                             ` : ''}
+                            <div style="text-align: left; margin-top: 15px; background: #d4edda; padding: 15px; border-radius: 4px; border: 1px solid #28a745;">
+                                <strong><i class="fas fa-check-circle"></i> Ready to Export:</strong>
+                                <p style="margin-top: 5px;">You can now export this settlement to Excel or PDF using the buttons above.</p>
+                            </div>
                         `,
-                        confirmButtonColor: '#28a745'
-                    }).then(() => {
-                        location.reload();
+                        confirmButtonColor: '#28a745',
+                        confirmButtonText: 'OK'
                     });
+                    
                 } else {
                     Swal.fire({
                         icon: 'error',

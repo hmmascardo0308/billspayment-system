@@ -23,12 +23,18 @@ use Dompdf\Options;
 // ============================================
 // FUNCTION: Calculate settlement amount based on charge type
 // ============================================
+// ============================================
+// FUNCTION: Calculate settlement amount based on charge type
+// MATCHES settlement-per-bank.php EXACTLY
+// ============================================
 function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment) {
     $charge_to_upper = strtoupper(trim($charge_to));
     $service_charge_upper = strtoupper(trim($service_charge));
     
     // For WEEKLY, MONTHLY, SEMI-MONTHLY: Amount = Principal + Adjustment (no charge deduction)
-    if ($charge_to_upper === 'PARTNER' && in_array($service_charge_upper, ['WEEKLY', 'MONTHLY', 'SEMI-MONTHLY'])) {
+    // This applies to both PARTNER and CUSTOMER charge types
+    if (($charge_to_upper === 'PARTNER' || $charge_to_upper === 'CUSTOMER') && 
+        in_array($service_charge_upper, ['WEEKLY', 'MONTHLY', 'SEMI-MONTHLY'])) {
         return $principal + $adjustment;
     }
     
