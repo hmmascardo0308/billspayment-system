@@ -951,11 +951,11 @@ function calculateVariance($net_value, $settlement_value) {
                             <div class="stat-label">Net Charge</div>
                         </div>
                         <div class="stat-card">
-                            <div class="stat-value" style="color: #6a1b9a;"><?php echo number_format($total_variance_volume); ?></div>
+                            <div class="stat-value"><?php echo number_format($total_variance_volume); ?></div>
                             <div class="stat-label">Variance Volume</div>
                         </div>
                         <div class="stat-card">
-                            <div class="stat-value" style="color: #6a1b9a;"><?php echo number_format($total_variance_amount, 2); ?></div>
+                            <div class="stat-value"><?php echo number_format($total_variance_amount, 2); ?></div>
                             <div class="stat-label">Variance Amount</div>
                         </div>
                     </div>

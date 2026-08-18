@@ -309,7 +309,7 @@
         /* Table Wrapper with Scroll - MODIFIED FOR STICKY HEADER */
         .table-wrapper {
             overflow: auto;
-            max-height: 400px;
+            max-height: 500px;
             position: relative;
             flex: 1;
         }
