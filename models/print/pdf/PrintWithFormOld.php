@@ -2,6 +2,7 @@
 // Connect to the database
 require_once __DIR__ . '/../../../config/config.php';
 
+
 // Start the session
 session_start();
 

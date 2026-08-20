@@ -144,9 +144,19 @@ function formatCADDate(?string $date_from, ?string $date_to): string {
 // ============================================
 // FUNCTION: Calculate settlement amount based on charge type
 // ============================================
-function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment) {
+function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment, $partner_id = '', $txn_count = 0) {
+    // Special case for partner_id_kpx = 34: Amount for Settlement = Volume Count + Principal
+    if ((string)$partner_id === '34') {
+        return (float)$txn_count + (float)$principal;
+    }
+
     $charge_to_upper = strtoupper(trim($charge_to));
     $service_charge_upper = strtoupper(trim($service_charge));
+    
+    // UNCATEGORIZED: If charge_to is empty, use Principal + Adjustment (without any charges)
+    if (empty($charge_to_upper)) {
+        return (float)$principal + (float)$adjustment;
+    }
     
     // For WEEKLY, MONTHLY, SEMI-MONTHLY: Amount = Principal + Adjustment (no charge deduction)
     // This applies to both PARTNER and CUSTOMER charge types
@@ -170,8 +180,8 @@ function calculateSettlementAmount($charge_to, $service_charge, $principal, $cha
         return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
     }
     
-    // Default fallback
-    return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
+    // Default fallback for any other case: Principal + Adjustment only (no charges)
+    return (float)$principal + (float)$adjustment;
 }
 
 // ============================================
@@ -222,9 +232,12 @@ $has_filters = !empty(array_filter($_GET));
 
 // ============================================
 // AUTO-POPULATE BANK FROM PARTNER
+// Skip for partner 259 (FAST UNIMERCHANTS INC.) so all three
+// region/bank splits (BPI + BDO Negros + BDO Cebu/Bohol) can appear
+// when only the partner is selected.
 // ============================================
 $auto_selected_bank = '';
-if (!empty($selected_partner) && empty($selected_bank)) {
+if (!empty($selected_partner) && empty($selected_bank) && $selected_partner !== '259') {
     $auto_selected_bank = getPartnerBank($conn, $selected_partner);
     if (!empty($auto_selected_bank)) {
         $selected_bank = $auto_selected_bank;
@@ -398,7 +411,7 @@ if (!empty($selected_date_from) && !empty($selected_date_to)) {
 // ============================================
 // FUNCTION: Get daily breakdown for a partner
 // ============================================
-function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, string $settlement_type, string $date_from, string $date_to) {
+function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, string $settlement_type, string $date_from, string $date_to, array $regions = []) {
     if (empty($partner_id)) {
         return [];
     }
@@ -417,6 +430,19 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
     $where_conditions_adjustment[] = "bt.partner_id_kpx = ?";
     $params_adjustment[] = $partner_id;
     $types_adjustment .= "s";
+    
+    // Optional region filter (used for FDC Mindanao split: GENSAN / CDO)
+    if (!empty($regions)) {
+        $placeholders = implode(',', array_fill(0, count($regions), '?'));
+        $where_conditions_regular[] = "bt.region IN ($placeholders)";
+        $where_conditions_adjustment[] = "bt.region IN ($placeholders)";
+        foreach ($regions as $reg) {
+            $params_regular[] = $reg;
+            $types_regular .= "s";
+            $params_adjustment[] = $reg;
+            $types_adjustment .= "s";
+        }
+    }
     
     if (!empty($bank)) {
         $where_conditions_regular[] = "pm.bank = ?";
@@ -547,6 +573,7 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
                 $charge_to_customer = (float)($row['charge_to_customer'] ?? 0);
                 $charge_to_partner = (float)($row['charge_to_partner'] ?? 0);
                 $adjustment = (float)($row['total_adjustment'] ?? 0);
+                $txn_count = (int)($row['txn_count'] ?? 0);
                 
                 $amount_for_settlement = calculateSettlementAmount(
                     $charge_to,
@@ -554,12 +581,14 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
                     $principal,
                     $charge_to_customer,
                     $charge_to_partner,
-                    $adjustment
+                    $adjustment,
+                    $partner_id,
+                    $txn_count
                 );
                 
                 $data[] = [
                     'transaction_date' => $row['transaction_date'],
-                    'txn_count' => (int)($row['txn_count'] ?? 0),
+                    'txn_count' => $txn_count,
                     'total_principal' => $principal,
                     'charge_to_customer' => $charge_to_customer,
                     'charge_to_partner' => $charge_to_partner,
@@ -576,6 +605,286 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
 }
 
 // ============================================
+// FDC Mindanao (partner 256) region split definitions
+// GENSAN: R24 SOCSK REGION, R16 SARGEN REGION
+// CDO:    R18 CAGAYAN DE ORO REGION, R19 LANAO REGION, R30 BUKIDNON REGION, R14 DAVAO REGION
+// ============================================
+function getFdcMindanaoRegionSets(): array {
+    return [
+        'GENSAN' => [
+            'suffix' => 'GENSAN',
+            'regions' => ['R24 SOCSK REGION', 'R16 SARGEN REGION'],
+            'account_name' => 'FAST DISTRIBUTION CORP.',
+            'account_number' => '158-702-000-915',
+        ],
+        'CDO' => [
+            'suffix' => 'CDO',
+            'regions' => ['R18 CAGAYAN DE ORO REGION', 'R19 LANAO REGION', 'R30 BUKIDNON REGION', 'R14 DAVAO REGION'],
+            'account_name' => 'FAST DISTRIBUTION CORP.',
+            'account_number' => '158-702-000-923',
+        ],
+    ];
+}
+
+// ============================================
+// FAST UNIMERCHANTS INC. (partner 259) region/bank split definitions
+// BPI: Zanorte / Zasurmis / Lanao / Zamsibugay regions
+// BDO Negros: Negros regions
+// BDO Cebu/Bohol: Cebu + Bohol regions
+// Note: partner_masterfile only has BPI registered; BDO splits ignore pm.bank filter
+// ============================================
+function getFuiUnimerchantsRegionSets(): array {
+    return [
+        'BPI' => [
+            'suffix' => '',
+            'bank_key' => 'BPI',
+            'regions' => [
+                'R21 ZANORTE REGION',
+                'R20 ZASURMIS REGION',
+                'R19 LANAO REGION',
+                'R22 ZAMSIBUGAY REGION',
+            ],
+            'partner_name' => 'FAST UNIMERCHANTS INC.',
+            'account_name' => 'FAST UNIMERCHANT, INC.',
+            'account_number' => '9363-1034-37',
+        ],
+        'BDO_NEGROS' => [
+            'suffix' => 'NEGROS',
+            'bank_key' => 'BDO',
+            'regions' => [
+                'R04 NEG.OR.-SIQ. REGION',
+                'R08 NEG OCC A REGION',
+                'R29 NEG OCC B REGION',
+            ],
+            'partner_name' => 'FAST DISTRIBUTION CORPORATIONS NEGROS',
+            'account_name' => 'FAST UNIMERCHANT, INC.',
+            'account_number' => '000820553158',
+        ],
+        'BDO_CEBU' => [
+            'suffix' => 'CEBU/BOHOL',
+            'bank_key' => 'BDO',
+            'regions' => [
+                'R02 CEBU NORTH A REGION',
+                'R03 CEBU SOUTH REGION',
+                'R05 BOHOL REGION',
+                'R26 CEBU NORTH B REGION',
+                'R01 CEBU CENTRAL A REGION',
+                'R27 CEBU CENTRAL B REGION',
+            ],
+            'partner_name' => 'FUI-SHELL-BOHOL AND CEBU',
+            'account_name' => 'FAST UNIMERCHANTS INCORPORATED',
+            'account_number' => '0103 2006 0721',
+        ],
+    ];
+}
+
+/**
+ * Fetch aggregated settlement totals for a partner, optionally filtered by regions.
+ * Returns the same structure used in $combined_data entries, or null if no data.
+ */
+function getPartnerTotalsByRegions(
+    mysqli $conn,
+    string $partner_id,
+    string $bank,
+    string $settlement_type,
+    string $date_from,
+    string $date_to,
+    array $regions = []
+): ?array {
+    if (empty($partner_id)) {
+        return null;
+    }
+
+    $where_regular = ["bt.partner_id_kpx = ?"];
+    $params_regular = [$partner_id];
+    $types_regular = "s";
+
+    $where_adjustment = ["bt.partner_id_kpx = ?"];
+    $params_adjustment = [$partner_id];
+    $types_adjustment = "s";
+
+    if (!empty($regions)) {
+        $ph = implode(',', array_fill(0, count($regions), '?'));
+        $where_regular[] = "bt.region IN ($ph)";
+        $where_adjustment[] = "bt.region IN ($ph)";
+        foreach ($regions as $r) {
+            $params_regular[] = $r;
+            $types_regular .= "s";
+            $params_adjustment[] = $r;
+            $types_adjustment .= "s";
+        }
+    }
+
+    if (!empty($bank)) {
+        $where_regular[] = "pm.bank = ?";
+        $params_regular[] = $bank;
+        $types_regular .= "s";
+        $where_adjustment[] = "pm.bank = ?";
+        $params_adjustment[] = $bank;
+        $types_adjustment .= "s";
+    }
+
+    if (!empty($settlement_type)) {
+        $where_regular[] = "pm.settled_online_check = ?";
+        $params_regular[] = $settlement_type;
+        $types_regular .= "s";
+        $where_adjustment[] = "pm.settled_online_check = ?";
+        $params_adjustment[] = $settlement_type;
+        $types_adjustment .= "s";
+    }
+
+    if (!empty($date_from) && !empty($date_to)) {
+        $where_regular[] = "bt.datetime BETWEEN ? AND ?";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $params_regular[] = $date_to . ' 23:59:59';
+        $types_regular .= "ss";
+    } elseif (!empty($date_from)) {
+        $where_regular[] = "bt.datetime >= ?";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $types_regular .= "s";
+    } elseif (!empty($date_to)) {
+        $where_regular[] = "bt.datetime <= ?";
+        $params_regular[] = $date_to . ' 23:59:59';
+        $types_regular .= "s";
+    }
+    $where_regular[] = "(bt.status IS NULL OR bt.status = '')";
+
+    if (!empty($date_from) && !empty($date_to)) {
+        $where_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
+        $params_adjustment[] = $date_from . ' 00:00:00';
+        $params_adjustment[] = $date_to . ' 23:59:59';
+        $types_adjustment .= "ss";
+    } elseif (!empty($date_from)) {
+        $where_adjustment[] = "bt.cancellation_date >= ?";
+        $params_adjustment[] = $date_from . ' 00:00:00';
+        $types_adjustment .= "s";
+    } elseif (!empty($date_to)) {
+        $where_adjustment[] = "bt.cancellation_date <= ?";
+        $params_adjustment[] = $date_to . ' 23:59:59';
+        $types_adjustment .= "s";
+    }
+    $where_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
+
+    $regular_sql = "SELECT 
+            bt.partner_id_kpx,
+            pm.partner_name,
+            pm.partner_accName,
+            pm.bank_accNumber,
+            pm.bank,
+            pm.settled_online_check as settlement_type,
+            COALESCE(pm.charge_to, '') as charge_to,
+            COALESCE(pm.serviceCharge, '') as serviceCharge,
+            COUNT(*) as txn_count,
+            SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
+            SUM(bt.charge_to_customer) as charge_to_customer,
+            SUM(bt.charge_to_partner) as charge_to_partner,
+            SUM(CASE WHEN bt.settle_unsettle = 'Settled' THEN 1 ELSE 0 END) as settled_count,
+            SUM(CASE WHEN bt.settle_unsettle IS NULL 
+                      OR bt.settle_unsettle = '' 
+                      OR bt.settle_unsettle != 'Settled' 
+                 THEN 1 ELSE 0 END) as unsettled_count,
+            MAX(bt.datetime) as last_transaction_date,
+            MIN(bt.datetime) as first_transaction_date
+        FROM mldb.billspayment_transaction bt
+        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+        WHERE " . implode(" AND ", $where_regular) . "
+        GROUP BY bt.partner_id_kpx, pm.partner_name, pm.partner_accName, pm.bank_accNumber, 
+                 pm.bank, pm.settled_online_check, pm.charge_to, pm.serviceCharge";
+
+    $adjustment_sql = "SELECT 
+            bt.partner_id_kpx,
+            SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment
+        FROM mldb.billspayment_transaction bt
+        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+        WHERE " . implode(" AND ", $where_adjustment) . "
+        GROUP BY bt.partner_id_kpx";
+
+    $entry = null;
+
+    $stmt = $conn->prepare($regular_sql);
+    if ($stmt) {
+        $stmt->bind_param($types_regular, ...$params_regular);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            $entry = [
+                'partner_id_kpx' => $partner_id,
+                'partner_name' => $row['partner_name'] ?? $partner_id,
+                'partner_accName' => $row['partner_accName'] ?? 'N/A',
+                'bank_accNumber' => $row['bank_accNumber'] ?? 'N/A',
+                'bank' => $row['bank'] ?? '',
+                'settlement_type' => $row['settlement_type'] ?? '',
+                'charge_to' => $row['charge_to'] ?? '',
+                'serviceCharge' => $row['serviceCharge'] ?? '',
+                'settle_unsettle' => '',
+                'txn_count' => (int)($row['txn_count'] ?? 0),
+                'total_principal' => (float)($row['total_principal'] ?? 0),
+                'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
+                'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
+                'total_adjustment' => 0,
+                'settled_count' => (int)($row['settled_count'] ?? 0),
+                'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
+                'last_transaction_date' => $row['last_transaction_date'] ?? null,
+                'first_transaction_date' => $row['first_transaction_date'] ?? null,
+            ];
+        }
+        $stmt->close();
+    }
+
+    $stmt = $conn->prepare($adjustment_sql);
+    if ($stmt) {
+        $stmt->bind_param($types_adjustment, ...$params_adjustment);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            $adj = (float)($row['total_adjustment'] ?? 0);
+            if ($entry !== null) {
+                $entry['total_adjustment'] = $adj;
+            } else {
+                // Adjustment-only: still fetch partner details
+                $details_sql = "SELECT partner_name, partner_accName, bank_accNumber, bank,
+                                       settled_online_check as settlement_type,
+                                       COALESCE(charge_to, '') as charge_to,
+                                       COALESCE(serviceCharge, '') as serviceCharge
+                                FROM masterdata.partner_masterfile WHERE partner_id_kpx = ?";
+                $dstmt = $conn->prepare($details_sql);
+                if ($dstmt) {
+                    $dstmt->bind_param("s", $partner_id);
+                    $dstmt->execute();
+                    $dres = $dstmt->get_result();
+                    if ($details = $dres->fetch_assoc()) {
+                        $entry = [
+                            'partner_id_kpx' => $partner_id,
+                            'partner_name' => $details['partner_name'] ?? $partner_id,
+                            'partner_accName' => $details['partner_accName'] ?? 'N/A',
+                            'bank_accNumber' => $details['bank_accNumber'] ?? 'N/A',
+                            'bank' => $details['bank'] ?? '',
+                            'settlement_type' => $details['settlement_type'] ?? '',
+                            'charge_to' => $details['charge_to'] ?? '',
+                            'serviceCharge' => $details['serviceCharge'] ?? '',
+                            'settle_unsettle' => '',
+                            'txn_count' => 0,
+                            'total_principal' => 0,
+                            'charge_to_customer' => 0,
+                            'charge_to_partner' => 0,
+                            'total_adjustment' => $adj,
+                            'settled_count' => 0,
+                            'unsettled_count' => 0,
+                            'last_transaction_date' => null,
+                            'first_transaction_date' => null,
+                        ];
+                    }
+                    $dstmt->close();
+                }
+            }
+        }
+        $stmt->close();
+    }
+
+    return $entry;
+}
+
+// ============================================
 // FUNCTION: Generate daily breakdown HTML
 // ============================================
 function generateDailyBreakdownHTML(array $data): string {
@@ -588,11 +897,11 @@ function generateDailyBreakdownHTML(array $data): string {
     $html .= '<tr style="background-color: #e9ecef; font-size: 12px;">';
     $html .= '<th style="padding: 6px 12px; text-align: center; width: 120px;">Date</th>';
     $html .= '<th style="padding: 6px 12px; text-align: center;">Volume Count</th>';
-    $html .= '<th style="padding: 6px 12px; text-align: right;">Principal</th>';
-    $html .= '<th style="padding: 6px 12px; text-align: right;">Charge to Customer</th>';
-    $html .= '<th style="padding: 6px 12px; text-align: right;">Charge to Partner</th>';
-    $html .= '<th style="padding: 6px 12px; text-align: right;">Adjustment</th>';
-    $html .= '<th style="padding: 6px 12px; text-align: right;">Settlement</th>';
+    $html .= '<th style="padding: 6px 12px; text-align: right;">₱ Principal</th>';
+    $html .= '<th style="padding: 6px 12px; text-align: right;">₱ Charge to Customer</th>';
+    $html .= '<th style="padding: 6px 12px; text-align: right;">₱ Charge to Partner</th>';
+    $html .= '<th style="padding: 6px 12px; text-align: right;">₱ Adjustment</th>';
+    $html .= '<th style="padding: 6px 12px; text-align: right;">₱ Settlement</th>';
     $html .= '<th style="padding: 6px 12px; text-align: center;">Status</th>';
     $html .= '</tr>';
     $html .= '</thead>';
@@ -644,21 +953,21 @@ function generateDailyBreakdownHTML(array $data): string {
             date('M d, Y', strtotime($daily['transaction_date'])) . '</td>';
         $html .= '<td style="padding: 6px 12px; text-align: center;">' . 
             number_format($daily['txn_count'], 0) . '</td>';
-        $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . 
+        $html .= '<td style="padding: 6px 12px; text-align: right;"> ' . 
             number_format($daily['total_principal'], 2) . '</td>';
-        $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . 
+        $html .= '<td style="padding: 6px 12px; text-align: right;"> ' . 
             number_format($daily['charge_to_customer'], 2) . '</td>';
-        $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . 
+        $html .= '<td style="padding: 6px 12px; text-align: right;"> ' . 
             number_format($daily['charge_to_partner'], 2) . '</td>';
         
         if ($daily['total_adjustment'] != 0) {
             $html .= '<td style="padding: 6px 12px; text-align: right; ' . $adjClass . '">' . 
-                $adjSign . '₱ ' . number_format($daily['total_adjustment'], 2) . '</td>';
+                $adjSign . ' ' . number_format($daily['total_adjustment'], 2) . '</td>';
         } else {
             $html .= '<td style="padding: 6px 12px; text-align: right;"></td>';
         }
         
-        $html .= '<td style="padding: 6px 12px; text-align: right; font-weight: 600; ' . $settleClass . '">₱ ' . 
+        $html .= '<td style="padding: 6px 12px; text-align: right; font-weight: 600; ' . $settleClass . '"> ' . 
             number_format($daily['amount_for_settlement'], 2) . '</td>';
         $html .= '<td style="padding: 6px 12px; text-align: center;">' . $statusBadge . '</td>';
         $html .= '</tr>';
@@ -671,18 +980,18 @@ function generateDailyBreakdownHTML(array $data): string {
     $html .= '<tr class="daily-subtotal-row" style="font-size: 13px; font-weight: 600; background-color: #e9ecef;">';
     $html .= '<td style="padding: 6px 12px; text-align: right; font-weight: 600;">DAILY SUBTOTAL</td>';
     $html .= '<td style="padding: 6px 12px; text-align: center;">' . number_format($dailyTotals['txn_count'], 0) . '</td>';
-    $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . number_format($dailyTotals['principal'], 2) . '</td>';
-    $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . number_format($dailyTotals['charge_to_customer'], 2) . '</td>';
-    $html .= '<td style="padding: 6px 12px; text-align: right;">₱ ' . number_format($dailyTotals['charge_to_partner'], 2) . '</td>';
+    $html .= '<td style="padding: 6px 12px; text-align: right;"> ' . number_format($dailyTotals['principal'], 2) . '</td>';
+    $html .= '<td style="padding: 6px 12px; text-align: right;"> ' . number_format($dailyTotals['charge_to_customer'], 2) . '</td>';
+    $html .= '<td style="padding: 6px 12px; text-align: right;"> ' . number_format($dailyTotals['charge_to_partner'], 2) . '</td>';
     
     if ($dailyTotals['adjustment'] != 0) {
         $html .= '<td style="padding: 6px 12px; text-align: right; ' . $adjClass . '">' . 
-            $adjSign . '₱ ' . number_format($dailyTotals['adjustment'], 2) . '</td>';
+            $adjSign . ' ' . number_format($dailyTotals['adjustment'], 2) . '</td>';
     } else {
         $html .= '<td style="padding: 6px 12px; text-align: right;"></td>';
     }
     
-    $html .= '<td style="padding: 6px 12px; text-align: right; ' . $settleClass . '">₱ ' . 
+    $html .= '<td style="padding: 6px 12px; text-align: right; ' . $settleClass . '"> ' . 
         number_format($dailyTotals['settlement'], 2) . '</td>';
     $html .= '<td style="padding: 6px 12px; text-align: center; font-size: 11px;">';
     if ($dailyTotals['settled_count'] > 0 && $dailyTotals['unsettled_count'] > 0) {
@@ -1106,6 +1415,100 @@ $reason_options = [
                     }
                 }
                 
+                // ------------------------------------------------
+                // Special: Split partner 256 (FDC Mindanao) into
+                // GENSAN and CDO rows based on bt.region
+                // ------------------------------------------------
+                if (isset($combined_data['256'])) {
+                    $base_256 = $combined_data['256'];
+                    unset($combined_data['256']);
+
+                    $fdc_sets = getFdcMindanaoRegionSets();
+                    foreach ($fdc_sets as $key => $set) {
+                        $entry = getPartnerTotalsByRegions(
+                            $conn,
+                            '256',
+                            $selected_bank,
+                            $selected_settlement_type,
+                            $selected_date_from,
+                            $selected_date_to,
+                            $set['regions']
+                        );
+                        if ($entry !== null) {
+                            $entry['partner_name'] = 'FDC - ' . $set['suffix'];
+                            $entry['partner_accName'] = $set['account_name'];
+                            $entry['bank_accNumber'] = $set['account_number'];
+                            $entry['fdc_split'] = $key; // GENSAN or CDO
+                            $entry['fdc_regions'] = $set['regions'];
+                            // Use unique key so both rows appear
+                            $combined_data['256-' . $key] = $entry;
+                        }
+                    }
+                }
+
+                // ------------------------------------------------
+                // Special: Split partner 259 (FAST UNIMERCHANTS INC.) into
+                // BPI, BDO-Negros and BDO-Cebu/Bohol rows based on bt.region
+                // (masterfile only has BPI; BDO splits skip pm.bank filter)
+                // Triggers when:
+                //   - partner 259 is selected, OR
+                //   - partner 259 already appears in results, OR
+                //   - bank filter is BPI or BDO (so bank-only search still shows the splits)
+                // ------------------------------------------------
+                $selected_bank_upper = strtoupper(trim($selected_bank));
+                $is_bpi_bank = !empty($selected_bank) && (
+                    strpos($selected_bank_upper, 'BPI') !== false ||
+                    strpos($selected_bank_upper, 'PHILIPPINE ISLANDS') !== false
+                );
+                $is_bdo_bank = !empty($selected_bank) && strpos($selected_bank_upper, 'BDO') !== false;
+
+                if (isset($combined_data['259']) || $selected_partner === '259' || $is_bpi_bank || $is_bdo_bank) {
+                    unset($combined_data['259']);
+
+                    $fui_sets = getFuiUnimerchantsRegionSets();
+
+                    foreach ($fui_sets as $key => $set) {
+                        // Include based on selected bank filter (if any).
+                        // No bank selected → show all three splits.
+                        $include = true;
+                        if (!empty($selected_bank)) {
+                            if ($set['bank_key'] === 'BPI' && !$is_bpi_bank) {
+                                $include = false;
+                            } elseif ($set['bank_key'] === 'BDO' && !$is_bdo_bank) {
+                                $include = false;
+                            }
+                        }
+
+                        if (!$include) {
+                            continue;
+                        }
+
+                        // Pass empty bank so we do not filter on pm.bank
+                        // (partner_masterfile only registers BPI for this partner)
+                        $entry = getPartnerTotalsByRegions(
+                            $conn,
+                            '259',
+                            '', // ignore pm.bank
+                            $selected_settlement_type,
+                            $selected_date_from,
+                            $selected_date_to,
+                            $set['regions']
+                        );
+                        if ($entry !== null) {
+                            $entry['partner_name'] = $set['partner_name'];
+                            $entry['partner_accName'] = $set['account_name'];
+                            $entry['bank_accNumber'] = $set['account_number'];
+                            $entry['bank'] = ($set['bank_key'] === 'BPI')
+                                ? 'BANK OF THE PHILIPPINE ISLANDS (BPI)'
+                                : 'BDO UNIBANK, INC.';
+                            $entry['fui_split'] = $key;
+                            $entry['fui_regions'] = $set['regions'];
+                            // Use unique key so multiple rows appear
+                            $combined_data['259-' . $key] = $entry;
+                        }
+                    }
+                }
+
                 if (!empty($combined_data)) {
                     $data_array = array_values($combined_data);
                     
@@ -1206,7 +1609,7 @@ $reason_options = [
                             'is_both' => true
                         ],
                         'UNCATEGORIZED' => [
-                            'display_name' => '⚠️ PARTNERS WITHOUT CHARGE TYPE (UNCATEGORIZED)',
+                            'display_name' => 'PARTNERS WITHOUT CHARGE TYPE (UNCATEGORIZED)',
                             'icon' => 'fa-exclamation-triangle',
                             'rows' => [],
                             'totals' => ['txn_count' => 0, 'principal' => 0, 'charge_to_customer' => 0, 'charge_to_partner' => 0, 'adjustment' => 0, 'settlement' => 0, 'settled_count' => 0, 'unsettled_count' => 0],
@@ -1219,25 +1622,39 @@ $reason_options = [
                     $row_index = 0;
                     $daily_breakdown_cache = [];
                     if ($has_date_range) {
-                        $valid_partners = [];
                         foreach ($data_array as $row) {
-                            $partner_id = $row['partner_id_kpx'];
-                            if (!empty($partner_id)) {
-                                $valid_partners[] = $partner_id;
+                            $partner_id = $row['partner_id_kpx'] ?? '';
+                            if (empty($partner_id)) {
+                                continue;
                             }
-                        }
-                        
-                        foreach ($valid_partners as $partner_id) {
+                            // Region-filtered daily breakdown for FDC (256) or FUI (259) splits
+                            $regions = $row['fdc_regions'] ?? $row['fui_regions'] ?? [];
+                            if (!empty($row['fdc_split'])) {
+                                $cache_key = $partner_id . '-' . $row['fdc_split'];
+                            } elseif (!empty($row['fui_split'])) {
+                                $cache_key = $partner_id . '-' . $row['fui_split'];
+                            } else {
+                                $cache_key = $partner_id;
+                            }
+
+                            if (isset($daily_breakdown_cache[$cache_key])) {
+                                continue;
+                            }
+
+                            // For FUI (259) splits, ignore pm.bank filter (masterfile only has BPI)
+                            $bank_for_daily = !empty($row['fui_split']) ? '' : $selected_bank;
+
                             $daily_data = getDailyBreakdown(
-                                $conn, 
-                                $partner_id, 
-                                $selected_bank, 
-                                $selected_settlement_type, 
-                                $selected_date_from, 
-                                $selected_date_to
+                                $conn,
+                                $partner_id,
+                                $bank_for_daily,
+                                $selected_settlement_type,
+                                $selected_date_from,
+                                $selected_date_to,
+                                $regions
                             );
                             if (!empty($daily_data)) {
-                                $daily_breakdown_cache[$partner_id] = $daily_data;
+                                $daily_breakdown_cache[$cache_key] = $daily_data;
                             }
                         }
                     }
@@ -1302,7 +1719,9 @@ $reason_options = [
                             $principal,
                             $charge_to_customer,
                             $charge_to_partner,
-                            $adjustment
+                            $adjustment,
+                            $row['partner_id_kpx'] ?? '',
+                            $txn_count
                         );
                         
                         $settled_count = (int)($row['settled_count'] ?? 0);
@@ -1329,8 +1748,15 @@ $reason_options = [
                         $grand_totals['unsettled_count'] += $unsettled_count;
                         
                         $partner_id = $row['partner_id_kpx'];
-                        $daily_data = $has_date_range && isset($daily_breakdown_cache[$partner_id]) 
-                            ? $daily_breakdown_cache[$partner_id] 
+                        if (!empty($row['fdc_split'])) {
+                            $daily_cache_key = $partner_id . '-' . $row['fdc_split'];
+                        } elseif (!empty($row['fui_split'])) {
+                            $daily_cache_key = $partner_id . '-' . $row['fui_split'];
+                        } else {
+                            $daily_cache_key = $partner_id;
+                        }
+                        $daily_data = $has_date_range && isset($daily_breakdown_cache[$daily_cache_key]) 
+                            ? $daily_breakdown_cache[$daily_cache_key] 
                             : [];
                         $daily_html = !empty($daily_data) ? generateDailyBreakdownHTML($daily_data) : '';
                         
@@ -1476,10 +1902,10 @@ $reason_options = [
                                     <th class="center">ACCOUNT NAME</th>
                                     <th class="center">ACCOUNT NUMBER</th>
                                     <th class="center">VOLUME COUNT</th>
-                                    <th class="center">PRINCIPAL</th>
-                                    <th class="center" colspan="2">CHARGE</th>
-                                    <th class="center">ADJUSTMENT (add/less)</th>
-                                    <th class="center settlement-col">AMOUNT FOR SETTLEMENT</th>
+                                    <th class="center">₱ PRINCIPAL</th>
+                                    <th class="center" colspan="2">₱ CHARGE</th>
+                                    <th class="center">₱ ADJUSTMENT (add/less)</th>
+                                    <th class="center settlement-col">₱ AMOUNT FOR SETTLEMENT</th>
                                     <th class="center">STATUS</th>
                                     <th class="center" style="min-width: 180px;">REASON NOT SETTLED</th>
                                 </tr>
@@ -1505,9 +1931,7 @@ $reason_options = [
                                             <i class="fas <?php echo $group_data['icon']; ?>"></i>
                                             <?php echo htmlspecialchars($group_data['display_name']); ?>
                                             <?php if ($is_uncategorized): ?>
-                                                <span style="font-size: 12px; font-weight: normal; margin-left: 10px; color: #856404;">
-                                                    (Partners without charge type - needs configuration)
-                                                </span>
+                                               
                                             <?php endif; ?>
                                             <?php if ($is_both): ?>
                                                 <span style="font-size: 12px; font-weight: normal; margin-left: 10px; color: #0c5460;">
@@ -1560,29 +1984,29 @@ $reason_options = [
                                             <td class="partner-name-cell">
                                                 <?php echo htmlspecialchars($row_data['partner_name']); ?>
                                                 <?php if ($is_uncategorized): ?>
-                                                    <span style="font-size: 10px; color: #856404; margin-left: 5px;">
+                                                    <!-- <span style="font-size: 10px; color: #856404; margin-left: 5px;">
                                                         <i class="fas fa-exclamation-circle"></i>
-                                                    </span>
+                                                    </span> -->
                                                 <?php endif; ?>
                                                 <?php if ($is_both): ?>
-                                                    <span style="font-size: 10px; color: #0c5460; margin-left: 5px;">
+                                                    <!-- <span style="font-size: 10px; color: #0c5460; margin-left: 5px;">
                                                         <i class="fas fa-handshake"></i>
-                                                    </span>
+                                                    </span> -->
                                                 <?php endif; ?>
                                             </td>
                                             <td><?php echo htmlspecialchars($row_data['account_name']); ?></td>
                                             <td class="center"><?php echo htmlspecialchars($row_data['account_number']); ?></td>
                                             <td class="center txn-count"><?php echo number_format($row_data['txn_count']); ?></td>
-                                            <td class="right amount-col principal">₱ <?php echo number_format($row_data['principal'], 2); ?></td>
-                                            <td class="right amount-col charge-to-customer">₱ <?php echo number_format($row_data['charge_to_customer'], 2); ?></td>
-                                            <td class="right amount-col charge-to-partner">₱ <?php echo number_format($row_data['charge_to_partner'], 2); ?></td>
+                                            <td class="right amount-col principal"> <?php echo number_format($row_data['principal'], 2); ?></td>
+                                            <td class="right amount-col charge-to-customer"> <?php echo number_format($row_data['charge_to_customer'], 2); ?></td>
+                                            <td class="right amount-col charge-to-partner"> <?php echo number_format($row_data['charge_to_partner'], 2); ?></td>
                                             <td class="right amount-col adjustment <?php echo $row_data['adjustment'] < 0 ? 'negative-amount' : ($row_data['adjustment'] > 0 ? 'positive-amount' : ''); ?>">
                                                 <?php if ($row_data['adjustment'] != 0): ?>
-                                                    <?php echo ($row_data['adjustment'] >= 0 ? '+' : ''); ?>₱ <?php echo number_format($row_data['adjustment'], 2); ?>
+                                                    <?php echo ($row_data['adjustment'] >= 0 ? '+' : ''); ?> <?php echo number_format($row_data['adjustment'], 2); ?>
                                                 <?php endif; ?>
                                             </td>
                                             <td class="right settlement-col settlement-amount <?php echo $row_data['is_negative'] ? 'negative-amount' : ''; ?>">
-                                                ₱ <?php echo number_format($row_data['settlement_amount'], 2); ?>
+                                                 <?php echo number_format($row_data['settlement_amount'], 2); ?>
                                             </td>
                                             <td class="center">
                                                 <span class="status-badge <?php echo $status_class; ?>">
@@ -1645,16 +2069,16 @@ $reason_options = [
                                             <strong>Subtotal - <?php echo htmlspecialchars($group_data['display_name']); ?></strong>
                                         </td>
                                         <td class="center group-txn-count"><?php echo number_format($group_data['totals']['txn_count']); ?></td>
-                                        <td class="right group-principal">₱ <?php echo number_format($group_data['totals']['principal'], 2); ?></td>
-                                        <td class="right group-charge-to-customer">₱ <?php echo number_format($group_data['totals']['charge_to_customer'], 2); ?></td>
-                                        <td class="right group-charge-to-partner">₱ <?php echo number_format($group_data['totals']['charge_to_partner'], 2); ?></td>
+                                        <td class="right group-principal"> <?php echo number_format($group_data['totals']['principal'], 2); ?></td>
+                                        <td class="right group-charge-to-customer"> <?php echo number_format($group_data['totals']['charge_to_customer'], 2); ?></td>
+                                        <td class="right group-charge-to-partner"> <?php echo number_format($group_data['totals']['charge_to_partner'], 2); ?></td>
                                         <td class="right group-adjustment <?php echo $group_data['totals']['adjustment'] < 0 ? 'negative-amount' : ($group_data['totals']['adjustment'] > 0 ? 'positive-amount' : ''); ?>">
                                             <?php if ($group_data['totals']['adjustment'] != 0): ?>
-                                                <?php echo ($group_data['totals']['adjustment'] >= 0 ? '+' : ''); ?>₱ <?php echo number_format($group_data['totals']['adjustment'], 2); ?>
+                                                <?php echo ($group_data['totals']['adjustment'] >= 0 ? '+' : ''); ?> <?php echo number_format($group_data['totals']['adjustment'], 2); ?>
                                             <?php endif; ?>
                                         </td>
                                         <td class="right settlement-col group-settlement <?php echo $group_data['totals']['settlement'] < 0 ? 'negative-amount' : ''; ?>">
-                                            ₱ <?php echo number_format($group_data['totals']['settlement'], 2); ?>
+                                             <?php echo number_format($group_data['totals']['settlement'], 2); ?>
                                         </td>
                                         <td class="center group-status">
                                             <?php 
@@ -1679,18 +2103,18 @@ $reason_options = [
                                 <?php endforeach; ?>
                                 
                                 <tr class="grand-total-row">
-                                    <td colspan="5" style="text-align: right;">GRAND TOTAL</td>
+                                    <td colspan="5" style="text-align: right;">₱ GRAND TOTAL</td>
                                     <td class="center grand-txn-count"><?php echo number_format($grand_totals['txn_count']); ?></td>
-                                    <td class="right grand-principal">₱ <?php echo number_format($grand_totals['principal'], 2); ?></td>
-                                    <td class="right grand-charge-to-customer">₱ <?php echo number_format($grand_totals['charge_to_customer'], 2); ?></td>
-                                    <td class="right grand-charge-to-partner">₱ <?php echo number_format($grand_totals['charge_to_partner'], 2); ?></td>
+                                    <td class="right grand-principal"> <?php echo number_format($grand_totals['principal'], 2); ?></td>
+                                    <td class="right grand-charge-to-customer"> <?php echo number_format($grand_totals['charge_to_customer'], 2); ?></td>
+                                    <td class="right grand-charge-to-partner"> <?php echo number_format($grand_totals['charge_to_partner'], 2); ?></td>
                                     <td class="right grand-adjustment <?php echo $grand_totals['adjustment'] < 0 ? 'negative-amount' : ($grand_totals['adjustment'] > 0 ? 'positive-amount' : ''); ?>">
                                         <?php if ($grand_totals['adjustment'] != 0): ?>
-                                            <?php echo ($grand_totals['adjustment'] >= 0 ? '+' : ''); ?>₱ <?php echo number_format($grand_totals['adjustment'], 2); ?>
+                                            <?php echo ($grand_totals['adjustment'] >= 0 ? '+' : ''); ?> <?php echo number_format($grand_totals['adjustment'], 2); ?>
                                         <?php endif; ?>
                                     </td>
                                     <td class="right settlement-col grand-settlement <?php echo $grand_totals['settlement'] < 0 ? 'negative-amount' : ''; ?>">
-                                        ₱ <?php echo number_format($grand_totals['settlement'], 2); ?>
+                                         <?php echo number_format($grand_totals['settlement'], 2); ?>
                                     </td>
                                     <td class="center grand-status">
                                         <?php 
@@ -2172,12 +2596,12 @@ $reason_options = [
             if (matchedKey && groupTotals[matchedKey]) {
                 var totals = groupTotals[matchedKey];
                 groupRow.find('.group-txn-count').text(formatNumberInt(totals.txn_count));
-                groupRow.find('.group-principal').text('₱ ' + formatNumberDecimal(totals.principal));
-                groupRow.find('.group-charge-to-customer').text('₱ ' + formatNumberDecimal(totals.charge_to_customer));
-                groupRow.find('.group-charge-to-partner').text('₱ ' + formatNumberDecimal(totals.charge_to_partner));
+                groupRow.find('.group-principal').text(' ' + formatNumberDecimal(totals.principal));
+                groupRow.find('.group-charge-to-customer').text(' ' + formatNumberDecimal(totals.charge_to_customer));
+                groupRow.find('.group-charge-to-partner').text(' ' + formatNumberDecimal(totals.charge_to_partner));
                 
                 if (totals.adjustment != 0) {
-                    var adjText = (totals.adjustment >= 0 ? '+' : '') + '₱ ' + formatNumberDecimal(totals.adjustment);
+                    var adjText = (totals.adjustment >= 0 ? '+' : '') + ' ' + formatNumberDecimal(totals.adjustment);
                     groupRow.find('.group-adjustment').text(adjText);
                     groupRow.find('.group-adjustment').removeClass('negative-amount positive-amount');
                     if (totals.adjustment < 0) {
@@ -2190,7 +2614,7 @@ $reason_options = [
                     groupRow.find('.group-adjustment').removeClass('negative-amount positive-amount');
                 }
                 
-                groupRow.find('.group-settlement').text('₱ ' + formatNumberDecimal(totals.settlement));
+                groupRow.find('.group-settlement').text(' ' + formatNumberDecimal(totals.settlement));
                 groupRow.find('.group-settlement').removeClass('negative-amount');
                 if (totals.settlement < 0) {
                     groupRow.find('.group-settlement').addClass('negative-amount');
@@ -2211,12 +2635,12 @@ $reason_options = [
         });
         
         $('.grand-total-row').find('.grand-txn-count').text(formatNumberInt(grandTotals.txn_count));
-        $('.grand-total-row').find('.grand-principal').text('₱ ' + formatNumberDecimal(grandTotals.principal));
-        $('.grand-total-row').find('.grand-charge-to-customer').text('₱ ' + formatNumberDecimal(grandTotals.charge_to_customer));
-        $('.grand-total-row').find('.grand-charge-to-partner').text('₱ ' + formatNumberDecimal(grandTotals.charge_to_partner));
+        $('.grand-total-row').find('.grand-principal').text(' ' + formatNumberDecimal(grandTotals.principal));
+        $('.grand-total-row').find('.grand-charge-to-customer').text(' ' + formatNumberDecimal(grandTotals.charge_to_customer));
+        $('.grand-total-row').find('.grand-charge-to-partner').text(' ' + formatNumberDecimal(grandTotals.charge_to_partner));
         
         if (grandTotals.adjustment != 0) {
-            var grandAdjText = (grandTotals.adjustment >= 0 ? '+' : '') + '₱ ' + formatNumberDecimal(grandTotals.adjustment);
+            var grandAdjText = (grandTotals.adjustment >= 0 ? '+' : '') + ' ' + formatNumberDecimal(grandTotals.adjustment);
             $('.grand-total-row').find('.grand-adjustment').text(grandAdjText);
             $('.grand-total-row').find('.grand-adjustment').removeClass('negative-amount positive-amount');
             if (grandTotals.adjustment < 0) {
@@ -2229,7 +2653,7 @@ $reason_options = [
             $('.grand-total-row').find('.grand-adjustment').removeClass('negative-amount positive-amount');
         }
         
-        $('.grand-total-row').find('.grand-settlement').text('₱ ' + formatNumberDecimal(grandTotals.settlement));
+        $('.grand-total-row').find('.grand-settlement').text(' ' + formatNumberDecimal(grandTotals.settlement));
         $('.grand-total-row').find('.grand-settlement').removeClass('negative-amount');
         if (grandTotals.settlement < 0) {
             $('.grand-total-row').find('.grand-settlement').addClass('negative-amount');
@@ -2607,13 +3031,13 @@ $reason_options = [
                     <p><strong>You are about to settle:</strong></p>
                     <ul style="margin: 10px 0; padding-left: 20px;">
                         ${checkedRows.map(row => 
-                            `<li><strong>${row.partner_name}</strong> - ${row.txn_count.toLocaleString()} transactions (₱ ${row.settlement_amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})})</li>`
+                            `<li><strong>${row.partner_name}</strong> - ${row.txn_count.toLocaleString()} transactions ( ${row.settlement_amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})})</li>`
                         ).join('')}
                     </ul>
                     <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-top: 10px;">
                         <p><strong>Total Partners:</strong> ${checkedRows.length}</p>
                         <p><strong>Total Volume Count:</strong> ${totalVolume.toLocaleString()}</p>
-                        <p><strong>Total Settlement Amount:</strong> ₱ ${totalSettlement.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+                        <p><strong>Total Settlement Amount:</strong>  ${totalSettlement.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
                     </div>
                     ${reasonMsg}
                     <p style="color: #856404; margin-top: 10px;">
@@ -2750,7 +3174,7 @@ $reason_options = [
                                         <li>CAD No.: ${cadNo}</li>
                                         <li>Total Partners: ${result.value.data.total_partners}</li>
                                         <li>Total Transactions: ${result.value.data.total_transactions.toLocaleString()}</li>
-                                        <li>Total Amount: ₱ ${result.value.data.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</li>
+                                        <li>Total Amount:  ${result.value.data.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</li>
                                         <li>Settled By: ${result.value.data.settled_by}</li>
                                         <li>Settlement Date: ${result.value.data.settlement_date}</li>
                                     </ul>
