@@ -198,3 +198,15 @@ Stack trace:
 [20-Aug-2026 07:38:54 Europe/Berlin] === STARTING IMPORT ===
 [20-Aug-2026 07:38:54 Europe/Berlin] Total rows to import: 33498
 [20-Aug-2026 07:41:09 Europe/Berlin] Import completed. Inserted: 33498, Duplicates: 0, Errors: 0
+[22-Aug-2026 03:35:48 Europe/Berlin] === STARTING LOOKUP ===
+[22-Aug-2026 03:35:48 Europe/Berlin] Total rows to lookup: 30476
+[22-Aug-2026 03:35:58 Europe/Berlin] Lookup completed. Processed: 30476 rows
+[22-Aug-2026 03:36:23 Europe/Berlin] === STARTING LOOKUP ===
+[22-Aug-2026 03:36:23 Europe/Berlin] Total rows to lookup: 33498
+[22-Aug-2026 03:36:33 Europe/Berlin] Lookup completed. Processed: 33498 rows
+[22-Aug-2026 03:38:36 Europe/Berlin] === STARTING LOOKUP ===
+[22-Aug-2026 03:38:36 Europe/Berlin] Total rows to lookup: 35002
+[22-Aug-2026 03:38:47 Europe/Berlin] Lookup completed. Processed: 35002 rows
+[22-Aug-2026 03:39:06 Europe/Berlin] === STARTING LOOKUP ===
+[22-Aug-2026 03:39:06 Europe/Berlin] Total rows to lookup: 34199
+[22-Aug-2026 03:39:17 Europe/Berlin] Lookup completed. Processed: 34199 rows

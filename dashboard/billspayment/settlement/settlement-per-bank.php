@@ -235,9 +235,11 @@ $has_filters = !empty(array_filter($_GET));
 // Skip for partner 259 (FAST UNIMERCHANTS INC.) so all three
 // region/bank splits (BPI + BDO Negros + BDO Cebu/Bohol) can appear
 // when only the partner is selected.
+// Also skip for partner 257 (FDC Visayas) so BDO-Panay + Chinabank
+// (Bohol/Ormoc/Samar/Tacloban) splits can all appear.
 // ============================================
 $auto_selected_bank = '';
-if (!empty($selected_partner) && empty($selected_bank) && $selected_partner !== '259') {
+if (!empty($selected_partner) && empty($selected_bank) && $selected_partner !== '259' && $selected_partner !== '257') {
     $auto_selected_bank = getPartnerBank($conn, $selected_partner);
     if (!empty($auto_selected_bank)) {
         $selected_bank = $auto_selected_bank;
@@ -411,7 +413,7 @@ if (!empty($selected_date_from) && !empty($selected_date_to)) {
 // ============================================
 // FUNCTION: Get daily breakdown for a partner
 // ============================================
-function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, string $settlement_type, string $date_from, string $date_to, array $regions = []) {
+function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, string $settlement_type, string $date_from, string $date_to, array $regions = [], ?string $extra_where = null) {
     if (empty($partner_id)) {
         return [];
     }
@@ -431,7 +433,7 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
     $params_adjustment[] = $partner_id;
     $types_adjustment .= "s";
     
-    // Optional region filter (used for FDC Mindanao split: GENSAN / CDO)
+    // Optional region filter (used for FDC Mindanao split: GENSAN / CDO, Partner 257 splits)
     if (!empty($regions)) {
         $placeholders = implode(',', array_fill(0, count($regions), '?'));
         $where_conditions_regular[] = "bt.region IN ($placeholders)";
@@ -442,6 +444,12 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
             $params_adjustment[] = $reg;
             $types_adjustment .= "s";
         }
+    }
+
+    // Extra raw WHERE (account_no / address filters for FDC Ormoc / Tacloban)
+    if (!empty($extra_where)) {
+        $where_conditions_regular[] = $extra_where;
+        $where_conditions_adjustment[] = $extra_where;
     }
     
     if (!empty($bank)) {
@@ -678,8 +686,64 @@ function getFuiUnimerchantsRegionSets(): array {
     ];
 }
 
+// ============================================
+// Partner 257 (FAST DISTRIBUTION CORPORATION (VISAYAS)) region/bank split definitions
+// BDO (default/registered bank): Panay North + Panay Central → FAST DISTRIBUTION CORPORATION (VISAYAS)
+// CHINABANK: Bohol (by region), Samar (by region), Ormoc (by account_no/address), Tacloban (by account_no/address)
+// ============================================
+function getPartner257Sets(): array {
+    return [
+        'BDO_PANAY' => [
+            'suffix' => '',
+            'bank_key' => 'BDO',
+            'regions' => ['R10 PANAY NORTH REGION', 'R11 PANAY CENTRAL REGION'],
+            'partner_name' => 'FAST DISTRIBUTION CORPORATION (VISAYAS)',
+            'account_name' => null, // keep from masterfile
+            'account_number' => null, // keep from masterfile
+            'extra_where' => null,
+        ],
+        'CHINABANK_BOHOL' => [
+            'suffix' => 'BOHOL',
+            'bank_key' => 'CHINABANK',
+            'regions' => ['R05 BOHOL REGION'],
+            'partner_name' => 'FDC BOHOL',
+            'account_name' => 'FAST DISTRIBUTION CORP.',
+            'account_number' => '107-102-003-788',
+            'extra_where' => null,
+        ],
+        'CHINABANK_ORMOC' => [
+            'suffix' => 'ORMOC',
+            'bank_key' => 'CHINABANK',
+            'regions' => [], // filter by account_no / address instead of region
+            'partner_name' => 'FDC ORMOC',
+            'account_name' => 'FAST DISTRIBUTION CORP.',
+            'account_number' => '107-102-003-755',
+            'extra_where' => "(bt.account_no LIKE '%orm%' OR bt.address LIKE '%orm%' OR bt.account_no LIKE '%sog%' OR bt.address LIKE '%sog%')",
+        ],
+        'CHINABANK_SAMAR' => [
+            'suffix' => 'SAMAR',
+            'bank_key' => 'CHINABANK',
+            'regions' => ['R07 SAMAR REGION'],
+            'partner_name' => 'FDC SAMAR',
+            'account_name' => 'FAST DISTRIBUTION CORP.',
+            'account_number' => '107-102-003-763',
+            'extra_where' => null,
+        ],
+        'CHINABANK_TACLOBAN' => [
+            'suffix' => 'TACLOBAN',
+            'bank_key' => 'CHINABANK',
+            'regions' => [], // filter by account_no / address instead of region
+            'partner_name' => 'FDC TACLOBAN',
+            'account_name' => 'FAST DISTRIBUTION CORP.',
+            'account_number' => '107-102-003-771',
+            'extra_where' => "(bt.account_no LIKE '%tac%' OR bt.address LIKE '%tac%')",
+        ],
+    ];
+}
+
 /**
- * Fetch aggregated settlement totals for a partner, optionally filtered by regions.
+ * Fetch aggregated settlement totals for a partner, optionally filtered by regions
+ * and/or an extra raw WHERE clause (e.g. account_no / address filters for FDC Ormoc/Tacloban).
  * Returns the same structure used in $combined_data entries, or null if no data.
  */
 function getPartnerTotalsByRegions(
@@ -689,7 +753,8 @@ function getPartnerTotalsByRegions(
     string $settlement_type,
     string $date_from,
     string $date_to,
-    array $regions = []
+    array $regions = [],
+    ?string $extra_where = null
 ): ?array {
     if (empty($partner_id)) {
         return null;
@@ -713,6 +778,12 @@ function getPartnerTotalsByRegions(
             $params_adjustment[] = $r;
             $types_adjustment .= "s";
         }
+    }
+
+    // Extra raw WHERE (no extra params – used for LIKE filters on account_no/address)
+    if (!empty($extra_where)) {
+        $where_regular[] = $extra_where;
+        $where_adjustment[] = $extra_where;
     }
 
     if (!empty($bank)) {
@@ -1447,6 +1518,82 @@ $reason_options = [
                 }
 
                 // ------------------------------------------------
+                // Special: Split partner 257 (FAST DISTRIBUTION CORPORATION (VISAYAS)) into
+                // BDO-Panay + Chinabank (Bohol / Ormoc / Samar / Tacloban) rows
+                // BDO (default bank in masterfile) → FAST DISTRIBUTION CORPORATION (VISAYAS)
+                //   regions: R10 PANAY NORTH, R11 PANAY CENTRAL
+                // CHINABANK → FDC BOHOL (R05), FDC ORMOC (account/address), FDC SAMAR (R07), FDC TACLOBAN (account/address)
+                // Triggers when partner 257 is selected or already appears in results.
+                // ------------------------------------------------
+                $selected_bank_upper_257 = strtoupper(trim($selected_bank));
+                $is_bdo_bank_257 = !empty($selected_bank) && (
+                    strpos($selected_bank_upper_257, 'BDO') !== false ||
+                    strpos($selected_bank_upper_257, 'UNIBANK') !== false
+                );
+                $is_chinabank_257 = !empty($selected_bank) && (
+                    strpos($selected_bank_upper_257, 'CHINA') !== false ||
+                    strpos($selected_bank_upper_257, 'CHINABANK') !== false
+                );
+
+                if (isset($combined_data['257']) || $selected_partner === '257') {
+                    if (isset($combined_data['257'])) {
+                        unset($combined_data['257']);
+                    }
+
+                    $fdc257_sets = getPartner257Sets();
+
+                    foreach ($fdc257_sets as $key => $set) {
+                        // Include based on selected bank filter (if any).
+                        // No bank selected → show all splits.
+                        $include = true;
+                        if (!empty($selected_bank)) {
+                            if ($set['bank_key'] === 'BDO' && !$is_bdo_bank_257) {
+                                $include = false;
+                            } elseif ($set['bank_key'] === 'CHINABANK' && !$is_chinabank_257) {
+                                $include = false;
+                            }
+                        }
+
+                        if (!$include) {
+                            continue;
+                        }
+
+                        // For Chinabank splits ignore pm.bank (masterfile only has BDO for this partner)
+                        // For BDO-Panay also pass empty bank so region filter alone drives the data
+                        // (avoids missing rows if bank name string differs slightly)
+                        $bank_for_query = '';
+
+                        $entry = getPartnerTotalsByRegions(
+                            $conn,
+                            '257',
+                            $bank_for_query,
+                            $selected_settlement_type,
+                            $selected_date_from,
+                            $selected_date_to,
+                            $set['regions'],
+                            $set['extra_where'] ?? null
+                        );
+                        if ($entry !== null) {
+                            $entry['partner_name'] = $set['partner_name'];
+                            if (!empty($set['account_name'])) {
+                                $entry['partner_accName'] = $set['account_name'];
+                            }
+                            if (!empty($set['account_number'])) {
+                                $entry['bank_accNumber'] = $set['account_number'];
+                            }
+                            $entry['bank'] = ($set['bank_key'] === 'BDO')
+                                ? 'BDO UNIBANK, INC.'
+                                : 'CHINA BANKING CORPORATION (CHINABANK)';
+                            $entry['fdc257_split'] = $key;
+                            $entry['fdc257_regions'] = $set['regions'];
+                            $entry['fdc257_extra_where'] = $set['extra_where'] ?? null;
+                            // Use unique key so multiple rows appear
+                            $combined_data['257-' . $key] = $entry;
+                        }
+                    }
+                }
+
+                // ------------------------------------------------
                 // Special: Split partner 259 (FAST UNIMERCHANTS INC.) into
                 // BPI, BDO-Negros and BDO-Cebu/Bohol rows based on bt.region
                 // (masterfile only has BPI; BDO splits skip pm.bank filter)
@@ -1462,7 +1609,7 @@ $reason_options = [
                 );
                 $is_bdo_bank = !empty($selected_bank) && strpos($selected_bank_upper, 'BDO') !== false;
 
-                if (isset($combined_data['259']) || $selected_partner === '259' || $is_bpi_bank || $is_bdo_bank) {
+                if (isset($combined_data['259']) || $selected_partner === '259') {
                     unset($combined_data['259']);
 
                     $fui_sets = getFuiUnimerchantsRegionSets();
@@ -1627,12 +1774,15 @@ $reason_options = [
                             if (empty($partner_id)) {
                                 continue;
                             }
-                            // Region-filtered daily breakdown for FDC (256) or FUI (259) splits
-                            $regions = $row['fdc_regions'] ?? $row['fui_regions'] ?? [];
+                            // Region-filtered daily breakdown for FDC (256), FUI (259), or Partner 257 (Visayas)
+                            $regions = $row['fdc_regions'] ?? $row['fui_regions'] ?? $row['fdc257_regions'] ?? [];
+                            $extra_where = $row['fdc257_extra_where'] ?? null;
                             if (!empty($row['fdc_split'])) {
                                 $cache_key = $partner_id . '-' . $row['fdc_split'];
                             } elseif (!empty($row['fui_split'])) {
                                 $cache_key = $partner_id . '-' . $row['fui_split'];
+                            } elseif (!empty($row['fdc257_split'])) {
+                                $cache_key = $partner_id . '-' . $row['fdc257_split'];
                             } else {
                                 $cache_key = $partner_id;
                             }
@@ -1641,8 +1791,9 @@ $reason_options = [
                                 continue;
                             }
 
-                            // For FUI (259) splits, ignore pm.bank filter (masterfile only has BPI)
-                            $bank_for_daily = !empty($row['fui_split']) ? '' : $selected_bank;
+                            // For FUI (259) and FDC Visayas (257) splits, ignore pm.bank filter
+                            // (masterfile only registers one bank for these partners)
+                            $bank_for_daily = (!empty($row['fui_split']) || !empty($row['fdc257_split'])) ? '' : $selected_bank;
 
                             $daily_data = getDailyBreakdown(
                                 $conn,
@@ -1651,7 +1802,8 @@ $reason_options = [
                                 $selected_settlement_type,
                                 $selected_date_from,
                                 $selected_date_to,
-                                $regions
+                                $regions,
+                                $extra_where
                             );
                             if (!empty($daily_data)) {
                                 $daily_breakdown_cache[$cache_key] = $daily_data;
@@ -1752,6 +1904,8 @@ $reason_options = [
                             $daily_cache_key = $partner_id . '-' . $row['fdc_split'];
                         } elseif (!empty($row['fui_split'])) {
                             $daily_cache_key = $partner_id . '-' . $row['fui_split'];
+                        } elseif (!empty($row['fdc257_split'])) {
+                            $daily_cache_key = $partner_id . '-' . $row['fdc257_split'];
                         } else {
                             $daily_cache_key = $partner_id;
                         }
