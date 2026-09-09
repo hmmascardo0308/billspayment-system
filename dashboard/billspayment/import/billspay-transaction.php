@@ -96,12 +96,12 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
                     <div id="validation_summary" class="validation-summary">
                         <div class="row">
                             <div class="col-md-3">
-                                <span class="badge bg-info">
+                                <span class="badge bg-danger">
                                     <i class="fas fa-list"></i> Total: <span id="totalRecords">0</span>
                                 </span>
                             </div>
                             <div class="col-md-3">
-                                <span class="badge bg-warning text-dark">
+                                <span class="badge bg-danger">
                                     <i class="fas fa-store"></i> Empty / Not Found Branch ID: <span id="emptyBranchCount">0</span>
                                 </span>
                             </div>
@@ -111,7 +111,7 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
                                 </span>
                             </div>
                             <div class="col-md-3">
-                                <span class="badge bg-primary">
+                                <span class="badge bg-danger">
                                     <i class="fas fa-exclamation-circle"></i> Unrecognized Partner: <span id="unrecognizedPartnerCount">0</span>
                                 </span>
                             </div>
@@ -306,7 +306,7 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
 
 <script>
 $(document).ready(function() {
-    let fileDataMap = {}; // Store file data: { fileName: { binaryData, file } }
+    let fileDataMap = {};
     let allRows = [];
     let currentPage = 1;
     const rowsPerPage = 50;
@@ -321,7 +321,6 @@ $(document).ready(function() {
     const current_user = "<?php echo $imported_by; ?>";
     const imported_date = "<?php echo date('Y-m-d'); ?>";
 
-    // Function to toggle drop zone visibility
     function toggleDropZone(show) {
         if (show) {
             $('#dropZone').removeClass('hidden-drop-zone').show();
@@ -413,7 +412,6 @@ $(document).ready(function() {
             return null;
         }
         
-        // If it's already in YYYY-MM-DD HH:MM:SS format, return as is
         if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
             return value;
         }
@@ -444,50 +442,36 @@ $(document).ready(function() {
         return value;
     }
 
-    // Helper function to safely parse a number from various formats
     function parseAmount(value) {
         if (value === null || value === undefined || value === '') return 0;
-        
-        // If it's already a number, return it
         if (typeof value === 'number') return value;
-        
-        // If it's a string, clean it and parse
         if (typeof value === 'string') {
-            // Remove currency symbols, commas, and extra spaces
             let cleaned = value.replace(/[₱ $,]/g, '').trim();
-            // Handle negative numbers with parentheses or minus sign
             if (cleaned.startsWith('(') && cleaned.endsWith(')')) {
                 cleaned = '-' + cleaned.slice(1, -1);
             }
-            // Parse the number
             const parsed = parseFloat(cleaned);
             return isNaN(parsed) ? 0 : parsed;
         }
-        
         return 0;
     }
 
-    // Function to calculate summary statistics
     function calculateSummary(rows) {
-        // Separate positive and negative rows based on amount_paid
         let positiveRows = rows.filter(row => parseAmount(row.amount_paid) > 0);
         let negativeRows = rows.filter(row => parseAmount(row.amount_paid) < 0);
         
-        // Summary (Positive Rows)
         const summaryCount = positiveRows.length;
         const summaryPrincipal = positiveRows.reduce((sum, row) => sum + parseAmount(row.amount_paid), 0);
         const summaryCTC = positiveRows.reduce((sum, row) => sum + parseAmount(row.charge_to_customer), 0);
         const summaryCTP = positiveRows.reduce((sum, row) => sum + parseAmount(row.charge_to_partner), 0);
         const summaryCharge = summaryCTC + summaryCTP;
         
-        // Adjustments (Negative Rows) - convert to positive for display
         const adjCount = negativeRows.length;
         const adjPrincipal = Math.abs(negativeRows.reduce((sum, row) => sum + parseAmount(row.amount_paid), 0));
         const adjCTC = Math.abs(negativeRows.reduce((sum, row) => sum + parseAmount(row.charge_to_customer), 0));
         const adjCTP = Math.abs(negativeRows.reduce((sum, row) => sum + parseAmount(row.charge_to_partner), 0));
         const adjCharge = adjCTC + adjCTP;
         
-        // Net Calculations
         const netCount = summaryCount - adjCount;
         const netPrincipal = summaryPrincipal - adjPrincipal;
         const netCTC = summaryCTC - adjCTC;
@@ -521,25 +505,19 @@ $(document).ready(function() {
         };
     }
 
-    // Function to format currency
     function formatCurrency(amount) {
-        // Ensure amount is a number
         const numAmount = parseFloat(amount) || 0;
         return '₱ ' + numAmount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     }
 
-    // Function to format number with commas
     function formatNumber(num) {
-        // Ensure num is a number
         const numAmount = parseInt(num) || 0;
         return numAmount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     }
 
-    // Function to display summary
     function displaySummary(rows) {
         const stats = calculateSummary(rows);
         
-        // Quick stats
         const quickStatsHtml = `
             <div class="row">
                 <div class="col-md-3">
@@ -578,7 +556,6 @@ $(document).ready(function() {
         `;
         $('#summaryQuickStats').html(quickStatsHtml);
         
-        // Summary Grid (Card View)
         const gridHtml = `
             <div class="summary-card summary-positive">
                 <h6 class="text-success">SUMMARY (Positive Amounts)</h6>
@@ -656,7 +633,6 @@ $(document).ready(function() {
         `;
         $('#summaryGrid').html(gridHtml);
         
-        // Main summary table
         const summaryData = [
             {
                 metric: 'TOTAL COUNT',
@@ -704,7 +680,6 @@ $(document).ready(function() {
             `;
         });
         
-        // Add settlement amount row
         html += `
             <tr class="settlement-row" style="border-top: 3px solid #c50000;">
                 <td><strong>SETTLEMENT AMOUNT (PHP)</strong></td>
@@ -717,12 +692,9 @@ $(document).ready(function() {
         `;
         
         $('#summaryBody').html(html);
-        
-        // Show summary button
         $('#summary_section').show();
     }
 
-    // Update file list display
     function updateFileList() {
         const fileListContainer = $('#file_list_container');
         const fileList = $('#file_list');
@@ -732,7 +704,6 @@ $(document).ready(function() {
         
         const fileNames = Object.keys(fileDataMap);
         
-        // Update drop zone file count
         if (fileNames.length > 0) {
             dropFileCount.text(`${fileNames.length} file${fileNames.length > 1 ? 's' : ''}`)
                 .removeClass('bg-secondary')
@@ -773,22 +744,18 @@ $(document).ready(function() {
         });
         fileList.html(html);
         
-        // Handle remove file click
         $('.remove-file').on('click', function() {
             const fileName = $(this).data('filename');
             removeFile(fileName);
         });
         
-        // Enable process button if there are files
         $('#btn_process').prop('disabled', false);
     }
 
-    // Remove a file from the list
     function removeFile(fileName) {
         delete fileDataMap[fileName];
         updateFileList();
         
-        // Clear binary data if no files left
         if (Object.keys(fileDataMap).length === 0) {
             $('#preview_section').addClass('d-none');
             $('#pagination_container').addClass('d-none');
@@ -799,7 +766,6 @@ $(document).ready(function() {
         }
     }
 
-    // Clear all files
     function clearAllFiles() {
         fileDataMap = {};
         updateFileList();
@@ -810,11 +776,9 @@ $(document).ready(function() {
         $('#summary_section').hide();
         allRows = [];
         $('#dropFileCount').text('0 files').removeClass('bg-success').addClass('bg-secondary');
-        // Show the drop zone again
         toggleDropZone(true);
     }
 
-    // Handle file selection (used by both drag-drop and browse)
     function handleFiles(files) {
         if (!files || files.length === 0) return;
 
@@ -823,7 +787,6 @@ $(document).ready(function() {
         let totalFiles = files.length;
         let processedFiles = 0;
 
-        // Show progress
         $('#uploadProgress').show();
         $('#uploadProgressBar').css('width', '0%');
         $('#uploadProgressText').text(`Processing ${totalFiles} file(s)...`);
@@ -832,7 +795,6 @@ $(document).ready(function() {
             const file = files[i];
             const fileName = file.name;
             
-            // Check if file is Excel
             const ext = fileName.split('.').pop().toLowerCase();
             if (!['xlsx', 'xls'].includes(ext)) {
                 duplicateCount++;
@@ -841,7 +803,6 @@ $(document).ready(function() {
                 continue;
             }
 
-            // Check if file already exists in the map
             if (fileDataMap[fileName]) {
                 duplicateCount++;
                 processedFiles++;
@@ -849,7 +810,6 @@ $(document).ready(function() {
                 continue;
             }
 
-            // Read file as binary data
             const reader = new FileReader();
             reader.onload = function(e) {
                 fileDataMap[fileName] = {
@@ -861,12 +821,9 @@ $(document).ready(function() {
                 processedFiles++;
                 
                 updateProgress(processedFiles, totalFiles);
-                
-                // Update file list
                 updateFileList();
                 
                 if (processedFiles === totalFiles) {
-                    // All files processed
                     setTimeout(() => {
                         $('#uploadProgress').fadeOut();
                         let message = `${addedCount} file(s) added to the queue.`;
@@ -897,11 +854,12 @@ $(document).ready(function() {
             }
         }
 
-        // Reset file input
         $('#excel_file').val('');
     }
 
-    // Process multiple files
+    // ============================================
+    // MAIN PROCESSING FUNCTION WITH BAYADCENTER LOGIC
+    // ============================================
     function processAllFiles() {
         const fileNames = Object.keys(fileDataMap);
         if (fileNames.length === 0) {
@@ -925,7 +883,6 @@ $(document).ready(function() {
         let totalProcessed = 0;
         let fileErrors = [];
 
-        // Process each file
         fileNames.forEach((fileName, fileIndex) => {
             try {
                 const fileData = fileDataMap[fileName];
@@ -948,7 +905,6 @@ $(document).ready(function() {
                 let cellB3 = worksheet['B3'] ? worksheet['B3'].v : null;
                 let reportDate = cellB3 ? convertToYMD(String(cellB3)) : null;
 
-                // Get run_date from cell B7
                 let cellB7 = worksheet['B7'] ? worksheet['B7'].v : null;
                 let runDate = cellB7 ? normalizeDateTime(String(cellB7)) : null;
 
@@ -972,7 +928,6 @@ $(document).ready(function() {
                         let partnerId = worksheet[XLSX.utils.encode_cell({r: r, c: 18})] ? 
                             String(worksheet[XLSX.utils.encode_cell({r: r, c: 18})].v).trim() : null;
                         
-                        // Get Region Code TG from column O (index 14)
                         let regionCodeTg = worksheet[XLSX.utils.encode_cell({r: r, c: 14})] ? 
                             String(worksheet[XLSX.utils.encode_cell({r: r, c: 14})].v).trim() : null;
 
@@ -1030,30 +985,35 @@ $(document).ready(function() {
                             break;
                         }
 
-                        // Get Region Code TG from column O (index 14)
                         let regionCodeTg = worksheet[XLSX.utils.encode_cell({r: r, c: 14})] ? 
                             String(worksheet[XLSX.utils.encode_cell({r: r, c: 14})].v).trim() : null;
 
-                        // Get Partner ID KPX from column U (index 20)
                         let partnerIdKpx = worksheet[XLSX.utils.encode_cell({r: r, c: 20})] ? 
                             String(worksheet[XLSX.utils.encode_cell({r: r, c: 20})].v).trim() : '';
 
-                        // Get Partner ID fallback from column V (index 21) - PRESERVE ORIGINAL VALUE
                         let partnerIdFallback = worksheet[XLSX.utils.encode_cell({r: r, c: 21})] ? 
                             String(worksheet[XLSX.utils.encode_cell({r: r, c: 21})].v).trim() : '';
 
-                        // Check for hardcoded partner IDs (GSIS -> 2898, BAYADCENTER -> 9999)
+                        // ============================================
+                        // BAYADCENTER LOGIC - Check even if partnerIdKpx has value
+                        // ============================================
                         let finalPartnerIdKpx = partnerIdKpx;
                         let hardcodedPartnerNote = '';
-                        if (!partnerIdKpx || partnerIdKpx === '') {
+                        let isBayadCenter = false;
+                        
+                        // Check for BAYADCENTER first (even if partnerIdKpx has value)
+                        if (partnerIdFallback === 'BAYADCENTER' || partnerIdFallback === 'BAYADCENTER ' || partnerIdFallback.toUpperCase() === 'BAYADCENTER') {
+                            isBayadCenter = true;
+                            finalPartnerIdKpx = '9999';
+                            hardcodedPartnerNote = ' (hardcoded from BAYADCENTER)';
+                            console.log(`BAYADCENTER detected - setting partner_id_kpx to 9999 for row ${r}`);
+                        } 
+                        // Check for GSIS only if partnerIdKpx is empty
+                        else if (!partnerIdKpx || partnerIdKpx === '') {
                             if (partnerIdFallback === 'GSIS' || partnerIdFallback === 'GSIS ' || partnerIdFallback.toUpperCase() === 'GSIS') {
                                 finalPartnerIdKpx = '2898';
                                 hardcodedPartnerNote = ' (hardcoded from GSIS)';
                                 console.log(`GSIS detected - setting partner_id_kpx to 2898 for row ${r}`);
-                            } else if (partnerIdFallback === 'BAYADCENTER' || partnerIdFallback === 'BAYADCENTER ' || partnerIdFallback.toUpperCase() === 'BAYADCENTER') {
-                                finalPartnerIdKpx = '9999';
-                                hardcodedPartnerNote = ' (hardcoded from BAYADCENTER)';
-                                console.log(`BAYADCENTER detected - setting partner_id_kpx to 9999 for row ${r}`);
                             }
                         }
 
@@ -1089,11 +1049,11 @@ $(document).ready(function() {
                             sub_billers_id: null,
                             sub_billers_name: null,
                             partner_id_kpx: finalPartnerIdKpx,
-                            partner_id: partnerIdFallback,
+                            partner_id: isBayadCenter ? null : partnerIdFallback,
                             partner_id_fallback_original: partnerIdFallback,
                             partner_id_hardcoded_note: hardcodedPartnerNote,
-                            partner_name: null,
-                            mpm_gl_code: null,
+                            partner_name: isBayadCenter ? 'BAYADCENTER' : null,
+                            mpm_gl_code: isBayadCenter ? null : null,
                             settle_unsettle: 'Unsettle',
                             claim_unclaim: null,
                             imported_by: current_user,
@@ -1101,7 +1061,8 @@ $(document).ready(function() {
                             rfp_no: null,
                             cad_no: null,
                             hold_status: null,
-                            post_transaction: 'unposted'
+                            post_transaction: 'unposted',
+                            is_bayadcenter: isBayadCenter
                         };
                         payloadRows.push(rowData);
                     }
@@ -1110,7 +1071,6 @@ $(document).ready(function() {
                 if (payloadRows.length > 0) {
                     allPayloadRows = allPayloadRows.concat(payloadRows);
                     totalProcessed += payloadRows.length;
-                    // Mark file as processed
                     fileDataMap[fileName].processed = true;
                 } else {
                     fileErrors.push(`${fileName}: No transaction records found.`);
@@ -1130,10 +1090,8 @@ $(document).ready(function() {
             console.warn('File processing errors:', fileErrors);
         }
 
-        // Update file list to show processed status
         updateFileList();
 
-        // Send all rows to server for lookup
         $.ajax({
             url: 'process-lookup.php',
             type: 'POST',
@@ -1150,7 +1108,6 @@ $(document).ready(function() {
 
                     allRows = processCancelledTransactions(allRows);
                     
-                    // Debug: Log partner data
                     console.log('=== Partner Data Debug ===');
                     allRows.forEach((row, index) => {
                         console.log(`Row ${index + 1}:`, {
@@ -1158,6 +1115,7 @@ $(document).ready(function() {
                             partner_id: row.partner_id,
                             partner_id_fallback_original: row.partner_id_fallback_original,
                             partner_name: row.partner_name,
+                            is_bayadcenter: row.is_bayadcenter,
                             is_empty_kpx: isEmptyValue(row.partner_id_kpx),
                             is_empty_partner: isEmptyValue(row.partner_id),
                             is_not_found: row.partner_name === 'Not Found'
@@ -1180,41 +1138,46 @@ $(document).ready(function() {
                             });
                         }
                         
-                        // Get values from both columns - USE ORIGINAL FALLBACK VALUE
                         const partnerIdKpx = row.partner_id_kpx !== undefined && row.partner_id_kpx !== null && row.partner_id_kpx !== '' 
                             ? String(row.partner_id_kpx).trim() 
                             : '';
                         
-                        // Use the preserved original fallback value from column V
                         let partnerIdFallback = row.partner_id_fallback_original !== undefined && row.partner_id_fallback_original !== null && row.partner_id_fallback_original !== '' 
                             ? String(row.partner_id_fallback_original).trim() 
                             : '';
                         
-                        // Hardcoded partner ID overrides for specific fallback values
+                        // Check if this is a BAYADCENTER row
+                        const isBayadCenter = row.is_bayadcenter === true;
+                        
                         let hardcodedPartnerId = null;
-                        if (partnerIdFallback === 'GSIS' || partnerIdFallback === 'GSIS ' || partnerIdFallback.toUpperCase() === 'GSIS') {
-                            hardcodedPartnerId = '2898';
-                            // Update the row's partner_id_kpx to the hardcoded value
-                            row.partner_id_kpx = hardcodedPartnerId;
-                            // Also update partner_id to keep it consistent
-                            row.partner_id = hardcodedPartnerId;
-                            console.log(`Row ${rowNum}: GSIS detected - setting partner_id_kpx to 2898`);
-                        } else if (partnerIdFallback === 'BAYADCENTER' || partnerIdFallback === 'BAYADCENTER ' || partnerIdFallback.toUpperCase() === 'BAYADCENTER') {
-                            hardcodedPartnerId = '9999';
-                            // Update the row's partner_id_kpx to the hardcoded value
-                            row.partner_id_kpx = hardcodedPartnerId;
-                            // Also update partner_id to keep it consistent
-                            row.partner_id = hardcodedPartnerId;
-                            console.log(`Row ${rowNum}: BAYADCENTER detected - setting partner_id_kpx to 9999`);
+                        
+                        // ============================================
+                        // BAYADCENTER HANDLING - OVERRIDE EVERYTHING
+                        // ============================================
+                        if (isBayadCenter || partnerIdFallback === 'BAYADCENTER' || partnerIdFallback === 'BAYADCENTER ' || partnerIdFallback.toUpperCase() === 'BAYADCENTER') {
+                            // BAYADCENTER: partner_id_kpx = 9999, partner_id = null, partner_name = BAYADCENTER
+                            row.partner_id_kpx = '9999';
+                            row.partner_id = null;
+                            row.partner_name = 'BAYADCENTER';
+                            // Ensure mpm_gl_code is null
+                            row.mpm_gl_code = null;
+                            console.log(`Row ${rowNum}: BAYADCENTER - set partner_id_kpx=9999, partner_id=null, partner_name=BAYADCENTER`);
+                        } 
+                        // GSIS handling (only if no partner_id_kpx)
+                        else if (partnerIdFallback === 'GSIS' || partnerIdFallback === 'GSIS ' || partnerIdFallback.toUpperCase() === 'GSIS') {
+                            if (!partnerIdKpx || partnerIdKpx === '') {
+                                hardcodedPartnerId = '2898';
+                                row.partner_id_kpx = hardcodedPartnerId;
+                                row.partner_id = hardcodedPartnerId;
+                                console.log(`Row ${rowNum}: GSIS detected - setting partner_id_kpx to 2898`);
+                            }
                         }
                         
-                        // Determine display value - prefer U, fallback to V (or hardcoded)
                         let partnerIdDisplay = '';
                         
                         if (partnerIdKpx !== '' && partnerIdKpx !== null) {
                             partnerIdDisplay = partnerIdKpx;
                         } else if (hardcodedPartnerId !== null) {
-                            // Use hardcoded partner ID when fallback matches special cases
                             partnerIdDisplay = hardcodedPartnerId + ' (hardcoded from ' + partnerIdFallback + ')';
                         } else if (partnerIdFallback !== '') {
                             partnerIdDisplay = partnerIdFallback + ' (from column V)';
@@ -1222,14 +1185,15 @@ $(document).ready(function() {
                             partnerIdDisplay = '(empty)';
                         }
                         
-                        // Check if both are empty (considering hardcoded override)
-                        const isBothEmpty = partnerIdKpx === '' && partnerIdFallback === '' && hardcodedPartnerId === null;
+                        const isBothEmpty = partnerIdKpx === '' && partnerIdFallback === '' && hardcodedPartnerId === null && !isBayadCenter;
                         
-                        // Check if partner is recognized (partner_name should not be 'Not Found' or empty)
-                        const isPartnerRecognized = !isEmptyValue(row.partner_name) && row.partner_name !== 'Not Found';
+                        // For BAYADCENTER, always mark as recognized
+                        let isPartnerRecognized = !isEmptyValue(row.partner_name) && row.partner_name !== 'Not Found';
+                        if (isBayadCenter) {
+                            isPartnerRecognized = true;
+                        }
                         
                         if (isBothEmpty) {
-                            // Both U and V are empty - Empty Partner ID case
                             emptyPartnerRows.push({
                                 row: rowNum,
                                 reference_no: row.reference_no || 'N/A',
@@ -1238,9 +1202,7 @@ $(document).ready(function() {
                             });
                             importDisabled = true;
                         } else if (!isBothEmpty) {
-                            // Has some partner ID value (from U, V, or hardcoded)
-                            if (!isPartnerRecognized) {
-                                // Partner ID exists but not found in masterfile
+                            if (!isPartnerRecognized && !isBayadCenter) {
                                 let displayValue = partnerIdKpx !== '' ? partnerIdKpx : (hardcodedPartnerId !== null ? hardcodedPartnerId + ' (hardcoded)' : partnerIdFallback + ' (from V)');
                                 unrecognizedPartnerRows.push({
                                     row: rowNum,
@@ -1419,13 +1381,11 @@ $(document).ready(function() {
                     renderTable();
                     renderPagination();
                     
-                    // Display summary
                     displaySummary(allRows);
                     
                     $('#preview_section').removeClass('d-none');
                     $('#pagination_container').removeClass('d-none');
                     
-                    // Hide the drop zone when results are displayed
                     toggleDropZone(false);
                     
                     $('#file_status_badge')
@@ -1454,31 +1414,6 @@ $(document).ready(function() {
         });
     }
 
-    // Parse amount function
-    function parseAmount(value) {
-        if (value === null || value === undefined || value === '') return 0;
-        
-        // If it's already a number, return it
-        if (typeof value === 'number') return value;
-        
-        // If it's a string, clean it and parse
-        if (typeof value === 'string') {
-            // Remove currency symbols, commas, and extra spaces
-            let cleaned = value.replace(/[₱ $,]/g, '').trim();
-            // Handle negative numbers with parentheses or minus sign
-            if (cleaned.startsWith('(') && cleaned.endsWith(')')) {
-                cleaned = '-' + cleaned.slice(1, -1);
-            }
-            // Parse the number
-            const parsed = parseFloat(cleaned);
-            return isNaN(parsed) ? 0 : parsed;
-        }
-        
-        return 0;
-    }
-
-
-    // Helper function to set cancellation date for cancelled transactions (* status)
     function processCancelledTransactions(rows) {
         rows.forEach(row => {
             const amountPaid = parseAmount(row.amount_paid);
@@ -1488,13 +1423,9 @@ $(document).ready(function() {
             const hasNegativeAmount = amountPaid < 0 || chargeCustomer < 0 || chargePartner < 0;
             
             if (hasNegativeAmount) {
-                // Mark as cancelled with *
                 row.status = '*';
-                
-                // Set cancellation_date to report_date at midnight
                 if (row.report_date && row.report_date.trim() !== '') {
                     const ymd = row.report_date.trim();
-                    // Format as datetime: YYYY-MM-DD 00:00:00
                     row.cancellation_date = `${ymd} 00:00:00`;
                 } else {
                     row.cancellation_date = null;
@@ -1516,12 +1447,10 @@ $(document).ready(function() {
             const rowNum = startIndex + index + 1;
             let rowClass = '';
             
-            // Check for negative values in Amount Paid, Charge to Customer, or Charge to Partner
             const amountPaid = parseAmount(row.amount_paid);
             const chargeCustomer = parseAmount(row.charge_to_customer);
             const chargePartner = parseAmount(row.charge_to_partner);
             
-            // Determine if this row has negative amount
             const hasNegativeAmount = amountPaid < 0 || chargeCustomer < 0 || chargePartner < 0;
             
             if (hasNegativeAmount) {
@@ -1532,7 +1461,6 @@ $(document).ready(function() {
                 rowClass += ' has-empty-branch';
             }
             
-            // Check if both partner columns are empty using original fallback
             const isPartnerKpxEmpty = isEmptyValue(row.partner_id_kpx);
             const isPartnerIdEmpty = isEmptyValue(row.partner_id_fallback_original);
             
@@ -1544,7 +1472,6 @@ $(document).ready(function() {
                 }
             }
             
-            // Set status value - asterisk for negative amounts, otherwise use existing status or empty
             let statusValue = row.status;
             if (hasNegativeAmount) {
                 statusValue = '*';
@@ -1671,7 +1598,6 @@ $(document).ready(function() {
         }
     });
 
-    // Summary button click handler
     $('#btn_summary').on('click', function() {
         if (allRows.length > 0) {
             displaySummary(allRows);
@@ -1681,7 +1607,6 @@ $(document).ready(function() {
         }
     });
 
-    // Export summary button click handler
     $('#btn_export_summary').on('click', function() {
         if (allRows.length === 0) {
             Swal.fire('Info', 'No data to export.', 'info');
@@ -1690,7 +1615,6 @@ $(document).ready(function() {
         
         const stats = calculateSummary(allRows);
         
-        // Create CSV content
         let csvContent = "Metric,SUMMARY,ADJUSTMENTS,NET\n";
         csvContent += `TOTAL COUNT,${stats.summary.count},${stats.adjustments.count},${stats.net.count}\n`;
         csvContent += `TOTAL PRINCIPAL (PHP),${stats.summary.principal.toFixed(2)},${stats.adjustments.principal.toFixed(2)},${stats.net.principal.toFixed(2)}\n`;
@@ -1699,7 +1623,6 @@ $(document).ready(function() {
         csvContent += `TOTAL CTP (PHP),${stats.summary.ctp.toFixed(2)},${stats.adjustments.ctp.toFixed(2)},${stats.net.ctp.toFixed(2)}\n`;
         csvContent += `SETTLEMENT AMOUNT (PHP),,,${stats.net.settlement.toFixed(2)}\n`;
         
-        // Create download
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
         const url = URL.createObjectURL(blob);
@@ -1841,7 +1764,6 @@ $(document).ready(function() {
     const fileInput = document.getElementById('excel_file');
     const browseLink = document.getElementById('browseLink');
 
-    // Prevent default drag behaviors
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
         document.addEventListener(eventName, (e) => {
             e.preventDefault();
@@ -1849,7 +1771,6 @@ $(document).ready(function() {
         });
     });
 
-    // Highlight drop zone when file is dragged over
     ['dragenter', 'dragover'].forEach(eventName => {
         dropZone.addEventListener(eventName, (e) => {
             dropZone.classList.add('dragover');
@@ -1862,42 +1783,31 @@ $(document).ready(function() {
         });
     });
 
-    // Handle dropped files
     dropZone.addEventListener('drop', (e) => {
         const files = e.dataTransfer.files;
         handleFiles(files);
     });
 
-    // Click on drop zone opens file dialog
     dropZone.addEventListener('click', (e) => {
-        // Prevent opening dialog if clicking on remove buttons or other interactive elements
         if (e.target.closest('.remove-file') || e.target.closest('.btn')) {
             return;
         }
         fileInput.click();
     });
 
-    // Browse link opens file dialog
     browseLink.addEventListener('click', (e) => {
         e.stopPropagation();
         fileInput.click();
     });
 
-    // Handle file selection via input
     fileInput.addEventListener('change', function(e) {
         handleFiles(e.target.files);
     });
 
-    // ============================================
-    // END OF DRAG AND DROP FUNCTIONALITY
-    // ============================================
-
-    // Process button click handler
     $('#btn_process').on('click', function() {
         processAllFiles();
     });
 
-    // Clear all files button
     $('#btn_clear_files').on('click', function() {
         Swal.fire({
             title: 'Clear All Files?',
@@ -1916,10 +1826,8 @@ $(document).ready(function() {
         });
     });
 
-    // Initialize file list
     updateFileList();
 
-    // Keyboard shortcut: Ctrl+Shift+C to clear all files
     $(document).on('keydown', function(e) {
         if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
             e.preventDefault();

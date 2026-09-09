@@ -905,6 +905,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             exit;
         }
 
+        // ---- Handle empty values for database insertion ----
+        $vat_amount_sql = !empty($vat_amount) ? "'" . mysqli_real_escape_string($conn, $vat_amount) . "'" : "NULL";
+        $net_of_vat_sql = !empty($net_of_vat) ? "'" . mysqli_real_escape_string($conn, $net_of_vat) . "'" : "NULL";
+        $withholding_tax_sql = !empty($withholding_tax) ? "'" . mysqli_real_escape_string($conn, $withholding_tax) . "'" : "NULL";
+        $net_amount_due_sql = !empty($net_amount_due) ? "'" . mysqli_real_escape_string($conn, $net_amount_due) . "'" : "NULL";
+        $add_amount_sql = !empty($add_amount) ? "'" . mysqli_real_escape_string($conn, $add_amount) . "'" : "NULL";
+        $amount_add_sql = !empty($amount_add) ? "'" . mysqli_real_escape_string($conn, $amount_add) . "'" : "NULL";
+        $number_of_days_sql = !empty($number_of_days) ? "'" . mysqli_real_escape_string($conn, $number_of_days) . "'" : "NULL";
+
         // ---- Run the insert + series_number update as one transaction ----
         mysqli_begin_transaction($conn);
 
@@ -918,9 +927,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                          ) VALUES (
                             '$invoice_date', '$control_number', '$partner_acc_name', " . ($billing_period === null ? "NULL" : "'$billing_period'") . ", '$partner_tin', '$address',
                             '$business_style', '$service_charge', '$from_date', '$to_date', '$po_number',
-                            $transaction_count, $amount, '$add_amount', '$amount_add', '$number_of_days',
-                            '$formula', '$formula_withheld', '$formula_inc_exc', '$vat_amount', '$net_of_vat',
-                            '$withholding_tax', '$total_amount_due', '$net_amount_due', '" . mysqli_real_escape_string($conn, $prepared_by) . "',
+                            $transaction_count, $amount, $add_amount_sql, $amount_add_sql, $number_of_days_sql,
+                            '$formula', '$formula_withheld', '$formula_inc_exc', $vat_amount_sql, $net_of_vat_sql,
+                            $withholding_tax_sql, '$total_amount_due', $net_amount_due_sql, '" . mysqli_real_escape_string($conn, $prepared_by) . "',
                             '$prepared_date_signature', '$prepared_signature', '$status'
                          )";
 
@@ -1487,7 +1496,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     if (hasId) {
                         badgeHtml = ' <span class="with-id-badge" style="color: #27ae60; font-size: 11px; background: #eafaf1; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #27ae60;">✓ With ID</span>';
                     } else {
-                        badgeHtml = ' <span class="no-id-badge" style="color: #e67e22; font-size: 11px; background: #fef9e7; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #f39c12;">No ID</span>';
+                        badgeHtml = ' <span class="no-id-badge" style="color: #e67e22; font-size: 11px; background: #fef9e7; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #f39c12;">Without ID</span>';
                     }
                     
                     if (soaStatus === 'WITH SOA') {
@@ -1738,14 +1747,14 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                         <span class="value success">${data.last_reference_number || 'N/A'}</span>
                     </div>
                     <div class="soa-info-divider"></div>
-                    <div class="soa-info-item" style="background: #eaf2f8; border-radius: 6px; padding: 12px 10px; margin: 4px 0;">
+                    <div class="soa-info-item">
                         <span class="label"><i class="fa-solid fa-forward" style="color: #b60000;"></i> Next SOA Date Range</span>
                         <span class="value highlight">${formatDateDisplay(data.next_from_date)} <span style="color: #7f8c8d; font-weight: 400;">to</span> ${formatDateDisplay(data.next_to_date)}</span>
                     </div>
                     ${data.next_reference_number ? `
                     <div class="soa-info-item" style="padding-top: 6px;">
                         <span class="label"><i class="fa-solid fa-arrow-right" style="color: #c70000;"></i> Next Reference</span>
-                        <span class="value" style="color: #e67e22;">${data.next_reference_number}</span>
+                        <span class="value" style="color: #890000;">${data.next_reference_number}</span>
                     </div>
                     ` : ''}
                     <div class="soa-info-warning">
@@ -1766,7 +1775,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             $body.html(html);
             
             // Reset timer
-            soaInfoCountdown = 10;
+            soaInfoCountdown = 15;
             $('#soaInfoTimerCount').text(soaInfoCountdown);
             
             // Show modal
@@ -2649,6 +2658,9 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             
             // Helper function to format numbers with commas
             function formatNumber(num) {
+                if (num === null || num === undefined || isNaN(num) || num === '') {
+                    return '0';
+                }
                 return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
             }
             
@@ -2657,29 +2669,23 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 return Math.round(num * 100) / 100;
             }
             
-            // Calculate add amount
+            // Calculate add amount - only if number of days > 0
             let addAmountValue = 0;
-            let addAmountDisplay = '₱ 0';
+            let addAmountDisplay = '';
             // Storage-oriented values (used when saving, per the soa_transaction column spec):
             //  - amountAddBase: the flat 500 rate, no decimals, only set for partner 434
             //  - addAmountForStorage: 500 * number of days, no decimals, no peso sign
             //  - numberOfDaysForStorage: the raw days entered, or '' if nothing was entered
             let amountAddBase = '';
-            let addAmountForStorage = '0';
+            let addAmountForStorage = '';
             let numberOfDaysForStorage = '';
             
             if (isPartner434 && numberOfDays > 0) {
                 addAmountValue = 500 * numberOfDays;
-                addAmountDisplay = `₱ 500 × ${numberOfDays}`;
+                addAmountDisplay = `₱ 500 × ${numberOfDays} = ₱ ${addAmountValue.toFixed(2)}`;
                 amountAddBase = '500';
-                addAmountForStorage = (500 * numberOfDays).toFixed(2); 
+                addAmountForStorage = addAmountValue.toFixed(2);
                 numberOfDaysForStorage = String(numberOfDays);
-            } else if (isPartner434) {
-                addAmountValue = 500;
-                addAmountDisplay = '₱ 500';
-                amountAddBase = '500';
-                addAmountForStorage = '500';
-                numberOfDaysForStorage = '';
             }
             
             // Format dates
@@ -2688,12 +2694,12 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             const invoiceDateFormatted = invoiceDate ? new Date(invoiceDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
             
             // Initialize variables
-            let vatAmount = 0;
-            let netOfVat = 0;
-            let withholdingTaxAmount = 0;
+            let vatAmount = '';
+            let netOfVat = '';
+            let withholdingTaxAmount = '';
             let totalAmountDue = 0;
-            let lessWT = 0;
-            let netAmountDue = 0;
+            let lessWT = '';
+            let netAmountDue = '';
             
             // Normalize values for comparison
             const incExcUpper = incExc.toUpperCase().trim();
@@ -2712,13 +2718,13 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             let formulaText = '';
 
             if (isNonVat) {
-                // NON-VAT
-                vatAmount = 0;
-                netOfVat = 0;
-                withholdingTaxAmount = 0;
+                // NON-VAT: All VAT fields should be empty, net_amount_due empty since it's in totalAmountDue
+                vatAmount = '';
+                netOfVat = '';
+                withholdingTaxAmount = '';
                 totalAmountDue = baseAmount;
-                lessWT = 0;
-                netAmountDue = totalAmountDue + addAmountValue;
+                lessWT = '';
+                netAmountDue = '';
                 formulaText = '';
             } else if (isInclusive && isWithheld) {
                 // INCLUSIVE, WITHHELD = YES
@@ -2758,12 +2764,12 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 formulaText = 'VAT Amount 12% = Amount * 12%';
             } else {
                 // Default fallback
-                vatAmount = 0;
-                netOfVat = 0;
-                withholdingTaxAmount = 0;
+                vatAmount = '';
+                netOfVat = '';
+                withholdingTaxAmount = '';
                 totalAmountDue = baseAmount;
-                lessWT = 0;
-                netAmountDue = totalAmountDue + addAmountValue;
+                lessWT = '';
+                netAmountDue = '';
                 formulaText = '';
             }
 
@@ -2783,17 +2789,17 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 po_number: poNumber,
                 transaction_count: transactionCount.toString().replace(/,/g, ''),
                 amount: baseAmount,
-                add_amount: addAmountForStorage,      // computed total (500 * days), no decimals, no peso sign
-                amount_add: amountAddBase,             // flat 500 rate for partner 434, no decimals ('' otherwise)
-                number_of_days: numberOfDaysForStorage, // raw days entered, '' if none
+                add_amount: addAmountForStorage || '',
+                amount_add: amountAddBase || '',
+                number_of_days: numberOfDaysForStorage || '',
                 formula: incExc,                        // -> formula column
                 formula_withheld: withholdingTax,       // -> formula_withheld column
                 formula_calc_text: formulaText,         // -> formulaInc_Exc column
-                vat_amount: vatAmount.toFixed(2),
-                net_of_vat: netOfVat.toFixed(2),
-                withholding_tax: withholdingTaxAmount.toFixed(2),
-                total_amount_due: totalAmountDue.toFixed(2),
-                net_amount_due: netAmountDue.toFixed(2)
+                vat_amount: vatAmount !== '' ? vatAmount.toFixed(2) : '',
+                net_of_vat: netOfVat !== '' ? netOfVat.toFixed(2) : '',
+                withholding_tax: withholdingTaxAmount !== '' ? withholdingTaxAmount.toFixed(2) : '',
+                total_amount_due: totalAmountDue !== '' ? totalAmountDue.toFixed(2) : '',
+                net_amount_due: netAmountDue !== '' ? netAmountDue.toFixed(2) : ''
             };
             
             // Build the left column particulars - JUST TEXT DISPLAY, NO CALCULATIONS
@@ -2842,7 +2848,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 </div>`;
             
             // Add Amount for partner 434 (if applicable)
-            if (isPartner434) {
+            if (isPartner434 && numberOfDays > 0) {
                 leftColumnParticulars += `
                     <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                         <span>Add Amount:</span>
@@ -2965,32 +2971,42 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                             ` : `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>VAT Amount:</span>
-                                <span style="font-weight: bold;">₱ 0.00</span>
+                                <span style="font-weight: bold;"></span>
                             </div>
                             `}
-                            ${isInclusive ? `
+                            ${isInclusive && !isNonVat ? `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Net of VAT:</span>
                                 <span style="font-weight: bold;">₱ ${formatNumber(netOfVat.toFixed(2))}</span>
                             </div>
+                            ` : (isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Net of VAT:</span>
+                                <span style="font-weight: bold;"></span>
+                            </div>
                             ` : `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Net of VAT:</span>
                                 <span style="font-weight: bold;">₱ 0.00</span>
                             </div>
-                            `}
-                            ${isWithheld ? `
+                            `)}
+                            ${isWithheld && !isNonVat ? `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Withholding Tax:</span>
                                 <span style="font-weight: bold;">₱ ${formatNumber(withholdingTaxAmount.toFixed(2))}</span>
+                            </div>
+                            ` : (isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Withholding Tax:</span>
+                                <span style="font-weight: bold;"></span>
                             </div>
                             ` : `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Withholding Tax:</span>
                                 <span style="font-weight: bold;">₱ 0.00</span>
                             </div>
-                            `}
-                            ${isPartner434 ? `
+                            `)}
+                            ${isPartner434 && numberOfDays > 0 ? `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Add Amount:</span>
                                 <span style="font-weight: bold;">₱ ${formatNumber(addAmountValue.toFixed(2))}</span>
@@ -3000,20 +3016,25 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                                 <span>Total Amount Due:</span>
                                 <span>₱ ${formatNumber(totalAmountDue.toFixed(2))}</span>
                             </div>
-                            ${isWithheld ? `
+                            ${isWithheld && !isNonVat ? `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Less: Withholding Tax:</span>
                                 <span>₱ ${formatNumber(lessWT.toFixed(2))}</span>
+                            </div>
+                            ` : (isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Less: Withholding Tax:</span>
+                                <span></span>
                             </div>
                             ` : `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Less: Withholding Tax:</span>
                                 <span>₱ 0.00</span>
                             </div>
-                            `}
+                            `)}
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; font-weight: bold; font-size: 16px; border-top: 2px double #333; margin-top: 5px; padding-top: 10px;">
                                 <span>Net Amount Due:</span>
-                                <span>₱ ${formatNumber(netAmountDue.toFixed(2))}</span>
+                                <span>${isNonVat ? '' : '₱ ' + formatNumber(netAmountDue.toFixed(2))}</span>
                             </div>
                         </div>
                     </div>

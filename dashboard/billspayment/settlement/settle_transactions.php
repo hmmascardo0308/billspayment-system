@@ -36,6 +36,16 @@ $bank_filter = isset($_POST['bank_filter']) ? trim($_POST['bank_filter']) : '';
 $settlement_type_filter = isset($_POST['settlement_type_filter']) ? trim($_POST['settlement_type_filter']) : '';
 $date_from = isset($_POST['date_from']) ? trim($_POST['date_from']) : '';
 $date_to = isset($_POST['date_to']) ? trim($_POST['date_to']) : '';
+$reason_data_json = isset($_POST['reason_data']) ? trim($_POST['reason_data']) : '';
+
+// Decode reason data for logging
+$reason_data = [];
+if (!empty($reason_data_json)) {
+    $reason_data = json_decode($reason_data_json, true);
+    if (!is_array($reason_data)) {
+        $reason_data = [];
+    }
+}
 
 // Validate
 if (empty($partner_ids) || !is_array($partner_ids)) {
@@ -159,7 +169,7 @@ try {
         exit;
     }
     
-    // Update ONLY unsettled transactions - NOW INCLUDING rfp_no AND cad_no
+    // Update ONLY unsettled transactions - set as Settled and clear reason_not_settled
     $update_sql = "UPDATE mldb.billspayment_transaction bt
                    LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
                    SET 
@@ -167,7 +177,8 @@ try {
                        bt.settlement_date = ?,
                        bt.settled_by = ?,
                        bt.rfp_no = ?,
-                       bt.cad_no = ?
+                       bt.cad_no = ?,
+                       bt.reason_not_settled = NULL
                    " . $where_clause;
     
     // Add settlement_date, settled_by, rfp_no, cad_no to params

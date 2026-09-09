@@ -885,7 +885,7 @@
         }
         
         .soa-info-item .value.success {
-            color: #27ae60;
+            color: #006329;
         }
         
         .soa-info-divider {
@@ -901,13 +901,13 @@
             background: #fef9e7;
             border-radius: 6px;
             margin-top: 12px;
-            border-left: 4px solid #f39c12;
+            border-left: 4px solid #9f0000;
             font-size: 13px;
             color: #3b3b3b;
         }
         
         .soa-info-warning i {
-            color: #f39c12;
+            color: #920000;
             font-size: 18px;
         }
         

@@ -800,6 +800,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             exit;
         }
 
+        // ---- Handle empty values for database insertion ----
+        $vat_amount_sql = !empty($vat_amount) ? "'" . mysqli_real_escape_string($conn, $vat_amount) . "'" : "NULL";
+        $net_of_vat_sql = !empty($net_of_vat) ? "'" . mysqli_real_escape_string($conn, $net_of_vat) . "'" : "NULL";
+        $withholding_tax_sql = !empty($withholding_tax) ? "'" . mysqli_real_escape_string($conn, $withholding_tax) . "'" : "NULL";
+        $net_amount_due_sql = !empty($net_amount_due) ? "'" . mysqli_real_escape_string($conn, $net_amount_due) . "'" : "NULL";
+        $add_amount_sql = !empty($add_amount) ? "'" . mysqli_real_escape_string($conn, $add_amount) . "'" : "NULL";
+        $amount_add_sql = !empty($amount_add) ? "'" . mysqli_real_escape_string($conn, $amount_add) . "'" : "NULL";
+        $number_of_days_sql = !empty($number_of_days) ? "'" . mysqli_real_escape_string($conn, $number_of_days) . "'" : "NULL";
+
         // ---- Run the insert + series_number update as one transaction ----
         mysqli_begin_transaction($conn);
 
@@ -813,9 +822,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                          ) VALUES (
                             '$invoice_date', '$control_number', '$partner_acc_name', " . ($billing_period === null ? "NULL" : "'$billing_period'") . ", '$partner_tin', '$address',
                             '$business_style', '$service_charge', '$from_date', '$to_date', '$po_number',
-                            $transaction_count, $amount, '$add_amount', '$amount_add', '$number_of_days',
-                            '$formula', '$formula_withheld', '$formula_inc_exc', '$vat_amount', '$net_of_vat',
-                            '$withholding_tax', '$total_amount_due', '$net_amount_due', '" . mysqli_real_escape_string($conn, $prepared_by) . "',
+                            $transaction_count, $amount, $add_amount_sql, $amount_add_sql, $number_of_days_sql,
+                            '$formula', '$formula_withheld', '$formula_inc_exc', $vat_amount_sql, $net_of_vat_sql,
+                            $withholding_tax_sql, '$total_amount_due', $net_amount_due_sql, '" . mysqli_real_escape_string($conn, $prepared_by) . "',
                             '$prepared_date_signature', '$prepared_signature', '$status'
                          )";
 
@@ -1442,7 +1451,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
         // Helper function to format numbers with commas
         function formatNumberWithCommas(number) {
-            if (number === null || number === undefined || isNaN(number)) {
+            if (number === null || number === undefined || isNaN(number) || number === '') {
                 return '0';
             }
             const parts = String(number).split('.');
@@ -1452,7 +1461,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
         // Helper function to format numbers for display (with commas)
         function formatNumber(num) {
-            if (num === null || num === undefined || isNaN(num)) {
+            if (num === null || num === undefined || isNaN(num) || num === '') {
                 return '0';
             }
             return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -2008,7 +2017,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                         if (response.error) {
                             errorMsg += response.error;
                         } else {
-                            errorMsg += 'Please try again.';
+                            errorMsg += 'Please try again.'
                         }
                     } catch (e) {
                         errorMsg += 'Status: ' + status + ', Error: ' + error;
@@ -2292,25 +2301,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const numberOfDays = parseInt(numberOfDaysRaw) || 0;
             const isPartner434 = $('#additionalFields').is(':visible');
             
-            // Calculate add amount
+            // Calculate add amount - only if number of days > 0
             let addAmountValue = 0;
-            let addAmountDisplay = '₱ 0';
+            let addAmountDisplay = '';
             let amountAddBase = '';
-            let addAmountForStorage = '0';
+            let addAmountForStorage = '';
             let numberOfDaysForStorage = '';
             
             if (isPartner434 && numberOfDays > 0) {
                 addAmountValue = 500 * numberOfDays;
-                addAmountDisplay = `₱ 500 × ${numberOfDays}`;
+                addAmountDisplay = `₱ 500 × ${numberOfDays} = ₱ ${addAmountValue.toFixed(2)}`;
                 amountAddBase = '500';
-                addAmountForStorage = (500 * numberOfDays).toFixed(2); 
+                addAmountForStorage = addAmountValue.toFixed(2);
                 numberOfDaysForStorage = String(numberOfDays);
-            } else if (isPartner434) {
-                addAmountValue = 500;
-                addAmountDisplay = '₱ 500';
-                amountAddBase = '500';
-                addAmountForStorage = '500';
-                numberOfDaysForStorage = '';
             }
             
             // Format dates
@@ -2319,12 +2322,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const invoiceDateFormatted = invoiceDate ? new Date(invoiceDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
             
             // Initialize variables
-            let vatAmount = 0;
-            let netOfVat = 0;
-            let withholdingTaxAmount = 0;
+            let vatAmount = '';
+            let netOfVat = '';
+            let withholdingTaxAmount = '';
             let totalAmountDue = 0;
-            let lessWT = 0;
-            let netAmountDue = 0;
+            let lessWT = '';
+            let netAmountDue = '';
             
             // Normalize values for comparison
             const incExcUpper = incExc.toUpperCase().trim();
@@ -2342,12 +2345,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             let formulaText = '';
 
             if (isNonVat) {
-                vatAmount = 0;
-                netOfVat = 0;
-                withholdingTaxAmount = 0;
+                // NON-VAT: All VAT fields should be empty, net_amount_due empty since it's in totalAmountDue
+                vatAmount = '';
+                netOfVat = '';
+                withholdingTaxAmount = '';
                 totalAmountDue = baseAmount;
-                lessWT = 0;
-                netAmountDue = totalAmountDue + addAmountValue;
+                lessWT = '';
+                netAmountDue = '';
                 formulaText = '';
             } else if (isInclusive && isWithheld) {
                 vatAmount = roundTo2((baseAmount * 0.12) / 1.12);
@@ -2382,12 +2386,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
                 formulaText = 'VAT Amount 12% = Amount * 12%';
             } else {
-                vatAmount = 0;
-                netOfVat = 0;
-                withholdingTaxAmount = 0;
+                vatAmount = '';
+                netOfVat = '';
+                withholdingTaxAmount = '';
                 totalAmountDue = baseAmount;
-                lessWT = 0;
-                netAmountDue = totalAmountDue + addAmountValue;
+                lessWT = '';
+                netAmountDue = '';
                 formulaText = '';
             }
 
@@ -2406,17 +2410,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 po_number: poNumber,
                 transaction_count: String(transactionCount),
                 amount: baseAmount,
-                add_amount: addAmountForStorage,
-                amount_add: amountAddBase,
-                number_of_days: numberOfDaysForStorage,
+                add_amount: addAmountForStorage || '',
+                amount_add: amountAddBase || '',
+                number_of_days: numberOfDaysForStorage || '',
                 formula: incExc,
                 formula_withheld: withholdingTax,
                 formula_calc_text: formulaText,
-                vat_amount: vatAmount.toFixed(2),
-                net_of_vat: netOfVat.toFixed(2),
-                withholding_tax: withholdingTaxAmount.toFixed(2),
-                total_amount_due: totalAmountDue.toFixed(2),
-                net_amount_due: netAmountDue.toFixed(2)
+                vat_amount: vatAmount !== '' ? vatAmount.toFixed(2) : '',
+                net_of_vat: netOfVat !== '' ? netOfVat.toFixed(2) : '',
+                withholding_tax: withholdingTaxAmount !== '' ? withholdingTaxAmount.toFixed(2) : '',
+                total_amount_due: totalAmountDue !== '' ? totalAmountDue.toFixed(2) : '',
+                net_amount_due: netAmountDue !== '' ? netAmountDue.toFixed(2) : ''
             };
             
             // Build left column particulars
@@ -2467,7 +2471,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     </div>`;
             }
             
-            if (isPartner434) {
+            if (isPartner434 && numberOfDays > 0) {
                 leftColumnParticulars += `
                     <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                         <span>Add Amount:</span>
@@ -2577,32 +2581,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             ` : `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>VAT Amount:</span>
-                                <span style="font-weight: bold;">₱ 0.00</span>
+                                <span style="font-weight: bold;"></span>
                             </div>
                             `}
-                            ${isInclusive ? `
+                            ${isInclusive && !isNonVat ? `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Net of VAT:</span>
                                 <span style="font-weight: bold;">₱ ${formatNumber(netOfVat.toFixed(2))}</span>
                             </div>
+                            ` : (isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Net of VAT:</span>
+                                <span style="font-weight: bold;"></span>
+                            </div>
                             ` : `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Net of VAT:</span>
                                 <span style="font-weight: bold;">₱ 0.00</span>
                             </div>
-                            `}
-                            ${isWithheld ? `
+                            `)}
+                            ${isWithheld && !isNonVat ? `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Withholding Tax:</span>
                                 <span style="font-weight: bold;">₱ ${formatNumber(withholdingTaxAmount.toFixed(2))}</span>
+                            </div>
+                            ` : (isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Withholding Tax:</span>
+                                <span style="font-weight: bold;"></span>
                             </div>
                             ` : `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Withholding Tax:</span>
                                 <span style="font-weight: bold;">₱ 0.00</span>
                             </div>
-                            `}
-                            ${isPartner434 ? `
+                            `)}
+                            ${isPartner434 && numberOfDays > 0 ? `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Add Amount:</span>
                                 <span style="font-weight: bold;">₱ ${formatNumber(addAmountValue.toFixed(2))}</span>
@@ -2612,20 +2626,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 <span>Total Amount Due:</span>
                                 <span>₱ ${formatNumber(totalAmountDue.toFixed(2))}</span>
                             </div>
-                            ${isWithheld ? `
+                            ${isWithheld && !isNonVat ? `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Less: Withholding Tax:</span>
                                 <span>₱ ${formatNumber(lessWT.toFixed(2))}</span>
+                            </div>
+                            ` : (isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Less: Withholding Tax:</span>
+                                <span></span>
                             </div>
                             ` : `
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                                 <span>Less: Withholding Tax:</span>
                                 <span>₱ 0.00</span>
                             </div>
-                            `}
+                            `)}
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; font-weight: bold; font-size: 16px; border-top: 2px double #333; margin-top: 5px; padding-top: 10px;">
                                 <span>Net Amount Due:</span>
-                                <span>₱ ${formatNumber(netAmountDue.toFixed(2))}</span>
+                                <span>${isNonVat ? '' : '₱ ' + formatNumber(netAmountDue.toFixed(2))}</span>
                             </div>
                         </div>
                     </div>
