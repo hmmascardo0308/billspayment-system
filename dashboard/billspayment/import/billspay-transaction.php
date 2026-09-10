@@ -558,7 +558,7 @@ $(document).ready(function() {
         
         const gridHtml = `
             <div class="summary-card summary-positive">
-                <h6 class="text-success">SUMMARY (Positive Amounts)</h6>
+                <h6 class="text-success">NET (Positive Amounts)</h6>
                 <div class="summary-item">
                     <span class="label">TOTAL COUNT:</span>
                     <span class="value">${formatNumber(stats.summary.count)}</span>
@@ -581,7 +581,7 @@ $(document).ready(function() {
                 </div>
             </div>
             <div class="summary-card summary-adjustment">
-                <h6 class="text-danger">ADJUSTMENTS (Negative Amounts)</h6>
+                <h6 class="text-danger">Cancellation (Negative Amounts)</h6>
                 <div class="summary-item">
                     <span class="label">TOTAL COUNT:</span>
                     <span class="value">${formatNumber(stats.adjustments.count)}</span>

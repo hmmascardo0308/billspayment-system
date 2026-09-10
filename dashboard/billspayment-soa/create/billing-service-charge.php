@@ -743,12 +743,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $to_date          = mysqli_real_escape_string($conn, $_POST['to_date'] ?? '');
         $po_number        = mysqli_real_escape_string($conn, $_POST['po_number'] ?? '');
         $transaction_count = intval($_POST['transaction_count'] ?? 0);
-        $amount           = floatval($_POST['amount'] ?? 0);
-        // add_amount: computed total (500 * number of days), no decimals, no peso sign
+
+        // amount is stored as numeric (float) in the table
+        $amount           = floatval(str_replace(',', '', $_POST['amount'] ?? 0));
+        // add_amount / amount_add / number_of_days – keep as received (may contain commas for display-style storage)
         $add_amount       = mysqli_real_escape_string($conn, $_POST['add_amount'] ?? '');
-        // amount_add: the flat 500 rate for partner 434, no decimals ('' when not applicable)
         $amount_add       = mysqli_real_escape_string($conn, $_POST['amount_add'] ?? '');
-        // numberOf_days: raw days entered, empty when nothing was entered
         $number_of_days   = mysqli_real_escape_string($conn, $_POST['number_of_days'] ?? '');
         // formula / formula_withheld / formulaInc_Exc columns:
         //   formula          <- inc_exc (Inclusive/Exclusive/Non-VAT)
@@ -757,6 +757,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $formula          = mysqli_real_escape_string($conn, $_POST['formula'] ?? '');
         $formula_withheld = mysqli_real_escape_string($conn, $_POST['formula_withheld'] ?? '');
         $formula_inc_exc  = mysqli_real_escape_string($conn, $_POST['formula_calc_text'] ?? '');
+
+        // VARCHAR amount columns – store exactly as sent (with commas, e.g. "963,823.93")
         $vat_amount       = mysqli_real_escape_string($conn, $_POST['vat_amount'] ?? '');
         $net_of_vat       = mysqli_real_escape_string($conn, $_POST['net_of_vat'] ?? '');
         $withholding_tax  = mysqli_real_escape_string($conn, $_POST['withholding_tax'] ?? '');
@@ -801,13 +803,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
 
         // ---- Handle empty values for database insertion ----
-        $vat_amount_sql = !empty($vat_amount) ? "'" . mysqli_real_escape_string($conn, $vat_amount) . "'" : "NULL";
-        $net_of_vat_sql = !empty($net_of_vat) ? "'" . mysqli_real_escape_string($conn, $net_of_vat) . "'" : "NULL";
-        $withholding_tax_sql = !empty($withholding_tax) ? "'" . mysqli_real_escape_string($conn, $withholding_tax) . "'" : "NULL";
-        $net_amount_due_sql = !empty($net_amount_due) ? "'" . mysqli_real_escape_string($conn, $net_amount_due) . "'" : "NULL";
-        $add_amount_sql = !empty($add_amount) ? "'" . mysqli_real_escape_string($conn, $add_amount) . "'" : "NULL";
-        $amount_add_sql = !empty($amount_add) ? "'" . mysqli_real_escape_string($conn, $amount_add) . "'" : "NULL";
-        $number_of_days_sql = !empty($number_of_days) ? "'" . mysqli_real_escape_string($conn, $number_of_days) . "'" : "NULL";
+        // VARCHAR amount columns store the formatted value with commas (e.g. "963,823.93")
+        // Values were already escaped when collected above.
+        $vat_amount_sql       = ($vat_amount !== '') ? "'$vat_amount'" : "NULL";
+        $net_of_vat_sql       = ($net_of_vat !== '') ? "'$net_of_vat'" : "NULL";
+        $withholding_tax_sql  = ($withholding_tax !== '') ? "'$withholding_tax'" : "NULL";
+        $total_amount_due_sql = ($total_amount_due !== '') ? "'$total_amount_due'" : "NULL";
+        $net_amount_due_sql   = ($net_amount_due !== '') ? "'$net_amount_due'" : "NULL";
+        $add_amount_sql       = ($add_amount !== '') ? "'$add_amount'" : "NULL";
+        $amount_add_sql       = ($amount_add !== '') ? "'$amount_add'" : "NULL";
+        $number_of_days_sql   = ($number_of_days !== '') ? "'$number_of_days'" : "NULL";
 
         // ---- Run the insert + series_number update as one transaction ----
         mysqli_begin_transaction($conn);
@@ -824,7 +829,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             '$business_style', '$service_charge', '$from_date', '$to_date', '$po_number',
                             $transaction_count, $amount, $add_amount_sql, $amount_add_sql, $number_of_days_sql,
                             '$formula', '$formula_withheld', '$formula_inc_exc', $vat_amount_sql, $net_of_vat_sql,
-                            $withholding_tax_sql, '$total_amount_due', $net_amount_due_sql, '" . mysqli_real_escape_string($conn, $prepared_by) . "',
+                            $withholding_tax_sql, $total_amount_due_sql, $net_amount_due_sql, '" . mysqli_real_escape_string($conn, $prepared_by) . "',
                             '$prepared_date_signature', '$prepared_signature', '$status'
                          )";
 
@@ -2353,14 +2358,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 lessWT = '';
                 netAmountDue = '';
                 formulaText = '';
-            } else if (isInclusive && isWithheld) {
+                        } else if (isInclusive && isWithheld) { // done
                 vatAmount = roundTo2((baseAmount * 0.12) / 1.12);
                 netOfVat = roundTo2(baseAmount - vatAmount);
                 withholdingTaxAmount = roundTo2(netOfVat * 0.02);
                 totalAmountDue = baseAmount;
                 lessWT = withholdingTaxAmount;
                 netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
-                formulaText = 'VAT Amount 12% = (Amount * 12%) / 1.12 | Net of VAT = Amount - VAT Amount | WTax = Net of VAT * 2%';
+                formulaText = 'VAT Amount 12% = (Amount * 12%) / 1.12\n' +
+                            'Net of VAT = Amount - VAT Amount\n' +
+                            'WTax = Net of VAT * 2%';
             } else if (isInclusive && isNoWithheld) {
                 vatAmount = roundTo2((baseAmount * 0.12) / 1.12);
                 netOfVat = roundTo2(baseAmount - vatAmount);
@@ -2368,15 +2375,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 totalAmountDue = baseAmount;
                 lessWT = 0;
                 netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
-                formulaText = 'VAT Amount 12% = (Amount * 12%) / 1.12 | Net of VAT = Amount - VAT Amount';
-            } else if (isExclusive && isWithheld) {
+                formulaText = 'VAT Amount 12% = (Amount * 12%) / 1.12\n' +
+                            'Net of VAT = Amount - VAT Amount';
+            } 
+            else if (isExclusive && isWithheld) { // done
                 vatAmount = roundTo2(baseAmount * 0.12);
                 netOfVat = 0;
                 withholdingTaxAmount = roundTo2(baseAmount * 0.02);
                 totalAmountDue = roundTo2(baseAmount + vatAmount);
                 lessWT = withholdingTaxAmount;
                 netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
-                formulaText = 'VAT Amount 12% = Amount * 12% | WTax = Amount * 2%';
+                formulaText = 'VAT Amount 12% = Amount * 12%\n' +
+                            'WTax = Amount * 2%';
             } else if (isExclusive && isNoWithheld) {
                 vatAmount = roundTo2(baseAmount * 0.12);
                 netOfVat = 0;
@@ -2396,6 +2406,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
 
             // Stash the full payload for Save Invoice
+            // VARCHAR amount columns store formatted values WITH commas (e.g. "963,823.93")
             currentInvoiceData = {
                 partner_id: partnerId,
                 invoice_date: invoiceDate,
@@ -2416,11 +2427,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 formula: incExc,
                 formula_withheld: withholdingTax,
                 formula_calc_text: formulaText,
-                vat_amount: vatAmount !== '' ? vatAmount.toFixed(2) : '',
-                net_of_vat: netOfVat !== '' ? netOfVat.toFixed(2) : '',
-                withholding_tax: withholdingTaxAmount !== '' ? withholdingTaxAmount.toFixed(2) : '',
-                total_amount_due: totalAmountDue !== '' ? totalAmountDue.toFixed(2) : '',
-                net_amount_due: netAmountDue !== '' ? netAmountDue.toFixed(2) : ''
+                vat_amount: vatAmount !== '' ? formatNumber(vatAmount.toFixed(2)) : '',
+                net_of_vat: netOfVat !== '' ? formatNumber(netOfVat.toFixed(2)) : '',
+                withholding_tax: withholdingTaxAmount !== '' ? formatNumber(withholdingTaxAmount.toFixed(2)) : '',
+                total_amount_due: totalAmountDue !== '' ? formatNumber(totalAmountDue.toFixed(2)) : '',
+                net_amount_due: netAmountDue !== '' ? formatNumber(netAmountDue.toFixed(2)) : ''
             };
             
             // Build left column particulars
