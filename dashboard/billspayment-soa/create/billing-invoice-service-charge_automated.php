@@ -1202,7 +1202,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 <!-- Transaction Date From - Display Only (Auto-populated) -->
                 <div class="form-group">
                     <label for="fromDateDisplay"><i class="fa-solid fa-calendar-day"></i> Transaction Date From <span style="color: red;">*</span></label>
-                    <input type="text" id="fromDateDisplay" readonly class="date-display-input" placeholder="Auto-populated from latest SOA">
+                    <input type="text" id="fromDateDisplay" readonly class="date-display-input" placeholder="Auto-populated base from the latest SOA">
                     <input type="hidden" id="fromDate" name="from_date" value="">
                     <span class="date-helper-text"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
                 </div>
@@ -1210,7 +1210,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 <!-- Transaction Date To - Display Only (Auto-populated) -->
                 <div class="form-group">
                     <label for="toDateDisplay"><i class="fa-solid fa-calendar-day"></i> Transaction Date To <span style="color: red;">*</span></label>
-                    <input type="text" id="toDateDisplay" readonly class="date-display-input" placeholder="Auto-populated from latest SOA">
+                    <input type="text" id="toDateDisplay" readonly class="date-display-input" placeholder="Auto-populated base from the latest SOA">
                     <input type="hidden" id="toDate" name="to_date" value="">
                     <span class="date-helper-text"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
                 </div>

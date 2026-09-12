@@ -18,7 +18,7 @@ ini_set('error_log', __DIR__ . '/../../../logs/php_errors.log');
 include '../../../templates/middleware.php';
 $current_user_id = resolve_user_identifier();
 if (empty($current_user_id)) { header('Location: ../../../login_form.php'); exit; }
-if (!function_exists('has_any_permission') || !has_any_permission(['Billing Invoice Service Charge','Bills Payment'])) { header('Location: ../../home.php'); exit; }
+if (!function_exists('has_any_permission') || !has_any_permission(['Billing Service Charge','Bills Payment'])) { header('Location: ../../home.php'); exit; }
 $prepared_sig_blob = null;
 $sig_blob = null;
 
@@ -1182,9 +1182,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                         data-partner-id-kpx="<?php echo htmlspecialchars($partner_id_kpx); ?>"
                                         data-is-special="<?php echo $is_special ? 'true' : 'false'; ?>">
                                     <?php echo $display_text; ?>
-                                    <?php if ($is_special): ?>
+                                    <!-- <?php if ($is_special): ?>
                                         <span class="special-partner-badge">LDS Special</span>
-                                    <?php endif; ?>
+                                    <?php endif; ?> -->
                                 </option>
                             <?php endwhile; ?>
                     </select>
@@ -1199,7 +1199,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 <!-- Transaction Date From - Auto-populated -->
                 <div class="form-group">
                     <label for="fromDateDisplay"><i class="fa-solid fa-calendar-day"></i> Transaction Date From <span style="color: red;">*</span></label>
-                    <input type="text" id="fromDateDisplay" readonly class="date-display-input" placeholder="Auto-populated from latest SOA">
+                    <input type="text" id="fromDateDisplay" readonly class="date-display-input" placeholder="Auto-populated base from the latest SOA">
                     <input type="hidden" id="fromDate" name="from_date" value="">
                     <span class="date-helper-text"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
                 </div>
@@ -1207,7 +1207,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 <!-- Transaction Date To - Auto-populated -->
                 <div class="form-group">
                     <label for="toDateDisplay"><i class="fa-solid fa-calendar-day"></i> Transaction Date To <span style="color: red;">*</span></label>
-                    <input type="text" id="toDateDisplay" readonly class="date-display-input" placeholder="Auto-populated from latest SOA">
+                    <input type="text" id="toDateDisplay" readonly class="date-display-input" placeholder="Auto-populated base from the latest SOA">
                     <input type="hidden" id="toDate" name="to_date" value="">
                     <span class="date-helper-text"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
                 </div>
@@ -1330,7 +1330,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             <div class="value" id="previewTransactionCount">0</div>
                         </div>
                         <div class="summary-item">
-                            <div class="label"><i class="fa-solid fa-peso-sign"></i> Total Principal <span style="font-size: 11px; color: #7f8c8d;">(optional)</span></div>
+                            <div class="label"><i class="fa-solid fa-peso-sign"></i> Total Principal <span style="font-size: 11px; color: #010101;">(optional)</span></div>
                             <div class="value" id="previewTotalPrincipal">₱ 0.00</div>
                         </div>
                         <div class="summary-item">
