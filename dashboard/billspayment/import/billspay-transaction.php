@@ -1,4 +1,5 @@
 <?php
+// billspay-transaction.php
 // Connect to the database
 include '../../../config/config.php';
 require '../../../vendor/autoload.php';
@@ -454,6 +455,32 @@ $(document).ready(function() {
             return isNaN(parsed) ? 0 : parsed;
         }
         return 0;
+    }
+
+    // ============================================
+    // Header-name -> column-index mapping helpers
+    // ============================================
+    function buildHeaderMap(worksheet) {
+        const map = {};
+        if (!worksheet['!ref']) return map;
+        const range = XLSX.utils.decode_range(worksheet['!ref']);
+        const headerRow = 8; // 0-based row index for row 9
+        for (let c = range.s.c; c <= range.e.c; c++) {
+            const cell = worksheet[XLSX.utils.encode_cell({r: headerRow, c: c})];
+            if (cell && cell.v !== null && cell.v !== undefined) {
+                const key = String(cell.v).trim().toLowerCase()
+                    .replace(/\./g, '')
+                    .replace(/\s+/g, ' ');
+                if (key !== '') map[key] = c;
+            }
+        }
+        return map;
+    }
+
+    function readCol(worksheet, col, r) {
+        if (col === undefined || col === null) return null;
+        const cell = worksheet[XLSX.utils.encode_cell({r: r, c: col})];
+        return cell ? cell.v : null;
     }
 
     function calculateSummary(rows) {
@@ -978,44 +1005,111 @@ $(document).ready(function() {
                         payloadRows.push(rowData);
                     }
                 } else {
+                    // ============================================
+                    // KPX FORMAT - dynamic column mapping by header row
+                    // Supports:
+                    //   - KPX with Contact No. (Format 1, no Partner ID/Name columns)
+                    //   - KPX with Partner ID + Partner Name columns (Format 2)
+                    //   - Legacy KPX with Partner ID KPX + Partner ID columns
+                    // ============================================
+                    const headerMap = buildHeaderMap(worksheet);
+                    console.log(`[${fileName}] KPX header map:`, headerMap);
+
+                    const colDatetime       = headerMap['date / time'] ?? headerMap['datetime'] ?? 1;
+                    const colControlNo      = headerMap['control no'];
+                    const colReferenceNo    = headerMap['reference no'];
+                    const colPayor          = headerMap['payor'];
+                    const colAddress        = headerMap['address'];
+                    const colAccountNo      = headerMap['account no'];
+                    const colAccountName    = headerMap['account name'];
+                    const colAmountPaid     = headerMap['amount paid'];
+                    const colChargeCustomer = headerMap['charge to customer'];
+                    const colChargePartner  = headerMap['charge to partner'];
+                    const colContactNo      = headerMap['contact no'];
+                    const colOtherDetails   = headerMap['other details'];
+                    const colBranchId       = headerMap['branch id'];
+                    const colMlOutlet       = headerMap['ml outlet'];
+                    const colRegionCode     = headerMap['region code'];
+                    const colRegion         = headerMap['region'];
+                    const colOperator       = headerMap['operator'];
+                    const colRemoteBranch   = headerMap['remote branch'];
+                    const colRemoteOperator = headerMap['remote operator'];
+                    const colSecondApprover = headerMap['2nd approver'];
+                    const colPartnerIdKpx   = headerMap['partner id kpx'];
+                    const colPartnerId      = headerMap['partner id'];
+                    const colPartnerName    = headerMap['partner name'];
+
+                    const hasPartnerIdColumns = (colPartnerIdKpx !== undefined) || (colPartnerId !== undefined);
+
+                    // Fallback partner name from B4 (used when the file has no Partner Name column)
+                    let partnerNameFromHeader = null;
+                    const b4 = worksheet['B4'];
+                    if (b4 && b4.v) {
+                        partnerNameFromHeader = String(b4.v).trim();
+                        console.log(`[${fileName}] B4 Partner Name: "${partnerNameFromHeader}"`);
+                    }
+                    console.log(`[${fileName}] hasPartnerIdColumns=${hasPartnerIdColumns}, hasPartnerNameColumn=${colPartnerName !== undefined}`);
+
                     for (let r = 9; r <= range.e.r; r++) {
-                        let datetimeCell = worksheet[XLSX.utils.encode_cell({r: r, c: 1})];
-                        
+                        let datetimeCell = worksheet[XLSX.utils.encode_cell({r: r, c: colDatetime})];
+
                         if (!datetimeCell || datetimeCell.v === null || String(datetimeCell.v).trim() === "") {
                             break;
                         }
 
-                        let regionCodeTg = worksheet[XLSX.utils.encode_cell({r: r, c: 14})] ? 
-                            String(worksheet[XLSX.utils.encode_cell({r: r, c: 14})].v).trim() : null;
+                        // Region Code TG: prefer "region code" header, else fall back to ML Outlet
+                        let regionCodeTg = readCol(worksheet, colRegionCode, r);
+                        if (regionCodeTg === null || regionCodeTg === '') {
+                            regionCodeTg = readCol(worksheet, colMlOutlet, r);
+                        }
 
-                        let partnerIdKpx = worksheet[XLSX.utils.encode_cell({r: r, c: 20})] ? 
-                            String(worksheet[XLSX.utils.encode_cell({r: r, c: 20})].v).trim() : '';
+                        // Partner IDs: read only if header exists
+                        let partnerIdKpx = colPartnerIdKpx !== undefined
+                            ? String(readCol(worksheet, colPartnerIdKpx, r) ?? '').trim()
+                            : '';
 
-                        let partnerIdFallback = worksheet[XLSX.utils.encode_cell({r: r, c: 21})] ? 
-                            String(worksheet[XLSX.utils.encode_cell({r: r, c: 21})].v).trim() : '';
+                        let partnerIdFallback = colPartnerId !== undefined
+                            ? String(readCol(worksheet, colPartnerId, r) ?? '').trim()
+                            : '';
+
+                        // Per-row Partner Name column (present in Format 2), falls back to B4 (Format 1)
+                        let partnerNamePerRow = colPartnerName !== undefined
+                            ? String(readCol(worksheet, colPartnerName, r) ?? '').trim()
+                            : '';
+
+                        // "ALL PARTNERS" is a wildcard placeholder — treat it as "no name supplied"
+                        if (partnerNamePerRow.toUpperCase() === 'ALL PARTNERS') {
+                            partnerNamePerRow = '';
+                        }
+
+                        const resolvedPartnerName =
+                            partnerNamePerRow ||
+                            partnerNameFromHeader ||
+                            null;
 
                         // ============================================
-                        // BAYADCENTER LOGIC - Check even if partnerIdKpx has value
+                        // BAYADCENTER / GSIS LOGIC
                         // ============================================
                         let finalPartnerIdKpx = partnerIdKpx;
                         let hardcodedPartnerNote = '';
                         let isBayadCenter = false;
-                        
-                        // Check for BAYADCENTER first (even if partnerIdKpx has value)
-                        if (partnerIdFallback === 'BAYADCENTER' || partnerIdFallback === 'BAYADCENTER ' || partnerIdFallback.toUpperCase() === 'BAYADCENTER') {
+
+                        if (partnerIdFallback.toUpperCase() === 'BAYADCENTER') {
                             isBayadCenter = true;
                             finalPartnerIdKpx = '9999';
                             hardcodedPartnerNote = ' (hardcoded from BAYADCENTER)';
                             console.log(`BAYADCENTER detected - setting partner_id_kpx to 9999 for row ${r}`);
-                        } 
-                        // Check for GSIS only if partnerIdKpx is empty
-                        else if (!partnerIdKpx || partnerIdKpx === '') {
-                            if (partnerIdFallback === 'GSIS' || partnerIdFallback === 'GSIS ' || partnerIdFallback.toUpperCase() === 'GSIS') {
+                        } else if (!partnerIdKpx) {
+                            if (partnerIdFallback.toUpperCase() === 'GSIS') {
                                 finalPartnerIdKpx = '2898';
                                 hardcodedPartnerNote = ' (hardcoded from GSIS)';
                                 console.log(`GSIS detected - setting partner_id_kpx to 2898 for row ${r}`);
                             }
                         }
+
+                        // Determine final partner_id / partner_name used for lookup
+                        let finalPartnerId   = isBayadCenter ? null : partnerIdFallback;
+                        let finalPartnerName = isBayadCenter ? 'BAYADCENTER' : resolvedPartnerName;
 
                         let rowData = {
                             status: null,
@@ -1026,43 +1120,44 @@ $(document).ready(function() {
                             cancellation_date: '',
                             source_file: sourceFile,
                             run_date: runDate,
-                            control_no: worksheet[XLSX.utils.encode_cell({r: r, c: 2})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 2})].v : null,
-                            reference_no: worksheet[XLSX.utils.encode_cell({r: r, c: 3})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 3})].v : null,
-                            payor: worksheet[XLSX.utils.encode_cell({r: r, c: 4})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 4})].v : null,
-                            address: worksheet[XLSX.utils.encode_cell({r: r, c: 5})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 5})].v : null,
-                            account_no: worksheet[XLSX.utils.encode_cell({r: r, c: 6})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 6})].v : null,
-                            account_name: worksheet[XLSX.utils.encode_cell({r: r, c: 7})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 7})].v : null,
-                            amount_paid: worksheet[XLSX.utils.encode_cell({r: r, c: 8})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 8})].v : 0,
-                            charge_to_customer: worksheet[XLSX.utils.encode_cell({r: r, c: 9})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 9})].v : 0,
-                            charge_to_partner: worksheet[XLSX.utils.encode_cell({r: r, c: 10})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 10})].v : 0,
-                            contact_no: null,
-                            other_details: worksheet[XLSX.utils.encode_cell({r: r, c: 11})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 11})].v : null,
-                            branch_id: worksheet[XLSX.utils.encode_cell({r: r, c: 12})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 12})].v : null,
+                            control_no:           readCol(worksheet, colControlNo, r),
+                            reference_no:         readCol(worksheet, colReferenceNo, r),
+                            payor:                readCol(worksheet, colPayor, r),
+                            address:              readCol(worksheet, colAddress, r),
+                            account_no:           readCol(worksheet, colAccountNo, r),
+                            account_name:         readCol(worksheet, colAccountName, r),
+                            amount_paid:          readCol(worksheet, colAmountPaid, r) ?? 0,
+                            charge_to_customer:   readCol(worksheet, colChargeCustomer, r) ?? 0,
+                            charge_to_partner:    readCol(worksheet, colChargePartner, r) ?? 0,
+                            contact_no:           readCol(worksheet, colContactNo, r),
+                            other_details:        readCol(worksheet, colOtherDetails, r),
+                            branch_id:            readCol(worksheet, colBranchId, r),
                             ml_matic_branch_name: null,
-                            region_value: null,
-                            region_code_tg: regionCodeTg,
-                            region_tg: worksheet[XLSX.utils.encode_cell({r: r, c: 15})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 15})].v : null,
-                            operator: worksheet[XLSX.utils.encode_cell({r: r, c: 16})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 16})].v : null,
-                            remote_branch: worksheet[XLSX.utils.encode_cell({r: r, c: 17})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 17})].v : null,
-                            remote_operator: worksheet[XLSX.utils.encode_cell({r: r, c: 18})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 18})].v : null,
-                            second_approver: worksheet[XLSX.utils.encode_cell({r: r, c: 19})] ? worksheet[XLSX.utils.encode_cell({r: r, c: 19})].v : null,
-                            sub_billers_id: null,
-                            sub_billers_name: null,
-                            partner_id_kpx: finalPartnerIdKpx,
-                            partner_id: isBayadCenter ? null : partnerIdFallback,
-                            partner_id_fallback_original: partnerIdFallback,
+                            region_value:         null,
+                            region_code_tg:       regionCodeTg,
+                            region_tg:            readCol(worksheet, colRegion, r),
+                            operator:             readCol(worksheet, colOperator, r),
+                            remote_branch:        readCol(worksheet, colRemoteBranch, r),
+                            remote_operator:      readCol(worksheet, colRemoteOperator, r),
+                            second_approver:      readCol(worksheet, colSecondApprover, r),
+                            sub_billers_id:       null,
+                            sub_billers_name:     null,
+                            partner_id_kpx:       finalPartnerIdKpx,
+                            partner_id:           finalPartnerId,
+                            partner_id_fallback_original: partnerIdFallback || resolvedPartnerName || '',
                             partner_id_hardcoded_note: hardcodedPartnerNote,
-                            partner_name: isBayadCenter ? 'BAYADCENTER' : null,
-                            mpm_gl_code: isBayadCenter ? null : null,
-                            settle_unsettle: 'Unsettle',
-                            claim_unclaim: null,
-                            imported_by: current_user,
-                            imported_date: imported_date,
-                            rfp_no: null,
-                            cad_no: null,
-                            hold_status: null,
-                            post_transaction: 'unposted',
-                            is_bayadcenter: isBayadCenter
+                            partner_name:         finalPartnerName,
+                            mpm_gl_code:          null,
+                            settle_unsettle:      'Unsettle',
+                            claim_unclaim:        null,
+                            imported_by:          current_user,
+                            imported_date:        imported_date,
+                            rfp_no:               null,
+                            cad_no:               null,
+                            hold_status:          null,
+                            post_transaction:     'unposted',
+                            is_bayadcenter:       isBayadCenter,
+                            has_partner_id_columns: hasPartnerIdColumns
                         };
                         payloadRows.push(rowData);
                     }
@@ -1146,25 +1241,25 @@ $(document).ready(function() {
                             ? String(row.partner_id_fallback_original).trim() 
                             : '';
                         
-                        // Check if this is a BAYADCENTER row
-                        const isBayadCenter = row.is_bayadcenter === true;
+                        // Treat "ALL PARTNERS" as no identifier
+                        if (partnerIdFallback.toUpperCase() === 'ALL PARTNERS') {
+                            partnerIdFallback = '';
+                            row.partner_id_fallback_original = '';
+                        }
                         
+                        const isBayadCenter = row.is_bayadcenter === true;
                         let hardcodedPartnerId = null;
                         
-                        // ============================================
-                        // BAYADCENTER HANDLING - OVERRIDE EVERYTHING
-                        // ============================================
-                        if (isBayadCenter || partnerIdFallback === 'BAYADCENTER' || partnerIdFallback === 'BAYADCENTER ' || partnerIdFallback.toUpperCase() === 'BAYADCENTER') {
-                            // BAYADCENTER: partner_id_kpx = 9999, partner_id = null, partner_name = BAYADCENTER
+                        // BAYADCENTER override
+                        if (isBayadCenter || partnerIdFallback.toUpperCase() === 'BAYADCENTER') {
                             row.partner_id_kpx = '9999';
                             row.partner_id = null;
                             row.partner_name = 'BAYADCENTER';
-                            // Ensure mpm_gl_code is null
                             row.mpm_gl_code = null;
                             console.log(`Row ${rowNum}: BAYADCENTER - set partner_id_kpx=9999, partner_id=null, partner_name=BAYADCENTER`);
                         } 
-                        // GSIS handling (only if no partner_id_kpx)
-                        else if (partnerIdFallback === 'GSIS' || partnerIdFallback === 'GSIS ' || partnerIdFallback.toUpperCase() === 'GSIS') {
+                        // GSIS override (only if no partner_id_kpx)
+                        else if (partnerIdFallback.toUpperCase() === 'GSIS') {
                             if (!partnerIdKpx || partnerIdKpx === '') {
                                 hardcodedPartnerId = '2898';
                                 row.partner_id_kpx = hardcodedPartnerId;
@@ -1174,24 +1269,20 @@ $(document).ready(function() {
                         }
                         
                         let partnerIdDisplay = '';
-                        
                         if (partnerIdKpx !== '' && partnerIdKpx !== null) {
                             partnerIdDisplay = partnerIdKpx;
                         } else if (hardcodedPartnerId !== null) {
                             partnerIdDisplay = hardcodedPartnerId + ' (hardcoded from ' + partnerIdFallback + ')';
                         } else if (partnerIdFallback !== '') {
-                            partnerIdDisplay = partnerIdFallback + ' (from column V)';
+                            partnerIdDisplay = partnerIdFallback + ' (fallback)';
                         } else {
                             partnerIdDisplay = '(empty)';
                         }
                         
                         const isBothEmpty = partnerIdKpx === '' && partnerIdFallback === '' && hardcodedPartnerId === null && !isBayadCenter;
                         
-                        // For BAYADCENTER, always mark as recognized
                         let isPartnerRecognized = !isEmptyValue(row.partner_name) && row.partner_name !== 'Not Found';
-                        if (isBayadCenter) {
-                            isPartnerRecognized = true;
-                        }
+                        if (isBayadCenter) isPartnerRecognized = true;
                         
                         if (isBothEmpty) {
                             emptyPartnerRows.push({
@@ -1201,17 +1292,19 @@ $(document).ready(function() {
                                 partner_id_fallback: partnerIdFallback || '(empty)'
                             });
                             importDisabled = true;
-                        } else if (!isBothEmpty) {
-                            if (!isPartnerRecognized && !isBayadCenter) {
-                                let displayValue = partnerIdKpx !== '' ? partnerIdKpx : (hardcodedPartnerId !== null ? hardcodedPartnerId + ' (hardcoded)' : partnerIdFallback + ' (from V)');
-                                unrecognizedPartnerRows.push({
-                                    row: rowNum,
-                                    reference_no: row.reference_no || 'N/A',
-                                    partner_id_kpx: displayValue,
-                                    partner_id_fallback: partnerIdFallback !== '' ? partnerIdFallback : '(empty)'
-                                });
-                                importDisabled = true;
-                            }
+                        } else if (!isPartnerRecognized && !isBayadCenter) {
+                            let displayValue = partnerIdKpx !== '' 
+                                ? partnerIdKpx 
+                                : (hardcodedPartnerId !== null 
+                                    ? hardcodedPartnerId + ' (hardcoded)' 
+                                    : partnerIdFallback + ' (fallback)');
+                            unrecognizedPartnerRows.push({
+                                row: rowNum,
+                                reference_no: row.reference_no || 'N/A',
+                                partner_id_kpx: displayValue,
+                                partner_id_fallback: partnerIdFallback !== '' ? partnerIdFallback : '(empty)'
+                            });
+                            importDisabled = true;
                         }
                     });
                     
@@ -1263,15 +1356,15 @@ $(document).ready(function() {
                         hasWarnings = true;
                         warningHtml += `
                             <div class="alert alert-danger critical-error">
-                                <h6><i class="fas fa-ban"></i> Empty Partner ID KPX - Import Disabled</h6>
-                                <p>The following rows have empty or missing Partner ID KPX.</p>
+                                <h6><i class="fas fa-ban"></i> Empty Partner ID - Import Disabled</h6>
+                                <p>The following rows have no partner identifier (Partner ID KPX / Partner ID / Partner Name).</p>
                                 <table class="table table-sm table-bordered table-striped">
                                     <thead class="table-dark">
                                         <tr>
                                             <th>Row #</th>
                                             <th>Reference No</th>
-                                            <th>Partner ID KPX (Col U)</th>
-                                            <th>Partner ID (Col V - Fallback)</th>
+                                            <th>Partner ID KPX</th>
+                                            <th>Partner ID / Name (fallback)</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -1297,15 +1390,15 @@ $(document).ready(function() {
                         hasWarnings = true;
                         warningHtml += `
                             <div class="alert alert-danger critical-error">
-                                <h6><i class="fas fa-exclamation-circle"></i> Unrecognized / Unregistered Partner ID KPX - Import Disabled</h6>
-                                <p>The following partner IDs were not found in the partner masterfile. <strong>Import is disabled until these are registered.</strong></p>
+                                <h6><i class="fas fa-exclamation-circle"></i> Unrecognized / Unregistered Partner - Import Disabled</h6>
+                                <p>The following partner identifiers were not found in the partner masterfile. <strong>Import is disabled until these are registered.</strong></p>
                                 <table class="table table-sm table-bordered table-striped">
                                     <thead class="table-dark">
                                         <tr>
                                             <th>Row #</th>
                                             <th>Reference No</th>
-                                            <th>Partner ID KPX (Col U)</th>
-                                            <th>Partner ID (Col V - Fallback)</th>
+                                            <th>Partner ID KPX</th>
+                                            <th>Partner ID / Name (fallback)</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -1343,8 +1436,8 @@ $(document).ready(function() {
                                 <i class="fas fa-info-circle"></i> <strong>${allRows.length}</strong> records loaded from ${Object.keys(fileDataMap).length} file(s) with validation issues detected:
                                 <ul class="mb-0 mt-2">
                                     ${emptyBranchRows.length > 0 ? `<li><span class="badge bg-info">${emptyBranchRows.length}</span> Empty / Not Found Branch ID rows</li>` : ''}
-                                    ${emptyPartnerRows.length > 0 ? `<li><span class="badge bg-danger">${emptyPartnerRows.length}</span> Empty Partner ID KPX rows</li>` : ''}
-                                    ${unrecognizedPartnerRows.length > 0 ? `<li><span class="badge bg-primary">${unrecognizedPartnerRows.length}</span> Unrecognized Partner ID KPX rows</li>` : ''}
+                                    ${emptyPartnerRows.length > 0 ? `<li><span class="badge bg-danger">${emptyPartnerRows.length}</span> Empty Partner Identifier rows</li>` : ''}
+                                    ${unrecognizedPartnerRows.length > 0 ? `<li><span class="badge bg-primary">${unrecognizedPartnerRows.length}</span> Unrecognized Partner rows</li>` : ''}
                                 </ul>
                             </div>
                             ${statusBadge}
@@ -1645,8 +1738,8 @@ $(document).ready(function() {
                     <div class="text-start">
                         <p>Import is currently disabled due to remarks found:</p>
                         <ul class="text-start">
-                            ${warningData.emptyPartnerRows.length > 0 ? `<li><span class="badge bg-danger">${warningData.emptyPartnerRows.length}</span> Empty Partner ID KPX rows</li>` : ''}
-                            ${warningData.unrecognizedPartnerRows.length > 0 ? `<li><span class="badge bg-danger">${warningData.unrecognizedPartnerRows.length}</span> Unrecognized Partner ID KPX rows</li>` : ''}
+                            ${warningData.emptyPartnerRows.length > 0 ? `<li><span class="badge bg-danger">${warningData.emptyPartnerRows.length}</span> Empty Partner Identifier rows</li>` : ''}
+                            ${warningData.unrecognizedPartnerRows.length > 0 ? `<li><span class="badge bg-danger">${warningData.unrecognizedPartnerRows.length}</span> Unrecognized Partner rows</li>` : ''}
                         </ul>
                         <div class="alert alert-danger mt-2">
                             <i class="fas fa-exclamation-triangle"></i> 

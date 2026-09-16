@@ -363,7 +363,7 @@ try {
                     pm.bank,
                     pm.settled_online_check as settlement_type,
                     COALESCE(pm.charge_to, '') as charge_to,
-                    COALESCE(pm.serviceCharge, '') as serviceCharge,
+                    COALESCE(pm.charge_sched, '') as charge_sched,
                     COUNT(*) as txn_count,
                     SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
                     SUM(bt.charge_to_customer) as charge_to_customer,
@@ -386,7 +386,7 @@ try {
                          pm.bank, 
                          pm.settled_online_check, 
                          pm.charge_to, 
-                         pm.serviceCharge";
+                         pm.charge_sched";
     
     // ============================================
     // QUERY 2: Adjustments (cancelled transactions)
@@ -451,7 +451,7 @@ try {
                 'bank' => $row['bank'] ?? '',
                 'settlement_type' => $row['settlement_type'] ?? '',
                 'charge_to' => $row['charge_to'] ?? '',
-                'serviceCharge' => $row['serviceCharge'] ?? '',
+                'charge_sched' => $row['charge_sched'] ?? '',
                 'settle_unsettle' => $row['settle_unsettle'] ?? '',
                 'txn_count' => (int)($row['txn_count'] ?? 0),
                 'total_principal' => (float)($row['total_principal'] ?? 0),
@@ -479,7 +479,7 @@ try {
                                             bank,
                                             settled_online_check as settlement_type,
                                             COALESCE(charge_to, '') as charge_to,
-                                            COALESCE(serviceCharge, '') as serviceCharge
+                                            COALESCE(charge_sched, '') as charge_sched
                                         FROM masterdata.partner_masterfile 
                                         WHERE partner_id_kpx = ?";
                 $stmt = $conn->prepare($partner_details_sql);
@@ -497,7 +497,7 @@ try {
                             'bank' => $details['bank'] ?? '',
                             'settlement_type' => $details['settlement_type'] ?? '',
                             'charge_to' => $details['charge_to'] ?? '',
-                            'serviceCharge' => $details['serviceCharge'] ?? '',
+                            'charge_sched' => $details['charge_sched'] ?? '',
                             'settle_unsettle' => '',
                             'txn_count' => 0,
                             'total_principal' => 0,
@@ -537,12 +537,12 @@ try {
             ];
             
             $charge_to = strtoupper(trim($a['charge_to'] ?? ''));
-            $serviceCharge = strtoupper(trim($a['serviceCharge'] ?? ''));
-            $key_a = $charge_to . '_' . $serviceCharge;
+            $charge_sched = strtoupper(trim($a['charge_sched'] ?? ''));
+            $key_a = $charge_to . '_' . $charge_sched;
             
             $charge_to_b = strtoupper(trim($b['charge_to'] ?? ''));
-            $serviceCharge_b = strtoupper(trim($b['serviceCharge'] ?? ''));
-            $key_b = $charge_to_b . '_' . $serviceCharge_b;
+            $charge_sched_b = strtoupper(trim($b['charge_sched'] ?? ''));
+            $key_b = $charge_to_b . '_' . $charge_sched_b;
             
             $order_a = $order[$key_a] ?? 11;
             $order_b = $order[$key_b] ?? 11;
@@ -614,38 +614,38 @@ try {
     
     foreach ($data_array as $row) {
         $charge_to = strtoupper(trim($row['charge_to'] ?? ''));
-        $serviceCharge = strtoupper(trim($row['serviceCharge'] ?? ''));
+        $charge_sched = strtoupper(trim($row['charge_sched'] ?? ''));
         
         $group_key = null;
         
         if (empty($charge_to)) {
             $group_key = 'UNCATEGORIZED';
         } elseif ($charge_to === 'CUSTOMER') {
-            if ($serviceCharge === 'DAILY') {
+            if ($charge_sched === 'DAILY') {
                 $group_key = 'CHARGE BY CUSTOMER DAILY';
-            } elseif ($serviceCharge === 'WEEKLY') {
+            } elseif ($charge_sched === 'WEEKLY') {
                 $group_key = 'CHARGE BY CUSTOMER WEEKLY';
             } else {
                 $group_key = 'UNCATEGORIZED';
             }
         } elseif ($charge_to === 'PARTNER') {
-            if ($serviceCharge === 'DAILY') {
+            if ($charge_sched === 'DAILY') {
                 $group_key = 'CHARGE BY PARTNER DAILY';
-            } elseif ($serviceCharge === 'WEEKLY') {
+            } elseif ($charge_sched === 'WEEKLY') {
                 $group_key = 'CHARGE BY PARTNER WEEKLY';
-            } elseif ($serviceCharge === 'SEMI-MONTHLY') {
+            } elseif ($charge_sched === 'SEMI-MONTHLY') {
                 $group_key = 'CHARGE BY PARTNER SEMI MONTHLY';
-            } elseif ($serviceCharge === 'MONTHLY') {
+            } elseif ($charge_sched === 'MONTHLY') {
                 $group_key = 'CHARGE BY PARTNER MONTHLY';
             } else {
                 $group_key = 'UNCATEGORIZED';
             }
         } elseif ($charge_to === 'BOTH') {
-            if ($serviceCharge === 'DAILY') {
+            if ($charge_sched === 'DAILY') {
                 $group_key = 'CHARGE BY BOTH DAILY';
-            } elseif ($serviceCharge === 'WEEKLY') {
+            } elseif ($charge_sched === 'WEEKLY') {
                 $group_key = 'CHARGE BY BOTH WEEKLY';
-            } elseif ($serviceCharge === 'MONTHLY') {
+            } elseif ($charge_sched === 'MONTHLY') {
                 $group_key = 'CHARGE BY BOTH MONTHLY';
             } else {
                 $group_key = 'UNCATEGORIZED';
@@ -666,7 +666,7 @@ try {
         
         $settlement_amount = calculateSettlementAmount(
             $charge_to,
-            $serviceCharge,
+            $charge_sched,
             $principal,
             $charge_to_customer,
             $charge_to_partner,
@@ -704,7 +704,7 @@ try {
             'unsettled_count' => $unsettled_count,
             'group_key' => $group_key,
             'charge_to' => $charge_to,
-            'service_charge' => $serviceCharge
+            'service_charge' => $charge_sched
         ];
         
         $all_rows[] = $row_data;
