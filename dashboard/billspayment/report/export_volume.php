@@ -132,10 +132,12 @@ function buildWhereClauseForExport(
 
 // ============================================
 // FUNCTION TO GET CHARGE TYPE DISPLAY
+// NOTE: 'PER TRANSACTION' is displayed as 'DAILY' so it matches
+// the CHARGE BY CUSTOMER DAILY behavior everywhere in the export.
 // ============================================
-function getChargeTypeDisplay($serviceCharge, $charge_to) {
+function getChargeTypeDisplay($charge_sched, $charge_to) {
     // Handle NULL or empty values
-    if (empty($serviceCharge) && empty($charge_to)) {
+    if (empty($charge_sched) && empty($charge_to)) {
         return 'N/A';
     }
     
@@ -153,9 +155,15 @@ function getChargeTypeDisplay($serviceCharge, $charge_to) {
         }
     }
     
-    // Add serviceCharge description
-    if (!empty($serviceCharge)) {
-        $charge_parts[] = strtoupper($serviceCharge);
+    // Add charge_sched description
+    // Treat 'PER TRANSACTION' the same as 'DAILY'
+    if (!empty($charge_sched)) {
+        $charge_sched_upper = strtoupper($charge_sched);
+        if ($charge_sched_upper === 'PER TRANSACTION') {
+            $charge_parts[] = 'DAILY';
+        } else {
+            $charge_parts[] = $charge_sched_upper;
+        }
     }
     
     return !empty($charge_parts) ? implode(' ', $charge_parts) : 'N/A';
@@ -200,6 +208,11 @@ $where_clause = buildWhereClauseForExport($time_frame, $partner_id, $date_from, 
 
 // ============================================
 // QUERY - With partner_masterfile JOIN and all charge fields
+// Settlement Amount adjusted by charge type:
+//   CHARGE BY CUSTOMER DAILY / PER TRANSACTION → amount_paid - charge_to_partner
+//   BOTH → amount_paid - charge_to_partner
+//   CHARGE BY PARTNER → amount_paid
+//   CHARGE BY CUSTOMER (other) → amount_paid
 // ============================================
 $query = "SELECT 
     COALESCE(NULLIF(bt.partner_id_kpx, ''), CONCAT('UNKNOWN_', bt.sub_billers_name, '_', bt.id)) as partner_id_kpx,
@@ -208,7 +221,7 @@ $query = "SELECT
         ELSE bt.sub_billers_name
     END as sub_billers_name,
     pm.partner_name,
-    pm.serviceCharge,
+    pm.charge_sched,
     pm.charge_to,
     COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as datetime_volume,
     SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as datetime_amount_paid,
@@ -237,13 +250,17 @@ $query = "SELECT
              AND bt.settle_unsettle = 'Settled' 
         THEN 
             CASE 
+                -- CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): deduct partner charge
                 WHEN UPPER(COALESCE(pm.charge_to, '')) = 'CUSTOMER' 
-                     AND UPPER(COALESCE(pm.serviceCharge, '')) = 'DAILY'
+                     AND UPPER(COALESCE(pm.charge_sched, '')) IN ('DAILY', 'PER TRANSACTION')
                 THEN bt.amount_paid - IFNULL(bt.charge_to_partner, 0)
+                -- BOTH: deduct partner charge
                 WHEN UPPER(COALESCE(pm.charge_to, '')) = 'BOTH'
                 THEN bt.amount_paid - IFNULL(bt.charge_to_partner, 0)
+                -- CHARGE BY PARTNER (any frequency): full amount_paid
                 WHEN UPPER(COALESCE(pm.charge_to, '')) = 'PARTNER'
                 THEN bt.amount_paid
+                -- CHARGE BY CUSTOMER (Monthly/Semi-monthly/Weekly/other): full amount_paid
                 ELSE bt.amount_paid
             END
         ELSE 0 
@@ -261,7 +278,7 @@ $query = "SELECT
         ELSE bt.sub_billers_name
     END,
     pm.partner_name,
-    pm.serviceCharge,
+    pm.charge_sched,
     pm.charge_to
   ORDER BY 
     CASE WHEN pm.partner_name IS NULL THEN 1 ELSE 0 END,
@@ -306,11 +323,12 @@ while ($row = mysqli_fetch_assoc($results)) {
     $row['variance_volume'] = ($row['total_volume'] ?? 0) - ($row['settlement_volume'] ?? 0);
     
     // Check charge type for variance calculation
+    // NOTE: 'PER TRANSACTION' is treated the same as 'DAILY'
     $charge_to = $row['charge_to'] ?? '';
-    $serviceCharge = $row['serviceCharge'] ?? '';
+    $charge_sched = $row['charge_sched'] ?? '';
     $is_partner_charge = (strtoupper($charge_to) === 'PARTNER');
-    $is_customer_daily = (strtoupper($charge_to) === 'CUSTOMER' && strtoupper($serviceCharge) === 'DAILY');
-    $is_customer_non_daily = (strtoupper($charge_to) === 'CUSTOMER' && strtoupper($serviceCharge) !== 'DAILY');
+    $is_customer_daily = (strtoupper($charge_to) === 'CUSTOMER' && in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
+    $is_customer_non_daily = (strtoupper($charge_to) === 'CUSTOMER' && !in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
     $is_both = (strtoupper($charge_to) === 'BOTH');
     
     if ($is_partner_charge || $is_customer_non_daily) {
@@ -324,7 +342,7 @@ while ($row = mysqli_fetch_assoc($results)) {
     }
     
     // Get charge type display
-    $row['charge_type_display'] = getChargeTypeDisplay($row['serviceCharge'] ?? '', $row['charge_to'] ?? '');
+    $row['charge_type_display'] = getChargeTypeDisplay($row['charge_sched'] ?? '', $row['charge_to'] ?? '');
     
     $display_results[] = $row;
     $total_datetime_volume += $row['datetime_volume'];

@@ -1133,6 +1133,9 @@ $(document).ready(function() {
                             other_details:        readCol(worksheet, colOtherDetails, r),
                             branch_id:            readCol(worksheet, colBranchId, r),
                             ml_matic_branch_name: null,
+                            // Preserve original Excel columns for remarks when Branch ID is not in masterfile
+                            branch_id_from_file:  readCol(worksheet, colBranchId, r),
+                            ml_outlet_from_file:  readCol(worksheet, colMlOutlet, r),
                             region_value:         null,
                             region_code_tg:       regionCodeTg,
                             region_tg:            readCol(worksheet, colRegion, r),
@@ -1226,10 +1229,27 @@ $(document).ready(function() {
                         const rowNum = index + 1;
                         
                         if (isEmptyValue(row.branch_id)) {
+                            // Prefer original Excel Branch ID / ML Outlet when the ID was present
+                            // in the file but not found in masterdata.branch_profile
+                            let branchIdDisplay = '(empty)';
+                            if (row.branch_id_from_file !== undefined && row.branch_id_from_file !== null && String(row.branch_id_from_file).trim() !== '') {
+                                branchIdDisplay = String(row.branch_id_from_file).trim();
+                            } else if (row.branch_id !== undefined && row.branch_id !== null && String(row.branch_id).trim() !== '' && String(row.branch_id).trim() !== 'Not Found') {
+                                branchIdDisplay = String(row.branch_id).trim();
+                            }
+
+                            let mlOutletDisplay = '(empty)';
+                            if (row.ml_outlet_from_file !== undefined && row.ml_outlet_from_file !== null && String(row.ml_outlet_from_file).trim() !== '') {
+                                mlOutletDisplay = String(row.ml_outlet_from_file).trim();
+                            } else if (row.outlet !== undefined && row.outlet !== null && String(row.outlet).trim() !== '' && String(row.outlet).trim() !== 'Not Found') {
+                                mlOutletDisplay = String(row.outlet).trim();
+                            }
+
                             emptyBranchRows.push({
                                 row: rowNum,
                                 payor: row.payor || 'N/A',
-                                branch_id: row.branch_id !== undefined && row.branch_id !== null ? String(row.branch_id) : '(empty)'
+                                branch_id: branchIdDisplay,
+                                ml_outlet: mlOutletDisplay
                             });
                         }
                         
@@ -1327,13 +1347,14 @@ $(document).ready(function() {
                         hasWarnings = true;
                         warningHtml += `
                             <div class="alert alert-info">
-                                <h6><i class="fas fa-store"></i> Empty Branch ID Found</h6>
-                                <p>The following rows have empty or missing Branch ID:</p>
+                                <h6><i class="fas fa-store"></i> Empty / Not Found Branch ID</h6>
+                                <p>The following rows have a Branch ID from the Excel that was not found in <code>masterdata.branch_profile</code> (or the Branch ID was empty). Fallback values from the Excel are shown below.</p>
                                 <table class="table table-sm table-bordered table-striped">
                                     <thead class="table-dark">
                                         <tr>
                                             <th>Row #</th>
-                                            <th>Branch ID Value</th>
+                                            <th>Branch ID (fallback)</th>
+                                            <th>ML Outlet</th>
                                             <th>Payor</th>
                                         </tr>
                                     </thead>
@@ -1342,12 +1363,17 @@ $(document).ready(function() {
                                             <tr>
                                                 <td><strong>${item.row}</strong></td>
                                                 <td><code>${item.branch_id}</code></td>
+                                                <td><code>${item.ml_outlet || '(empty)'}</code></td>
                                                 <td>${item.payor}</td>
                                             </tr>
                                         `).join('')}
                                     </tbody>
                                 </table>
-                                <small class="text-muted">These rows will be imported with 'Not Found' values for branch-related fields.</small>
+                                <div class="alert alert-warning mt-2 mb-0">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                    <strong>Action Required:</strong> These rows will be imported with 'Not Found' values for branch-related fields.
+                                    Please contact the administrator to register the missing Branch ID(s) in the branch masterfile.
+                                </div>
                             </div>
                         `;
                     }

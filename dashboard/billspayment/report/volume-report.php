@@ -125,7 +125,7 @@ function getPartnerPeriodResults(string $start_datetime, string $end_datetime, s
                 ELSE bt.sub_billers_name
             END as sub_billers_name,
             pm.partner_name,
-            pm.serviceCharge,
+            pm.charge_sched,
             pm.charge_to,
             COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as datetime_volume,
             SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as datetime_amount_paid,
@@ -154,9 +154,9 @@ function getPartnerPeriodResults(string $start_datetime, string $end_datetime, s
                      AND bt.settle_unsettle = 'Settled' 
                 THEN 
                     CASE 
-                        -- CHARGE BY CUSTOMER DAILY: deduct partner charge
+                        -- CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): deduct partner charge
                         WHEN UPPER(COALESCE(pm.charge_to, '')) = 'CUSTOMER' 
-                             AND UPPER(COALESCE(pm.serviceCharge, '')) = 'DAILY'
+                             AND UPPER(COALESCE(pm.charge_sched, '')) IN ('DAILY', 'PER TRANSACTION')
                         THEN bt.amount_paid - IFNULL(bt.charge_to_partner, 0)
                         -- BOTH: deduct partner charge
                         WHEN UPPER(COALESCE(pm.charge_to, '')) = 'BOTH'
@@ -182,7 +182,7 @@ function getPartnerPeriodResults(string $start_datetime, string $end_datetime, s
                 ELSE bt.sub_billers_name
             END,
             pm.partner_name,
-            pm.serviceCharge,
+            pm.charge_sched,
             pm.charge_to
           ORDER BY 
             CASE WHEN pm.partner_name IS NULL THEN 1 ELSE 0 END,
@@ -197,10 +197,10 @@ function getPartnerPeriodResults(string $start_datetime, string $end_datetime, s
             
             // Check charge type for variance calculation
             $charge_to = $r['charge_to'] ?? '';
-            $serviceCharge = $r['serviceCharge'] ?? '';
+            $charge_sched = $r['charge_sched'] ?? '';
             $is_partner_charge = (strtoupper($charge_to) === 'PARTNER');
-            $is_customer_daily = (strtoupper($charge_to) === 'CUSTOMER' && strtoupper($serviceCharge) === 'DAILY');
-            $is_customer_non_daily = (strtoupper($charge_to) === 'CUSTOMER' && strtoupper($serviceCharge) !== 'DAILY');
+            $is_customer_daily = (strtoupper($charge_to) === 'CUSTOMER' && in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
+            $is_customer_non_daily = (strtoupper($charge_to) === 'CUSTOMER' && !in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
             $is_both = (strtoupper($charge_to) === 'BOTH');
             
             if ($is_partner_charge || $is_customer_non_daily) {
@@ -208,7 +208,7 @@ function getPartnerPeriodResults(string $start_datetime, string $end_datetime, s
                 // Settlement Amount = full amount_paid → variance = Net Amount - Settlement Amount (should be 0)
                 $r['variance_amount'] = ($r['total_amount_paid'] ?? 0) - ($r['settlement_amount_paid'] ?? 0);
             } elseif ($is_customer_daily) {
-                // CHARGE BY CUSTOMER DAILY: variance = Net Amount - Settlement Amount - Settlement Charge to Partner
+                // CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): variance = Net Amount - Settlement Amount - Settlement Charge to Partner
                 $r['variance_amount'] = ($r['total_amount_paid'] ?? 0) - (($r['settlement_amount_paid'] ?? 0) + ($r['settlement_charge_partner'] ?? 0));
             } elseif ($is_both) {
                 // BOTH: variance = Net Amount - Settlement Amount - Total Settlement Charge
@@ -218,7 +218,7 @@ function getPartnerPeriodResults(string $start_datetime, string $end_datetime, s
                 $r['variance_amount'] = ($r['total_amount_paid'] ?? 0) - (($r['settlement_amount_paid'] ?? 0) + ($r['settlement_charge'] ?? 0));
             }
             
-            $r['charge_type_display'] = getChargeTypeDisplay($r['serviceCharge'] ?? '', $r['charge_to'] ?? '');
+            $r['charge_type_display'] = getChargeTypeDisplay($r['charge_sched'] ?? '', $r['charge_to'] ?? '');
             $rows[] = $r;
         }
     } else {
@@ -288,7 +288,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
             END as sub_billers_name,
             -- Get partner_name and charge type fields from masterdata table using LEFT JOIN
             pm.partner_name,
-            pm.serviceCharge,
+            pm.charge_sched,
             pm.charge_to,
             -- Transactions (based on datetime AND status IS NULL OR status = '')
             COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as datetime_volume,
@@ -316,7 +316,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
             -- SETTLEMENT Transactions (include all settled based on datetime and status NULL/empty)
             -- Settlement Amount adjusted by charge type:
             --   CHARGE BY PARTNER (any frequency) → amount_paid (full amount)
-            --   CHARGE BY CUSTOMER DAILY → amount_paid - charge_to_partner
+            --   CHARGE BY CUSTOMER DAILY / PER TRANSACTION → amount_paid - charge_to_partner
             --   BOTH → amount_paid - charge_to_partner
             --   CHARGE BY CUSTOMER (Monthly/Semi-monthly/Weekly) → amount_paid (full amount)
             COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN 1 END) as settlement_volume,
@@ -326,9 +326,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                      AND bt.settle_unsettle = 'Settled' 
                 THEN 
                     CASE 
-                        -- CHARGE BY CUSTOMER DAILY: deduct partner charge
+                        -- CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): deduct partner charge
                         WHEN UPPER(COALESCE(pm.charge_to, '')) = 'CUSTOMER' 
-                             AND UPPER(COALESCE(pm.serviceCharge, '')) = 'DAILY'
+                             AND UPPER(COALESCE(pm.charge_sched, '')) IN ('DAILY', 'PER TRANSACTION')
                         THEN bt.amount_paid - IFNULL(bt.charge_to_partner, 0)
                         -- BOTH: deduct partner charge
                         WHEN UPPER(COALESCE(pm.charge_to, '')) = 'BOTH'
@@ -354,7 +354,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                 ELSE bt.sub_billers_name
             END,
             pm.partner_name,
-            pm.serviceCharge,
+            pm.charge_sched,
             pm.charge_to
           ORDER BY 
             -- Put NULL partner names (unassigned) at the top
@@ -601,10 +601,12 @@ function cleanPartnerName($partner_id, $sub_billers_name = '') {
 
 // ============================================
 // FUNCTION TO GET CHARGE TYPE DISPLAY
+// NOTE: 'PER TRANSACTION' is displayed as 'DAILY' so it matches
+// the CHARGE BY CUSTOMER DAILY behavior everywhere in the UI.
 // ============================================
-function getChargeTypeDisplay($serviceCharge, $charge_to) {
+function getChargeTypeDisplay($charge_sched, $charge_to) {
     // Handle NULL or empty values
-    if (empty($serviceCharge) && empty($charge_to)) {
+    if (empty($charge_sched) && empty($charge_to)) {
         return 'N/A';
     }
     
@@ -622,9 +624,15 @@ function getChargeTypeDisplay($serviceCharge, $charge_to) {
         }
     }
     
-    // Add serviceCharge description
-    if (!empty($serviceCharge)) {
-        $charge_parts[] = strtoupper($serviceCharge);
+    // Add charge_sched description
+    // Treat 'PER TRANSACTION' the same as 'DAILY'
+    if (!empty($charge_sched)) {
+        $charge_sched_upper = strtoupper($charge_sched);
+        if ($charge_sched_upper === 'PER TRANSACTION') {
+            $charge_parts[] = 'DAILY';
+        } else {
+            $charge_parts[] = $charge_sched_upper;
+        }
     }
     
     return !empty($charge_parts) ? implode(' ', $charge_parts) : 'N/A';
@@ -881,10 +889,10 @@ function calculateVariance($net_value, $settlement_value) {
                         
                         // Check charge type for variance calculation
                         $charge_to = $row['charge_to'] ?? '';
-                        $serviceCharge = $row['serviceCharge'] ?? '';
+                        $charge_sched = $row['charge_sched'] ?? '';
                         $is_partner_charge = (strtoupper($charge_to) === 'PARTNER');
-                        $is_customer_daily = (strtoupper($charge_to) === 'CUSTOMER' && strtoupper($serviceCharge) === 'DAILY');
-                        $is_customer_non_daily = (strtoupper($charge_to) === 'CUSTOMER' && strtoupper($serviceCharge) !== 'DAILY');
+                        $is_customer_daily = (strtoupper($charge_to) === 'CUSTOMER' && in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
+                        $is_customer_non_daily = (strtoupper($charge_to) === 'CUSTOMER' && !in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
                         $is_both = (strtoupper($charge_to) === 'BOTH');
                         
                         if ($is_partner_charge || $is_customer_non_daily) {
@@ -892,7 +900,7 @@ function calculateVariance($net_value, $settlement_value) {
                             // Settlement Amount = full amount_paid → variance = Net Amount - Settlement Amount (should be 0)
                             $row['variance_amount'] = $row['total_amount_paid'] - $row['settlement_amount_paid'];
                         } elseif ($is_customer_daily) {
-                            // CHARGE BY CUSTOMER DAILY: variance = Net Amount - Settlement Amount - Settlement Charge to Partner
+                            // CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): variance = Net Amount - Settlement Amount - Settlement Charge to Partner
                             $row['variance_amount'] = $row['total_amount_paid'] - ($row['settlement_amount_paid'] + $row['settlement_charge_partner']);
                         } elseif ($is_both) {
                             // BOTH: variance = Net Amount - Settlement Amount - Total Settlement Charge
@@ -903,7 +911,7 @@ function calculateVariance($net_value, $settlement_value) {
                         }
                         
                         // Get charge type display
-                        $row['charge_type_display'] = getChargeTypeDisplay($row['serviceCharge'] ?? '', $row['charge_to'] ?? '');
+                        $row['charge_type_display'] = getChargeTypeDisplay($row['charge_sched'] ?? '', $row['charge_to'] ?? '');
                         
                         $display_results[] = $row;
                         $total_datetime_volume += $row['datetime_volume'];
@@ -1140,10 +1148,10 @@ function calculateVariance($net_value, $settlement_value) {
                                             
                                             // Check charge type for variance calculation
                                             $d_charge_to = $drow['charge_to'] ?? '';
-                                            $d_serviceCharge = $drow['serviceCharge'] ?? '';
+                                            $d_charge_sched = $drow['charge_sched'] ?? '';
                                             $d_is_partner_charge = (strtoupper($d_charge_to) === 'PARTNER');
-                                            $d_is_customer_daily = (strtoupper($d_charge_to) === 'CUSTOMER' && strtoupper($d_serviceCharge) === 'DAILY');
-                                            $d_is_customer_non_daily = (strtoupper($d_charge_to) === 'CUSTOMER' && strtoupper($d_serviceCharge) !== 'DAILY');
+                                            $d_is_customer_daily = (strtoupper($d_charge_to) === 'CUSTOMER' && in_array(strtoupper($d_charge_sched), ['DAILY', 'PER TRANSACTION']));
+                                            $d_is_customer_non_daily = (strtoupper($d_charge_to) === 'CUSTOMER' && !in_array(strtoupper($d_charge_sched), ['DAILY', 'PER TRANSACTION']));
                                             $d_is_both = (strtoupper($d_charge_to) === 'BOTH');
                                             
                                             if ($d_is_partner_charge || $d_is_customer_non_daily) {
@@ -1151,7 +1159,7 @@ function calculateVariance($net_value, $settlement_value) {
                                                 // Settlement Amount = full amount_paid → variance = Net Amount - Settlement Amount (should be 0)
                                                 $dv_amt = ($drow['total_amount_paid'] ?? 0) - ($drow['settlement_amount_paid'] ?? 0);
                                             } elseif ($d_is_customer_daily) {
-                                                // CHARGE BY CUSTOMER DAILY: variance = Net Amount - Settlement Amount - Settlement Charge to Partner
+                                                // CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): variance = Net Amount - Settlement Amount - Settlement Charge to Partner
                                                 $dv_amt = ($drow['total_amount_paid'] ?? 0) - (($drow['settlement_amount_paid'] ?? 0) + ($drow['settlement_charge_partner'] ?? 0));
                                             } elseif ($d_is_both) {
                                                 // BOTH: variance = Net Amount - Settlement Amount - Total Settlement Charge

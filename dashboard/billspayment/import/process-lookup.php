@@ -635,6 +635,14 @@ if (isset($_POST['rows'])) {
     foreach ($rows as $index => $row) {
         $isKP7 = strtoupper(trim((string)($row['source_file'] ?? ''))) === 'KP7';
         
+        // Preserve original Excel branch identifiers before resolution overwrites them
+        $branchIdFromFile = isset($row['branch_id']) ? trim((string)$row['branch_id']) : '';
+        $mlOutletFromFile = isset($row['ml_outlet_from_file']) ? trim((string)$row['ml_outlet_from_file']) : '';
+        // Also accept ml_matic_branch_name as a possible source for KP7 / older payloads
+        if ($mlOutletFromFile === '' && isset($row['ml_matic_branch_name'])) {
+            $mlOutletFromFile = trim((string)$row['ml_matic_branch_name']);
+        }
+        
         // Resolve branch
         $branchData = resolveBranch($conn, $row, $isKP7);
         
@@ -651,6 +659,10 @@ if (isset($_POST['rows'])) {
         $row['zone_code'] = $branchData['zone_code'];
         $row['region_code'] = $branchData['region_code'];
         $row['region'] = $branchData['region'];
+        
+        // Preserve original Excel values for the remarks UI (fallback display)
+        $row['branch_id_from_file'] = $branchIdFromFile !== '' ? $branchIdFromFile : null;
+        $row['ml_outlet_from_file'] = $mlOutletFromFile !== '' ? $mlOutletFromFile : null;
         
         $row['partner_id'] = $partnerData['partner_id'];
         $row['partner_id_kpx'] = $partnerData['partner_id_kpx'];

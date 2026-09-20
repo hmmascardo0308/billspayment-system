@@ -26,6 +26,98 @@ if (!function_exists('has_any_permission') || !has_any_permission(['Settlement P
     exit;
 }
 
+// ============================================
+// HELPER FUNCTIONS (mirrored from settlement-per-bank.php)
+// ============================================
+function isTuesday(?string $date): bool {
+    if (empty($date)) return false;
+    $timestamp = strtotime($date);
+    if ($timestamp === false) return false;
+    return date('N', $timestamp) == 2;
+}
+
+function getWednesdayToTuesdayRange(string $tuesday_date): array {
+    $timestamp = strtotime($tuesday_date);
+    if ($timestamp === false) return [$tuesday_date, $tuesday_date];
+    $wednesday = date('Y-m-d', strtotime('-6 days', $timestamp));
+    $tuesday = date('Y-m-d', $timestamp);
+    return [$wednesday, $tuesday];
+}
+
+function getMondayToSundayRange(string $tuesday_date): array {
+    $timestamp = strtotime($tuesday_date);
+    if ($timestamp === false) return [$tuesday_date, $tuesday_date];
+    $sunday = date('Y-m-d', strtotime('-2 days', $timestamp));
+    $monday = date('Y-m-d', strtotime('-6 days', strtotime($sunday)));
+    return [$monday, $sunday];
+}
+
+function getSpecialWeeklyPartners(): array {
+    return ['457', '458', '459', '460'];
+}
+
+function getSpecialWeekBeforePartners(): array {
+    return ['1005'];
+}
+
+function getFdcMindanaoRegionSets(): array {
+    return [
+        'GENSAN' => [
+            'regions' => ['R24 SOCSK REGION', 'R16 SARGEN REGION'],
+        ],
+        'CDO' => [
+            'regions' => ['R18 CAGAYAN DE ORO REGION', 'R19 LANAO REGION', 'R30 BUKIDNON REGION', 'R14 DAVAO REGION'],
+        ],
+    ];
+}
+
+function getFuiUnimerchantsRegionSets(): array {
+    return [
+        'BPI' => [
+            'regions' => ['R21 ZANORTE REGION', 'R20 ZASURMIS REGION', 'R19 LANAO REGION', 'R22 ZAMSIBUGAY REGION'],
+        ],
+        'BDO_NEGROS' => [
+            'regions' => ['R04 NEG.OR.-SIQ. REGION', 'R08 NEG OCC A REGION', 'R29 NEG OCC B REGION'],
+        ],
+        'BDO_CEBU' => [
+            'regions' => ['R02 CEBU NORTH A REGION', 'R03 CEBU SOUTH REGION', 'R05 BOHOL REGION', 'R26 CEBU NORTH B REGION', 'R01 CEBU CENTRAL A REGION', 'R27 CEBU CENTRAL B REGION'],
+        ],
+    ];
+}
+
+function getPartner257Sets(): array {
+    return [
+        'BDO_PANAY' => [
+            'regions' => ['R10 PANAY NORTH REGION', 'R11 PANAY CENTRAL REGION'],
+            'extra_where' => null,
+        ],
+        'CHINABANK_BOHOL' => [
+            'regions' => ['R05 BOHOL REGION'],
+            'extra_where' => null,
+        ],
+        'CHINABANK_ORMOC' => [
+            'regions' => [],
+            'extra_where' => "(bt.account_no LIKE '%orm%' OR bt.address LIKE '%orm%' OR bt.account_no LIKE '%sog%' OR bt.address LIKE '%sog%')",
+        ],
+        'CHINABANK_SAMAR' => [
+            'regions' => ['R07 SAMAR REGION'],
+            'extra_where' => null,
+        ],
+        'CHINABANK_TACLOBAN' => [
+            'regions' => [],
+            'extra_where' => "(bt.account_no LIKE '%tac%' OR bt.address LIKE '%tac%')",
+        ],
+    ];
+}
+
+function getPcsoLandbankSets(): array {
+    return [
+        'NCR' => ['partner_ids' => ['631']],
+        'VISAYAS' => ['partner_ids' => ['648', '650', '651', '653', '655', '656', '658', '660']],
+        'MINDANAO' => ['partner_ids' => ['662', '670', '680']],
+    ];
+}
+
 // Get POST data
 $reason_data_json = isset($_POST['reason_data']) ? trim($_POST['reason_data']) : '';
 $saved_by = isset($_POST['saved_by']) ? trim($_POST['saved_by']) : '';
@@ -70,6 +162,27 @@ $save_date = date('Y-m-d H:i:s');
 $save_date_display = date('M d, Y H:i:s');
 $total_updated = 0;
 
+// ============================================
+// Determine effective date ranges for special partners
+// ============================================
+$special_partners = getSpecialWeeklyPartners();
+$special_wb_partners = getSpecialWeekBeforePartners();
+
+$include_special = !empty($date_to) && isTuesday($date_to);
+$include_special_wb = !empty($date_to) && isTuesday($date_to);
+
+$special_date_from = $date_from;
+$special_date_to = $date_to;
+if ($include_special) {
+    list($special_date_from, $special_date_to) = getWednesdayToTuesdayRange($date_to);
+}
+
+$special_wb_date_from = $date_from;
+$special_wb_date_to = $date_to;
+if ($include_special_wb) {
+    list($special_wb_date_from, $special_wb_date_to) = getMondayToSundayRange($date_to);
+}
+
 try {
     // Start transaction
     $conn->begin_transaction();
@@ -82,7 +195,54 @@ try {
             continue;
         }
         
+        // ============================================
+        // Determine if this is a split partner
+        // ============================================
+        $split_type = null;
+        $split_key = null;
+        $regions = [];
+        $extra_where = null;
+        
+        // FDC Mindanao splits (256-GENSAN, 256-CDO)
+        if (strpos($partner_id, '256-') === 0) {
+            $split_type = 'fdc';
+            $split_key = substr($partner_id, 4);
+            $partner_id = '256';
+            $sets = getFdcMindanaoRegionSets();
+            if (isset($sets[$split_key])) {
+                $regions = $sets[$split_key]['regions'];
+            }
+        }
+        // Partner 257 splits (257-BDO_PANAY, 257-CHINABANK_BOHOL, etc.)
+        elseif (strpos($partner_id, '257-') === 0) {
+            $split_type = 'fdc257';
+            $split_key = substr($partner_id, 4);
+            $partner_id = '257';
+            $sets = getPartner257Sets();
+            if (isset($sets[$split_key])) {
+                $regions = $sets[$split_key]['regions'];
+                $extra_where = $sets[$split_key]['extra_where'];
+            }
+        }
+        // Partner 259 splits (259-BPI, 259-BDO_NEGROS, 259-BDO_CEBU)
+        elseif (strpos($partner_id, '259-') === 0) {
+            $split_type = 'fui';
+            $split_key = substr($partner_id, 4);
+            $partner_id = '259';
+            $sets = getFuiUnimerchantsRegionSets();
+            if (isset($sets[$split_key])) {
+                $regions = $sets[$split_key]['regions'];
+            }
+        }
+        // PCSO Landbank splits (pcso-631, pcso-648, etc.)
+        elseif (strpos($partner_id, 'pcso-') === 0) {
+            $split_type = 'pcso';
+            $partner_id = substr($partner_id, 5);
+        }
+        
+        // ============================================
         // Build WHERE clause for this specific partner with filters
+        // ============================================
         $where_conditions = [];
         $params = [];
         $types = "";
@@ -103,18 +263,51 @@ try {
             $types .= "s";
         }
         
-        if (!empty($date_from) && !empty($date_to)) {
+        // ============================================
+        // Apply region filters for split partners
+        // ============================================
+        if (!empty($regions)) {
+            $placeholders = implode(',', array_fill(0, count($regions), '?'));
+            $where_conditions[] = "bt.region IN ($placeholders)";
+            foreach ($regions as $reg) {
+                $params[] = $reg;
+                $types .= "s";
+            }
+        }
+        
+        if (!empty($extra_where)) {
+            $where_conditions[] = $extra_where;
+        }
+        
+        // ============================================
+        // Apply date range - use effective dates for special partners
+        // ============================================
+        $is_special_partner = in_array($partner_id, $special_partners, true);
+        $is_special_wb_partner = in_array($partner_id, $special_wb_partners, true);
+        
+        $effective_date_from = $date_from;
+        $effective_date_to = $date_to;
+        
+        if ($is_special_partner && $include_special) {
+            $effective_date_from = $special_date_from;
+            $effective_date_to = $special_date_to;
+        } elseif ($is_special_wb_partner && $include_special_wb) {
+            $effective_date_from = $special_wb_date_from;
+            $effective_date_to = $special_wb_date_to;
+        }
+        
+        if (!empty($effective_date_from) && !empty($effective_date_to)) {
             $where_conditions[] = "bt.datetime BETWEEN ? AND ?";
-            $params[] = $date_from . ' 00:00:00';
-            $params[] = $date_to . ' 23:59:59';
+            $params[] = $effective_date_from . ' 00:00:00';
+            $params[] = $effective_date_to . ' 23:59:59';
             $types .= "ss";
-        } elseif (!empty($date_from)) {
+        } elseif (!empty($effective_date_from)) {
             $where_conditions[] = "bt.datetime >= ?";
-            $params[] = $date_from . ' 00:00:00';
+            $params[] = $effective_date_from . ' 00:00:00';
             $types .= "s";
-        } elseif (!empty($date_to)) {
+        } elseif (!empty($effective_date_to)) {
             $where_conditions[] = "bt.datetime <= ?";
-            $params[] = $date_to . ' 23:59:59';
+            $params[] = $effective_date_to . ' 23:59:59';
             $types .= "s";
         }
         

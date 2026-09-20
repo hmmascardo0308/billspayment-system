@@ -324,3 +324,24 @@ Stack trace:
 [15-Sep-2026 09:06:49 Europe/Berlin] === STARTING LOOKUP ===
 [15-Sep-2026 09:06:49 Europe/Berlin] Total rows to lookup: 1
 [15-Sep-2026 09:06:49 Europe/Berlin] Lookup completed. Processed: 1 rows
+[16-Sep-2026 03:50:13 Europe/Berlin] === STARTING LOOKUP ===
+[16-Sep-2026 03:50:13 Europe/Berlin] Total rows to lookup: 38087
+[16-Sep-2026 03:50:44 Europe/Berlin] Lookup completed. Processed: 38087 rows
+[16-Sep-2026 03:59:36 Europe/Berlin] === STARTING LOOKUP ===
+[16-Sep-2026 03:59:36 Europe/Berlin] Total rows to lookup: 14803
+[16-Sep-2026 03:59:48 Europe/Berlin] Lookup completed. Processed: 14803 rows
+[16-Sep-2026 04:08:11 Europe/Berlin] === STARTING LOOKUP ===
+[16-Sep-2026 04:08:11 Europe/Berlin] Total rows to lookup: 14803
+[16-Sep-2026 04:08:22 Europe/Berlin] Lookup completed. Processed: 14803 rows
+[16-Sep-2026 04:12:40 Europe/Berlin] === STARTING LOOKUP ===
+[16-Sep-2026 04:12:40 Europe/Berlin] Total rows to lookup: 14803
+[16-Sep-2026 04:12:50 Europe/Berlin] Lookup completed. Processed: 14803 rows
+[16-Sep-2026 04:22:21 Europe/Berlin] === STARTING LOOKUP ===
+[16-Sep-2026 04:22:21 Europe/Berlin] Total rows to lookup: 14803
+[16-Sep-2026 04:22:32 Europe/Berlin] Lookup completed. Processed: 14803 rows
+[16-Sep-2026 04:22:57 Europe/Berlin] === STARTING LOOKUP ===
+[16-Sep-2026 04:22:57 Europe/Berlin] Total rows to lookup: 38087
+[16-Sep-2026 04:23:29 Europe/Berlin] Lookup completed. Processed: 38087 rows
+[16-Sep-2026 08:45:45 Europe/Berlin] === STARTING LOOKUP ===
+[16-Sep-2026 08:45:45 Europe/Berlin] Total rows to lookup: 38087
+[16-Sep-2026 08:46:20 Europe/Berlin] Lookup completed. Processed: 38087 rows

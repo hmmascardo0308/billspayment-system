@@ -2640,12 +2640,12 @@ $reason_options = [
                             <?php endif; ?>
                             <?php if ($include_special_partners && !empty($special_date_from) && !empty($special_date_to)): ?>
                             <span class="table-badge" style="background: #856404; color: #fff;">
-                                <i class="fas fa-calendar-week"></i> Weekly Capture: <?php echo date('M d, Y', strtotime($special_date_from)); ?> → <?php echo date('M d, Y', strtotime($special_date_to)); ?>
+                                <i class="fas fa-calendar-week"></i> Weekly Capture for LDS transactions: <?php echo date('M d, Y', strtotime($special_date_from)); ?> → <?php echo date('M d, Y', strtotime($special_date_to)); ?>
                             </span>
                             <?php endif; ?>
                             <?php if ($include_special_wb_partners && !empty($special_wb_date_from) && !empty($special_wb_date_to)): ?>
                             <span class="table-badge" style="background: #856404; color: #fff;">
-                                <i class="fas fa-calendar-week"></i> Week-Before Capture (Mon–Sun): <?php echo date('M d, Y', strtotime($special_wb_date_from)); ?> → <?php echo date('M d, Y', strtotime($special_wb_date_to)); ?>
+                                <i class="fas fa-calendar-week"></i> Week-Before Capture (Mon-Sun) for SHOPEE - LDS: <?php echo date('M d, Y', strtotime($special_wb_date_from)); ?> → <?php echo date('M d, Y', strtotime($special_wb_date_to)); ?>
                             </span>
                             <?php endif; ?>
                             <?php if (!$cad_generated && !empty($selected_partner)): ?>

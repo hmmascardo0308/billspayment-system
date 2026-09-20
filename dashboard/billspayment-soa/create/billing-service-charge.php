@@ -1279,17 +1279,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     
                     <div class="form-group">
                         <label for="numberOfTransactions"><i class="fa-solid fa-list-ol"></i> Number of Transactions <span style="color: red;">*</span></label>
-                        <input type="number" id="numberOfTransactions" name="number_of_transactions" min="0" step="1" placeholder="Enter number of transactions">
+                        <input type="text" id="numberOfTransactions" name="number_of_transactions" min="0" step="1" placeholder="Enter number of transactions">
                     </div>
                     
                     <div class="form-group">
                         <label for="totalPrincipal"><i class="fa-solid fa-peso-sign"></i> Total Principal <span style="color: #7f8c8d; font-size: 12px;">(optional)</span></label>
-                        <input type="number" id="totalPrincipal" name="total_principal" min="0" step="0.01" placeholder="Enter total principal amount (optional)">
+                        <input type="text" id="totalPrincipal" name="total_principal" min="0" step="0.01" placeholder="Enter total principal amount (optional)">
                     </div>
                     
                     <div class="form-group">
                         <label for="serviceChargeAmount"><i class="fa-solid fa-money-bill-transfer"></i> Service Charge Amount <span style="color: red;">*</span></label>
-                        <input type="number" id="serviceChargeAmount" name="service_charge_amount" min="0" step="0.01" placeholder="Enter service charge amount">
+                        <input type="text" id="serviceChargeAmount" name="service_charge_amount" min="0" step="0.01" placeholder="Enter service charge amount">
                     </div>
                     
                     <!-- Additional Fields for Partner 434 -->
