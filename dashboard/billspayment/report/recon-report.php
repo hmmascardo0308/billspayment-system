@@ -1,7 +1,7 @@
 <?php
 // Connect to the database
-include '../../../config/config.php';
-require '../../../vendor/autoload.php';
+require_once __DIR__ . '/../../../config/config.php';
+require_once __DIR__ . '/../../../vendor/autoload.php';
 
 // Start the session
 session_start();

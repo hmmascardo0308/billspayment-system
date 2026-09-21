@@ -1,5 +1,6 @@
 <?php
-include '../../config/config.php';
+// update-access-level.php
+require_once __DIR__ . '/../../config/config.php';
 
 session_start();
 header('Content-Type: application/json');

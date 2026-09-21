@@ -97,7 +97,12 @@
                     "key": "Bills Payment",
                     "label": "Bills Payment",
                     "icon": "check_circle"
-                }
+                },
+                { 
+                    "key": "CAD Loggings", 
+                    "label": "CAD Loggings", 
+                    "icon": "check_circle" }
+
             ]
         },
         {

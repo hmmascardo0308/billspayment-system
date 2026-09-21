@@ -1,0 +1,28 @@
+        .cad-form-container { max-width: 1000px; margin: 20px auto 40px; padding: 0 20px; }
+        .cad-form-card { background: #fff; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); padding: 28px 32px; }
+        .cad-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 24px; }
+        .cad-form-group { display: flex; flex-direction: column; }
+        .cad-form-group.full-width { grid-column: 1 / -1; }
+        .cad-form-group label { font-weight: 600; font-size: 0.9rem; color: #333; margin-bottom: 6px; }
+        .cad-form-group input, .cad-form-group select, .cad-form-group textarea {
+            padding: 10px 12px; border: 1.5px solid #7c7c7c; border-radius: 6px; font-size: 0.95rem; transition: border-color 0.2s;
+        }
+        .cad-form-group input:focus, .cad-form-group select:focus, .cad-form-group textarea:focus {
+            outline: none; border-color: #a90000; box-shadow: 0 0 0 3px rgba(171,0,0,0.15);
+        }
+        .cad-form-group textarea { min-height: 90px; resize: vertical; }
+        .cad-form-actions { margin-top: 28px; display: flex; gap: 12px; justify-content: flex-end; }
+        .cad-btn { padding: 10px 22px; border-radius: 6px; font-weight: 600; font-size: 0.95rem; cursor: pointer; border: none; transition: background 0.2s, transform 0.1s; }
+        .cad-btn-primary { background: #f74a4a; color: #fff; }
+        .cad-btn-primary:hover { background: #8a0000; }
+        .cad-btn-secondary { background: #c7d2d2; color: #333; }
+        .cad-btn-secondary:hover { background: #6b6b6b; color: #ffffff;}
+        .select2-container .select2-selection--single { height: 42px; border: 1px solid #d0d5dd; border-radius: 6px; padding: 4px 8px; }
+        .select2-container--default .select2-selection--single .select2-selection__rendered { line-height: 32px; color: #333; }
+        .select2-container--default .select2-selection--single .select2-selection__arrow { height: 40px; }
+        .bp-ref-wrap { position: relative; }
+        .bp-ref-spinner {
+            position: absolute; right: 30px; top: 50%; transform: translateY(-50%);
+            color: #a90000; display: none; z-index: 5;
+        }
+        @media (max-width: 700px) { .cad-form-grid { grid-template-columns: 1fr; } }

@@ -157,10 +157,35 @@ function formatCADDate(?string $date_from, ?string $date_to): string {
 // NOTE: The 2nd parameter is now $charge_sched (previously $service_charge).
 // Uses normalizeChargeSched() so DAILY and PER TRANSACTION behave identically.
 // ============================================
+// ============================================
+// FUNCTION: Calculate settlement amount based on charge type
+// NOTE: The 2nd parameter is now $charge_sched (previously $service_charge).
+// Uses normalizeChargeSched() so DAILY and PER TRANSACTION behave identically.
+// ============================================
 function calculateSettlementAmount($charge_to, $charge_sched, $principal, $charge_to_customer, $charge_to_partner, $adjustment, $partner_id = '', $txn_count = 0) {
     // Special case for partner_id_kpx = 34: Amount for Settlement = Volume Count + Principal
     if ((string)$partner_id === '34') {
         return (float)$txn_count + (float)$principal;
+    }
+
+    // Special case for partner_id_kpx = 107
+    // Amount for Settlement = (Principal - Charge Amount) + Adjustment
+    // VAT Amount = (Charge to Partner / 1.12) * 0.02
+    // Charge Amount = Charge to Partner - VAT Amount
+    if ((string)$partner_id === '107') {
+        $vat_amount = ($charge_to_partner / 1.12) * 0.02;
+        $charge_amount = $charge_to_partner - $vat_amount;
+        return ($principal - $charge_amount) + $adjustment;
+    }
+
+    // Special case for partner_id_kpx = 811
+    // VAT Amount = ((Volume Count * 10) / 1.12) * 0.02
+    // Transaction Amount = (Volume Count * 10) - VAT Amount
+    // Amount for Settlement = Principal - Transaction Amount + Adjustment
+    if ((string)$partner_id === '811') {
+        $vat_amount = (($txn_count * 10) / 1.12) * 0.02;
+        $transaction_amount = ($txn_count * 10) - $vat_amount;
+        return $principal - $transaction_amount + $adjustment;
     }
 
     $charge_to_upper = strtoupper(trim($charge_to));

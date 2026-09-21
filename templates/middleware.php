@@ -1,5 +1,5 @@
 <?php
-// Middleware helpers for access-level -> permissions checks
+// Middleware helpers for access-level -> permissions checks middleware.php
 if (defined('__BP_MIDDLEWARE_LOADED__')) return;
 define('__BP_MIDDLEWARE_LOADED__', true);
 if (session_status() === PHP_SESSION_NONE) @session_start();
@@ -199,6 +199,7 @@ function permission_aliases($perm)
         'View Bank List' => ['Masterfiles View Bank List'],
         'View Partner List' => ['Masterfiles View Partner List'],
         'Volume Report' => ['BP Report Volume'],
+         'CAD Loggings' => ['CAD Loggings'],
     ];
 
     $keys = [$perm];

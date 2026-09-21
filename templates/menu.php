@@ -1,5 +1,5 @@
 <?php 
-// Dynamic base path detection
+// Dynamic base path detection menu.php
 function getBasePath() {
     // Get the protocol (http or https)
     $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';
@@ -195,7 +195,7 @@ if (isset($_SESSION['user_type']) && ($_SESSION['user_type'] === 'admin' || $_SE
         </div>
         <?php endif; ?>
 
-        <?php if (has_any_permission(['BP Report Volume','BP Report EDI','BP Report Transaction Details','BP Report Transaction Summary','BP Report Cancellation','BP Report Balance Sheet'])): ?>
+        <?php if (has_any_permission(['BP Report Volume','BP Report EDI','BP Report Transaction Details','BP Report Transaction Summary','BP Report Cancellation','BP Report Balance Sheet','CAD Loggings'])): ?>
         <div class="tabcat" id="para-report-btn" style="display: none;">
             <h6><i class="fa-solid fa-chart-line"></i> Report</h6>
             <i class="fa-solid fa-chevron-right" id="closed-para-report" style="display: block"></i>
@@ -246,9 +246,15 @@ if (isset($_SESSION['user_type']) && ($_SESSION['user_type'] === 'admin' || $_SE
             <?php endif;?>
             <?php if (has_permission('BP Report Recon')): ?>
                 <div class="sub" onclick="parent.location='<?php echo $base_url; ?>billspayment/report/recon-report.php'">
-                    <a href="<?php echo $base_url; ?>billspayment/report/recon-report.php" id="recon-report-link"><i class="fa-solid fa-file-chart-line"></i> Recon Report</a>
+                    <a href="<?php echo $base_url; ?>billspayment/report/recon-report.php" id="recon-report-link"><i class="fa-solid fa-chart-simple"></i> Recon Report</a>
                 </div>
             <?php endif; ?>
+
+            <?php if (has_permission('CAD Loggings')): ?>
+    <div class="sub" onclick="parent.location='<?php echo $base_url; ?>billspayment/report/cad_loggings.php'">
+        <a href="<?php echo $base_url; ?>billspayment/report/cad_loggings.php" id="cad-report-link"><i class="fa-solid fa-book"></i> CAD Loggings</a>
+    </div>
+<?php endif; ?>
             <!-- <div class="sub" onclick="parent.location='<?php //echo $base_url; ?>billspayment/report/monthly-volume.php'">
                 <a href="<?php //echo $base_url; ?>billspayment/report/monthly-volume.php">Monthly Volume Report</a>
             </div> -->

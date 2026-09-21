@@ -442,5 +442,26 @@
         "Tools Excel Unlock Password",
         "Tools File Fetch",
         "Tools KPX Generator"
+    ],
+    "20252025": [
+        "CAD Loggings"
+    ],
+    "12345678": [
+        "BP Import Cancellation",
+        "BP Import Partner Data",
+        "BP Import Transaction",
+        "BP Post Transaction",
+        "BP Report Balance Sheet",
+        "BP Report Billers",
+        "BP Report Cancellation",
+        "BP Report EDI",
+        "BP Report Recon",
+        "BP Report Transaction Details",
+        "BP Report Transaction Summary",
+        "BP Report Volume",
+        "BP Settlement Adjustment Entry",
+        "BP Settlement Per Bank",
+        "Bills Payment",
+        "CAD Loggings"
     ]
 }
