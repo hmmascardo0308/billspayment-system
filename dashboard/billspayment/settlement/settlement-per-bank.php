@@ -125,6 +125,23 @@ function getSettlementAbbreviation(string $settlement_type): string {
 }
 
 // ============================================
+// FUNCTION: Normalize charge_sched value
+// DAILY and PER TRANSACTION are treated the same (DAILY)
+// Empty / NOT APPLICABLE / NO-BANK-SETTLEMENT => '' (uncategorized)
+// ============================================
+function normalizeChargeSched(?string $charge_sched): string {
+    $value = strtoupper(trim((string)$charge_sched));
+
+    if ($value === '' || $value === 'NOT APPLICABLE' || $value === 'NO-BANK-SETTLEMENT') {
+        return '';
+    }
+    if ($value === 'PER TRANSACTION') {
+        return 'DAILY';
+    }
+    return $value; // DAILY, WEEKLY, MONTHLY, SEMI-MONTHLY
+}
+
+// ============================================
 // FUNCTION: Format date for CAD number (YYYY-MM-000DD)
 // ============================================
 function formatCADDate(?string $date_from, ?string $date_to): string {
@@ -143,45 +160,147 @@ function formatCADDate(?string $date_from, ?string $date_to): string {
 
 // ============================================
 // FUNCTION: Calculate settlement amount based on charge type
+// NOTE: The 2nd parameter is now $charge_sched (previously $service_charge).
+// Uses normalizeChargeSched() so DAILY and PER TRANSACTION behave identically.
 // ============================================
-function calculateSettlementAmount($charge_to, $service_charge, $principal, $charge_to_customer, $charge_to_partner, $adjustment, $partner_id = '', $txn_count = 0) {
+function calculateSettlementAmount($charge_to, $charge_sched, $principal, $charge_to_customer, $charge_to_partner, $adjustment, $partner_id = '', $txn_count = 0) {
     // Special case for partner_id_kpx = 34: Amount for Settlement = Volume Count + Principal
     if ((string)$partner_id === '34') {
         return (float)$txn_count + (float)$principal;
     }
 
     $charge_to_upper = strtoupper(trim($charge_to));
-    $service_charge_upper = strtoupper(trim($service_charge));
-    
+    $charge_sched_upper = normalizeChargeSched($charge_sched);
+
     // UNCATEGORIZED: If charge_to is empty, use Principal + Adjustment (without any charges)
     if (empty($charge_to_upper)) {
         return (float)$principal + (float)$adjustment;
     }
-    
+
     // For WEEKLY, MONTHLY, SEMI-MONTHLY: Amount = Principal + Adjustment (no charge deduction)
     // This applies to both PARTNER and CUSTOMER charge types
-    if (($charge_to_upper === 'PARTNER' || $charge_to_upper === 'CUSTOMER') && 
-        in_array($service_charge_upper, ['WEEKLY', 'MONTHLY', 'SEMI-MONTHLY'])) {
+    if (($charge_to_upper === 'PARTNER' || $charge_to_upper === 'CUSTOMER') &&
+        in_array($charge_sched_upper, ['WEEKLY', 'MONTHLY', 'SEMI-MONTHLY'])) {
         return $principal + $adjustment;
     }
-    
-    // For DAILY (both CUSTOMER and PARTNER): Amount = Principal - Charge to Partner + Adjustment
-    if (($charge_to_upper === 'CUSTOMER' || $charge_to_upper === 'PARTNER') && $service_charge_upper === 'DAILY') {
+
+    // For DAILY (CUSTOMER, PARTNER, or BOTH): Amount = Principal - Charge to Partner + Adjustment
+    // (PER TRANSACTION is normalized to DAILY above)
+    if (($charge_to_upper === 'CUSTOMER' || $charge_to_upper === 'PARTNER' || $charge_to_upper === 'BOTH')
+        && $charge_sched_upper === 'DAILY') {
         return $principal - $charge_to_partner + $adjustment;
     }
-    
-    // For BOTH DAILY: Amount = Principal - Charge to Partner + Adjustment
-    if ($charge_to_upper === 'BOTH' && $service_charge_upper === 'DAILY') {
-        return $principal - $charge_to_partner + $adjustment;
-    }
-    
+
     // For BOTH charge types (WEEKLY/MONTHLY): Use the original calculation (Principal + both charges + adjustment)
     if ($charge_to_upper === 'BOTH') {
         return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
     }
-    
+
     // Default fallback for any other case: Principal + Adjustment only (no charges)
     return (float)$principal + (float)$adjustment;
+}
+
+// ============================================
+// FUNCTION: Check if a date is Tuesday
+// ============================================
+function isTuesday(?string $date): bool {
+    if (empty($date)) return false;
+    $timestamp = strtotime($date);
+    if ($timestamp === false) return false;
+    return date('N', $timestamp) == 2; // 2 = Tuesday
+}
+
+// ============================================
+// FUNCTION: Get Wednesday-to-Tuesday range
+// Given a Tuesday date, returns [wednesday_last_week, tuesday]
+// ============================================
+function getWednesdayToTuesdayRange(string $tuesday_date): array {
+    $timestamp = strtotime($tuesday_date);
+    if ($timestamp === false) {
+        return [$tuesday_date, $tuesday_date];
+    }
+    // Wednesday of last week = Tuesday - 6 days
+    $wednesday = date('Y-m-d', strtotime('-6 days', $timestamp));
+    $tuesday = date('Y-m-d', $timestamp);
+    return [$wednesday, $tuesday];
+}
+
+// ============================================
+// FUNCTION: Get Monday-to-Sunday range (week BEFORE a given Tuesday)
+// Given a Tuesday date, returns [monday, sunday] of the week before it
+// ============================================
+function getMondayToSundayRange(string $tuesday_date): array {
+    $timestamp = strtotime($tuesday_date);
+    if ($timestamp === false) {
+        return [$tuesday_date, $tuesday_date];
+    }
+    // Sunday before the Tuesday = Tuesday - 2 days
+    $sunday = date('Y-m-d', strtotime('-2 days', $timestamp));
+    // Monday of that week = Sunday - 6 days
+    $monday = date('Y-m-d', strtotime('-6 days', strtotime($sunday)));
+    return [$monday, $sunday];
+}
+
+// ============================================
+// FUNCTION: Get special weekly partners list
+// Partners 457, 458, 459 = CHINABANK (CHECK)
+// Partner 460 = BDO (ONLINE)
+// These partners only settle on Tuesdays, capturing Wed last week -> Tue
+// ============================================
+function getSpecialWeeklyPartners(): array {
+    return ['457', '458', '459', '460'];
+}
+
+// ============================================
+// FUNCTION: Check if partner is a special weekly partner
+// ============================================
+function isSpecialWeeklyPartner(string $partner_id, string $bank, string $settlement_type): bool {
+    $partner_id = trim($partner_id);
+    $bank_upper = strtoupper(trim($bank));
+    $type_upper = strtoupper(trim($settlement_type));
+    
+    // CHINABANK partners: 457, 458, 459 with CHECK
+    if (in_array($partner_id, ['457', '458', '459'])) {
+        if (strpos($bank_upper, 'CHINA') !== false && $type_upper === 'CHECK') {
+            return true;
+        }
+    }
+    
+    // BDO partner: 460 with ONLINE
+    if ($partner_id === '460') {
+        if (strpos($bank_upper, 'BDO') !== false && $type_upper === 'ONLINE') {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// ============================================
+// FUNCTION: Get week-before partners list
+// Partner 1005 = BDO UNIBANK, INC. (BDO) / ONLINE
+// Only settles on Tuesdays, capturing Monday -> Sunday of the week BEFORE the Tuesday
+// ============================================
+function getSpecialWeekBeforePartners(): array {
+    return ['1005'];
+}
+
+// ============================================
+// FUNCTION: Check if partner is a week-before partner
+// Partner 1005 with BDO/ONLINE
+// ============================================
+function isSpecialWeekBeforePartner(string $partner_id, string $bank, string $settlement_type): bool {
+    $partner_id = trim($partner_id);
+    if ($partner_id !== '1005') {
+        return false;
+    }
+    $bank_upper = strtoupper(trim($bank));
+    $type_upper = strtoupper(trim($settlement_type));
+    
+    if (strpos($bank_upper, 'BDO') !== false && $type_upper === 'ONLINE') {
+        return true;
+    }
+    return false;
 }
 
 // ============================================
@@ -245,6 +364,44 @@ if (!empty($selected_partner) && empty($selected_bank) && $selected_partner !== 
         $selected_bank = $auto_selected_bank;
         $_GET['bank'] = $auto_selected_bank;
     }
+}
+
+// ============================================
+// SPECIAL WEEKLY PARTNERS LOGIC
+// Partners 457, 458, 459 (CHINABANK/CHECK) and 460 (BDO/ONLINE)
+// Only included when date_to falls on a Tuesday.
+// When included, transaction range = Wednesday of last week to Tuesday.
+// ============================================
+$special_partners = getSpecialWeeklyPartners();
+$include_special_partners = false;
+$special_date_from = $selected_date_from;
+$special_date_to = $selected_date_to;
+$selected_is_special = in_array($selected_partner, $special_partners, true);
+
+// Check if date_to falls on a Tuesday
+if (!empty($selected_date_to) && isTuesday($selected_date_to)) {
+    $include_special_partners = true;
+    // Override date range: Wednesday last week to Tuesday
+    list($special_date_from, $special_date_to) = getWednesdayToTuesdayRange($selected_date_to);
+}
+
+// ============================================
+// SPECIAL WEEK-BEFORE PARTNER LOGIC (Partner 1005)
+// Partner 1005 = BDO UNIBANK, INC. (BDO) / ONLINE
+// Only included when date_to falls on a Tuesday.
+// When included, transaction range = Monday → Sunday of the week BEFORE the Tuesday.
+// ============================================
+$special_wb_partners = getSpecialWeekBeforePartners();
+$include_special_wb_partners = false;
+$special_wb_date_from = $selected_date_from;
+$special_wb_date_to = $selected_date_to;
+$selected_is_special_wb = in_array($selected_partner, $special_wb_partners, true);
+
+// Check if date_to falls on a Tuesday
+if (!empty($selected_date_to) && isTuesday($selected_date_to)) {
+    $include_special_wb_partners = true;
+    // Override date range: Monday → Sunday of the week before the Tuesday
+    list($special_wb_date_from, $special_wb_date_to) = getMondayToSundayRange($selected_date_to);
 }
 
 // ============================================
@@ -561,8 +718,8 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
                 $is_settled = (strtoupper(trim($status)) === 'SETTLED');
                 
                 $charge_to = '';
-                $service_charge = '';
-                $partner_sql = "SELECT COALESCE(charge_to, '') as charge_to, COALESCE(serviceCharge, '') as serviceCharge 
+                $charge_sched = '';
+                $partner_sql = "SELECT COALESCE(charge_to, '') as charge_to, COALESCE(charge_sched, '') as charge_sched 
                                 FROM masterdata.partner_masterfile 
                                 WHERE partner_id_kpx = ?";
                 $partner_stmt = $conn->prepare($partner_sql);
@@ -572,7 +729,7 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
                     $partner_result = $partner_stmt->get_result();
                     if ($partner_row = $partner_result->fetch_assoc()) {
                         $charge_to = $partner_row['charge_to'] ?? '';
-                        $service_charge = $partner_row['serviceCharge'] ?? '';
+                        $charge_sched = $partner_row['charge_sched'] ?? '';
                     }
                     $partner_stmt->close();
                 }
@@ -585,7 +742,7 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
                 
                 $amount_for_settlement = calculateSettlementAmount(
                     $charge_to,
-                    $service_charge,
+                    $charge_sched,
                     $principal,
                     $charge_to_customer,
                     $charge_to_partner,
@@ -614,8 +771,6 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
 
 // ============================================
 // FDC Mindanao (partner 256) region split definitions
-// GENSAN: R24 SOCSK REGION, R16 SARGEN REGION
-// CDO:    R18 CAGAYAN DE ORO REGION, R19 LANAO REGION, R30 BUKIDNON REGION, R14 DAVAO REGION
 // ============================================
 function getFdcMindanaoRegionSets(): array {
     return [
@@ -636,10 +791,6 @@ function getFdcMindanaoRegionSets(): array {
 
 // ============================================
 // FAST UNIMERCHANTS INC. (partner 259) region/bank split definitions
-// BPI: Zanorte / Zasurmis / Lanao / Zamsibugay regions
-// BDO Negros: Negros regions
-// BDO Cebu/Bohol: Cebu + Bohol regions
-// Note: partner_masterfile only has BPI registered; BDO splits ignore pm.bank filter
 // ============================================
 function getFuiUnimerchantsRegionSets(): array {
     return [
@@ -687,9 +838,7 @@ function getFuiUnimerchantsRegionSets(): array {
 }
 
 // ============================================
-// Partner 257 (FAST DISTRIBUTION CORPORATION (VISAYAS)) region/bank split definitions
-// BDO (default/registered bank): Panay North + Panay Central → FAST DISTRIBUTION CORPORATION (VISAYAS)
-// CHINABANK: Bohol (by region), Samar (by region), Ormoc (by account_no/address), Tacloban (by account_no/address)
+// Partner 257 region/bank split definitions
 // ============================================
 function getPartner257Sets(): array {
     return [
@@ -698,8 +847,8 @@ function getPartner257Sets(): array {
             'bank_key' => 'BDO',
             'regions' => ['R10 PANAY NORTH REGION', 'R11 PANAY CENTRAL REGION'],
             'partner_name' => 'FAST DISTRIBUTION CORPORATION (VISAYAS)',
-            'account_name' => null, // keep from masterfile
-            'account_number' => null, // keep from masterfile
+            'account_name' => null,
+            'account_number' => null,
             'extra_where' => null,
         ],
         'CHINABANK_BOHOL' => [
@@ -714,7 +863,7 @@ function getPartner257Sets(): array {
         'CHINABANK_ORMOC' => [
             'suffix' => 'ORMOC',
             'bank_key' => 'CHINABANK',
-            'regions' => [], // filter by account_no / address instead of region
+            'regions' => [],
             'partner_name' => 'FDC ORMOC',
             'account_name' => 'FAST DISTRIBUTION CORP.',
             'account_number' => '107-102-003-755',
@@ -732,7 +881,7 @@ function getPartner257Sets(): array {
         'CHINABANK_TACLOBAN' => [
             'suffix' => 'TACLOBAN',
             'bank_key' => 'CHINABANK',
-            'regions' => [], // filter by account_no / address instead of region
+            'regions' => [],
             'partner_name' => 'FDC TACLOBAN',
             'account_name' => 'FAST DISTRIBUTION CORP.',
             'account_number' => '107-102-003-771',
@@ -741,10 +890,238 @@ function getPartner257Sets(): array {
     ];
 }
 
+// ============================================
+// LANDBANK (PCSO) region split definitions
+// ============================================
+function getPcsoLandbankSets(): array {
+    return [
+        'NCR' => [
+            'suffix' => 'NCR',
+            'partner_ids' => ['631'],
+            'region_label' => 'PCSO NCR',
+        ],
+        'VISAYAS' => [
+            'suffix' => 'VISAYAS',
+            'partner_ids' => ['648', '650', '651', '653', '655', '656', '658', '660'],
+            'region_label' => 'PCSO VISAYAS',
+        ],
+        'MINDANAO' => [
+            'suffix' => 'MINDANAO',
+            'partner_ids' => ['662', '670', '680'],
+            'region_label' => 'PCSO MINDANAO',
+        ],
+    ];
+}
+
+/**
+ * Fetch partner data for LANDBANK (PCSO) by region - returns individual partner entries
+ */
+function getPcsoLandbankPartners(
+    mysqli $conn,
+    array $partner_ids,
+    string $bank,
+    string $settlement_type,
+    string $date_from,
+    string $date_to,
+    string $region_label
+): array {
+    if (empty($partner_ids)) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($partner_ids), '?'));
+    
+    $where_regular = ["bt.partner_id_kpx IN ($placeholders)"];
+    $params_regular = $partner_ids;
+    $types_regular = str_repeat('s', count($partner_ids));
+
+    $where_adjustment = ["bt.partner_id_kpx IN ($placeholders)"];
+    $params_adjustment = $partner_ids;
+    $types_adjustment = str_repeat('s', count($partner_ids));
+
+    if (!empty($bank)) {
+        $where_regular[] = "pm.bank = ?";
+        $params_regular[] = $bank;
+        $types_regular .= "s";
+        $where_adjustment[] = "pm.bank = ?";
+        $params_adjustment[] = $bank;
+        $types_adjustment .= "s";
+    }
+
+    if (!empty($settlement_type)) {
+        $where_regular[] = "pm.settled_online_check = ?";
+        $params_regular[] = $settlement_type;
+        $types_regular .= "s";
+        $where_adjustment[] = "pm.settled_online_check = ?";
+        $params_adjustment[] = $settlement_type;
+        $types_adjustment .= "s";
+    }
+
+    if (!empty($date_from) && !empty($date_to)) {
+        $where_regular[] = "bt.datetime BETWEEN ? AND ?";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $params_regular[] = $date_to . ' 23:59:59';
+        $types_regular .= "ss";
+    } elseif (!empty($date_from)) {
+        $where_regular[] = "bt.datetime >= ?";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $types_regular .= "s";
+    } elseif (!empty($date_to)) {
+        $where_regular[] = "bt.datetime <= ?";
+        $params_regular[] = $date_to . ' 23:59:59';
+        $types_regular .= "s";
+    }
+    $where_regular[] = "(bt.status IS NULL OR bt.status = '')";
+
+    if (!empty($date_from) && !empty($date_to)) {
+        $where_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
+        $params_adjustment[] = $date_from . ' 00:00:00';
+        $params_adjustment[] = $date_to . ' 23:59:59';
+        $types_adjustment .= "ss";
+    } elseif (!empty($date_from)) {
+        $where_adjustment[] = "bt.cancellation_date >= ?";
+        $params_adjustment[] = $date_from . ' 00:00:00';
+        $types_adjustment .= "s";
+    } elseif (!empty($date_to)) {
+        $where_adjustment[] = "bt.cancellation_date <= ?";
+        $params_adjustment[] = $date_to . ' 23:59:59';
+        $types_adjustment .= "s";
+    }
+    $where_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
+
+    $regular_sql = "SELECT 
+            bt.partner_id_kpx,
+            pm.partner_name,
+            pm.partner_accName,
+            pm.bank_accNumber,
+            pm.bank,
+            pm.settled_online_check as settlement_type,
+            COALESCE(pm.charge_to, '') as charge_to,
+            COALESCE(pm.charge_sched, '') as charge_sched,
+            COUNT(*) as txn_count,
+            SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
+            SUM(bt.charge_to_customer) as charge_to_customer,
+            SUM(bt.charge_to_partner) as charge_to_partner,
+            SUM(CASE WHEN bt.settle_unsettle = 'Settled' THEN 1 ELSE 0 END) as settled_count,
+            SUM(CASE WHEN bt.settle_unsettle IS NULL 
+                      OR bt.settle_unsettle = '' 
+                      OR bt.settle_unsettle != 'Settled' 
+                 THEN 1 ELSE 0 END) as unsettled_count,
+            MAX(bt.datetime) as last_transaction_date,
+            MIN(bt.datetime) as first_transaction_date
+        FROM mldb.billspayment_transaction bt
+        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+        WHERE " . implode(" AND ", $where_regular) . "
+        GROUP BY bt.partner_id_kpx, pm.partner_name, pm.partner_accName, pm.bank_accNumber, 
+                 pm.bank, pm.settled_online_check, pm.charge_to, pm.charge_sched";
+
+    $adjustment_sql = "SELECT 
+            bt.partner_id_kpx,
+            SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment
+        FROM mldb.billspayment_transaction bt
+        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+        WHERE " . implode(" AND ", $where_adjustment) . "
+        GROUP BY bt.partner_id_kpx";
+
+    $entries = [];
+    $adjustments = [];
+
+    // Get adjustments first
+    $stmt = $conn->prepare($adjustment_sql);
+    if ($stmt) {
+        $stmt->bind_param($types_adjustment, ...$params_adjustment);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        while ($row = $result->fetch_assoc()) {
+            $adjustments[$row['partner_id_kpx']] = (float)($row['total_adjustment'] ?? 0);
+        }
+        $stmt->close();
+    }
+
+    // Get regular data
+    $stmt = $conn->prepare($regular_sql);
+    if ($stmt) {
+        $stmt->bind_param($types_regular, ...$params_regular);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        while ($row = $result->fetch_assoc()) {
+            $partner_id = $row['partner_id_kpx'];
+            $entry = [
+                'partner_id_kpx' => $partner_id,
+                'partner_name' => $row['partner_name'] ?? $partner_id,
+                'partner_accName' => $row['partner_accName'] ?? 'N/A',
+                'bank_accNumber' => $row['bank_accNumber'] ?? 'N/A',
+                'bank' => $row['bank'] ?? '',
+                'settlement_type' => $row['settlement_type'] ?? '',
+                'charge_to' => $row['charge_to'] ?? '',
+                'charge_sched' => $row['charge_sched'] ?? '',
+                'settle_unsettle' => '',
+                'txn_count' => (int)($row['txn_count'] ?? 0),
+                'total_principal' => (float)($row['total_principal'] ?? 0),
+                'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
+                'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
+                'total_adjustment' => $adjustments[$partner_id] ?? 0,
+                'settled_count' => (int)($row['settled_count'] ?? 0),
+                'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
+                'last_transaction_date' => $row['last_transaction_date'] ?? null,
+                'first_transaction_date' => $row['first_transaction_date'] ?? null,
+                'pcso_region' => $region_label,
+                'is_pcso_landbank' => true
+            ];
+            $entries[] = $entry;
+        }
+        $stmt->close();
+    }
+
+    // Check for partners that only have adjustments
+    foreach ($partner_ids as $pid) {
+        if (!isset($entries[$pid]) && isset($adjustments[$pid]) && $adjustments[$pid] != 0) {
+            $details_sql = "SELECT partner_name, partner_accName, bank_accNumber, bank,
+                                   settled_online_check as settlement_type,
+                                   COALESCE(charge_to, '') as charge_to,
+                                   COALESCE(charge_sched, '') as charge_sched
+                            FROM masterdata.partner_masterfile WHERE partner_id_kpx = ?";
+            $dstmt = $conn->prepare($details_sql);
+            if ($dstmt) {
+                $dstmt->bind_param("s", $pid);
+                $dstmt->execute();
+                $dres = $dstmt->get_result();
+                if ($details = $dres->fetch_assoc()) {
+                    $entries[] = [
+                        'partner_id_kpx' => $pid,
+                        'partner_name' => $details['partner_name'] ?? $pid,
+                        'partner_accName' => $details['partner_accName'] ?? 'N/A',
+                        'bank_accNumber' => $details['bank_accNumber'] ?? 'N/A',
+                        'bank' => $details['bank'] ?? '',
+                        'settlement_type' => $details['settlement_type'] ?? '',
+                        'charge_to' => $details['charge_to'] ?? '',
+                        'charge_sched' => $details['charge_sched'] ?? '',
+                        'settle_unsettle' => '',
+                        'txn_count' => 0,
+                        'total_principal' => 0,
+                        'charge_to_customer' => 0,
+                        'charge_to_partner' => 0,
+                        'total_adjustment' => $adjustments[$pid],
+                        'settled_count' => 0,
+                        'unsettled_count' => 0,
+                        'last_transaction_date' => null,
+                        'first_transaction_date' => null,
+                        'pcso_region' => $region_label,
+                        'is_pcso_landbank' => true
+                    ];
+                }
+                $dstmt->close();
+            }
+        }
+    }
+
+    return $entries;
+}
+
 /**
  * Fetch aggregated settlement totals for a partner, optionally filtered by regions
- * and/or an extra raw WHERE clause (e.g. account_no / address filters for FDC Ormoc/Tacloban).
- * Returns the same structure used in $combined_data entries, or null if no data.
+ * and/or an extra raw WHERE clause.
  */
 function getPartnerTotalsByRegions(
     mysqli $conn,
@@ -780,7 +1157,6 @@ function getPartnerTotalsByRegions(
         }
     }
 
-    // Extra raw WHERE (no extra params – used for LIKE filters on account_no/address)
     if (!empty($extra_where)) {
         $where_regular[] = $extra_where;
         $where_adjustment[] = $extra_where;
@@ -844,7 +1220,7 @@ function getPartnerTotalsByRegions(
             pm.bank,
             pm.settled_online_check as settlement_type,
             COALESCE(pm.charge_to, '') as charge_to,
-            COALESCE(pm.serviceCharge, '') as serviceCharge,
+            COALESCE(pm.charge_sched, '') as charge_sched,
             COUNT(*) as txn_count,
             SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
             SUM(bt.charge_to_customer) as charge_to_customer,
@@ -860,7 +1236,7 @@ function getPartnerTotalsByRegions(
         LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
         WHERE " . implode(" AND ", $where_regular) . "
         GROUP BY bt.partner_id_kpx, pm.partner_name, pm.partner_accName, pm.bank_accNumber, 
-                 pm.bank, pm.settled_online_check, pm.charge_to, pm.serviceCharge";
+                 pm.bank, pm.settled_online_check, pm.charge_to, pm.charge_sched";
 
     $adjustment_sql = "SELECT 
             bt.partner_id_kpx,
@@ -886,7 +1262,7 @@ function getPartnerTotalsByRegions(
                 'bank' => $row['bank'] ?? '',
                 'settlement_type' => $row['settlement_type'] ?? '',
                 'charge_to' => $row['charge_to'] ?? '',
-                'serviceCharge' => $row['serviceCharge'] ?? '',
+                'charge_sched' => $row['charge_sched'] ?? '',
                 'settle_unsettle' => '',
                 'txn_count' => (int)($row['txn_count'] ?? 0),
                 'total_principal' => (float)($row['total_principal'] ?? 0),
@@ -912,11 +1288,10 @@ function getPartnerTotalsByRegions(
             if ($entry !== null) {
                 $entry['total_adjustment'] = $adj;
             } else {
-                // Adjustment-only: still fetch partner details
                 $details_sql = "SELECT partner_name, partner_accName, bank_accNumber, bank,
                                        settled_online_check as settlement_type,
                                        COALESCE(charge_to, '') as charge_to,
-                                       COALESCE(serviceCharge, '') as serviceCharge
+                                       COALESCE(charge_sched, '') as charge_sched
                                 FROM masterdata.partner_masterfile WHERE partner_id_kpx = ?";
                 $dstmt = $conn->prepare($details_sql);
                 if ($dstmt) {
@@ -932,7 +1307,7 @@ function getPartnerTotalsByRegions(
                             'bank' => $details['bank'] ?? '',
                             'settlement_type' => $details['settlement_type'] ?? '',
                             'charge_to' => $details['charge_to'] ?? '',
-                            'serviceCharge' => $details['serviceCharge'] ?? '',
+                            'charge_sched' => $details['charge_sched'] ?? '',
                             'settle_unsettle' => '',
                             'txn_count' => 0,
                             'total_principal' => 0,
@@ -1117,7 +1492,20 @@ $reason_options = [
     <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js"></script>
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="css/settlement_bank.css?v=<?= time(); ?>">
-
+    <style>
+        /* Additional styles for Save Reasons button */
+        .btn-export.save-reasons {
+            background: #17a2b8;
+            color: #fff;
+        }
+        .btn-export.save-reasons:hover {
+            background: #138496;
+        }
+        .btn-export.save-reasons:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
 </head>
 <body>
     <!-- Loading Modal - Visible by default -->
@@ -1304,35 +1692,101 @@ $reason_options = [
                     $types_adjustment .= "s";
                 }
                 
-                if (!empty($selected_date_from) && !empty($selected_date_to)) {
+                // ============================================
+                // SPECIAL WEEKLY PARTNERS (457, 458, 459, 460)
+                // ============================================
+                if ($selected_is_special && !$include_special_partners) {
+                    $where_conditions_regular[] = "1=0";
+                    $where_conditions_adjustment[] = "1=0";
+                }
+                
+                if (empty($selected_partner) && !$include_special_partners) {
+                    $sp_placeholders = implode(',', array_fill(0, count($special_partners), '?'));
+                    $where_conditions_regular[] = "bt.partner_id_kpx NOT IN ($sp_placeholders)";
+                    $where_conditions_adjustment[] = "bt.partner_id_kpx NOT IN ($sp_placeholders)";
+                    foreach ($special_partners as $sp) {
+                        $params_regular[] = $sp;
+                        $types_regular .= "s";
+                        $params_adjustment[] = $sp;
+                        $types_adjustment .= "s";
+                    }
+                }
+                
+                // ============================================
+                // SPECIAL WEEK-BEFORE PARTNER (1005)
+                // ============================================
+                if ($selected_is_special_wb && !$include_special_wb_partners) {
+                    // Partner 1005 selected but date_to is not Tuesday → exclude
+                    $where_conditions_regular[] = "1=0";
+                    $where_conditions_adjustment[] = "1=0";
+                }
+                
+                if (empty($selected_partner) && !$include_special_wb_partners) {
+                    // No partner selected and date_to is not Tuesday → exclude 1005
+                    $wb_placeholders = implode(',', array_fill(0, count($special_wb_partners), '?'));
+                    $where_conditions_regular[] = "bt.partner_id_kpx NOT IN ($wb_placeholders)";
+                    $where_conditions_adjustment[] = "bt.partner_id_kpx NOT IN ($wb_placeholders)";
+                    foreach ($special_wb_partners as $wb) {
+                        $params_regular[] = $wb;
+                        $types_regular .= "s";
+                        $params_adjustment[] = $wb;
+                        $types_adjustment .= "s";
+                    }
+                }
+                
+                // ============================================
+                // DATE FILTERS
+                // ============================================
+                $use_special_dates = false;
+                if ($selected_is_special && $include_special_partners) {
+                    $use_special_dates = true;
+                }
+                
+                $use_special_wb_dates = false;
+                if ($selected_is_special_wb && $include_special_wb_partners) {
+                    $use_special_wb_dates = true;
+                }
+                
+                if ($use_special_dates) {
+                    $effective_date_from = $special_date_from;
+                    $effective_date_to = $special_date_to;
+                } elseif ($use_special_wb_dates) {
+                    $effective_date_from = $special_wb_date_from;
+                    $effective_date_to = $special_wb_date_to;
+                } else {
+                    $effective_date_from = $selected_date_from;
+                    $effective_date_to = $selected_date_to;
+                }
+                
+                if (!empty($effective_date_from) && !empty($effective_date_to)) {
                     $where_conditions_regular[] = "bt.datetime BETWEEN ? AND ?";
-                    $params_regular[] = $selected_date_from . ' 00:00:00';
-                    $params_regular[] = $selected_date_to . ' 23:59:59';
+                    $params_regular[] = $effective_date_from . ' 00:00:00';
+                    $params_regular[] = $effective_date_to . ' 23:59:59';
                     $types_regular .= "ss";
-                } elseif (!empty($selected_date_from)) {
+                } elseif (!empty($effective_date_from)) {
                     $where_conditions_regular[] = "bt.datetime >= ?";
-                    $params_regular[] = $selected_date_from . ' 00:00:00';
+                    $params_regular[] = $effective_date_from . ' 00:00:00';
                     $types_regular .= "s";
-                } elseif (!empty($selected_date_to)) {
+                } elseif (!empty($effective_date_to)) {
                     $where_conditions_regular[] = "bt.datetime <= ?";
-                    $params_regular[] = $selected_date_to . ' 23:59:59';
+                    $params_regular[] = $effective_date_to . ' 23:59:59';
                     $types_regular .= "s";
                 }
                 
                 $where_conditions_regular[] = "(bt.status IS NULL OR bt.status = '')";
                 
-                if (!empty($selected_date_from) && !empty($selected_date_to)) {
+                if (!empty($effective_date_from) && !empty($effective_date_to)) {
                     $where_conditions_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
-                    $params_adjustment[] = $selected_date_from . ' 00:00:00';
-                    $params_adjustment[] = $selected_date_to . ' 23:59:59';
+                    $params_adjustment[] = $effective_date_from . ' 00:00:00';
+                    $params_adjustment[] = $effective_date_to . ' 23:59:59';
                     $types_adjustment .= "ss";
-                } elseif (!empty($selected_date_from)) {
+                } elseif (!empty($effective_date_from)) {
                     $where_conditions_adjustment[] = "bt.cancellation_date >= ?";
-                    $params_adjustment[] = $selected_date_from . ' 00:00:00';
+                    $params_adjustment[] = $effective_date_from . ' 00:00:00';
                     $types_adjustment .= "s";
-                } elseif (!empty($selected_date_to)) {
+                } elseif (!empty($effective_date_to)) {
                     $where_conditions_adjustment[] = "bt.cancellation_date <= ?";
-                    $params_adjustment[] = $selected_date_to . ' 23:59:59';
+                    $params_adjustment[] = $effective_date_to . ' 23:59:59';
                     $types_adjustment .= "s";
                 }
                 
@@ -1346,7 +1800,7 @@ $reason_options = [
                     pm.bank,
                     pm.settled_online_check as settlement_type,
                     COALESCE(pm.charge_to, '') as charge_to,
-                    COALESCE(pm.serviceCharge, '') as serviceCharge,
+                    COALESCE(pm.charge_sched, '') as charge_sched,
                     COUNT(*) as txn_count,
                     SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
                     SUM(bt.charge_to_customer) as charge_to_customer,
@@ -1369,7 +1823,7 @@ $reason_options = [
                          pm.bank, 
                          pm.settled_online_check, 
                          pm.charge_to, 
-                         pm.serviceCharge";
+                         pm.charge_sched";
                 
                 $adjustment_sql = "SELECT 
                                         bt.partner_id_kpx,
@@ -1422,7 +1876,7 @@ $reason_options = [
                             'bank' => $row['bank'] ?? '',
                             'settlement_type' => $row['settlement_type'] ?? '',
                             'charge_to' => $row['charge_to'] ?? '',
-                            'serviceCharge' => $row['serviceCharge'] ?? '',
+                            'charge_sched' => $row['charge_sched'] ?? '',
                             'settle_unsettle' => $row['settle_unsettle'] ?? '',
                             'txn_count' => (int)($row['txn_count'] ?? 0),
                             'total_principal' => (float)($row['total_principal'] ?? 0),
@@ -1450,7 +1904,7 @@ $reason_options = [
                                                         bank,
                                                         settled_online_check as settlement_type,
                                                         COALESCE(charge_to, '') as charge_to,
-                                                        COALESCE(serviceCharge, '') as serviceCharge
+                                                        COALESCE(charge_sched, '') as charge_sched
                                                     FROM masterdata.partner_masterfile 
                                                     WHERE partner_id_kpx = ?";
                             $stmt = $conn->prepare($partner_details_sql);
@@ -1468,7 +1922,7 @@ $reason_options = [
                                         'bank' => $details['bank'] ?? '',
                                         'settlement_type' => $details['settlement_type'] ?? '',
                                         'charge_to' => $details['charge_to'] ?? '',
-                                        'serviceCharge' => $details['serviceCharge'] ?? '',
+                                        'charge_sched' => $details['charge_sched'] ?? '',
                                         'settle_unsettle' => '',
                                         'txn_count' => 0,
                                         'total_principal' => 0,
@@ -1485,13 +1939,133 @@ $reason_options = [
                         }
                     }
                 }
-                
+
                 // ------------------------------------------------
-                // Special: Split partner 256 (FDC Mindanao) into
-                // GENSAN and CDO rows based on bt.region
+                // SPECIAL: Handle partners 457, 458, 459 and 460
+                // ------------------------------------------------
+                if (!$include_special_partners) {
+                    foreach ($special_partners as $sp_id) {
+                        if (isset($combined_data[$sp_id])) {
+                            unset($combined_data[$sp_id]);
+                        }
+                    }
+                } else {
+                    foreach ($special_partners as $sp_id) {
+                        $should_process = isset($combined_data[$sp_id]) || $selected_partner === $sp_id;
+                        
+                        if (!$should_process) {
+                            continue;
+                        }
+                        
+                        $sp_bank = '';
+                        $sp_settlement = '';
+                        $sp_details_sql = "SELECT bank, settled_online_check FROM masterdata.partner_masterfile WHERE partner_id_kpx = ?";
+                        $sp_stmt = $conn->prepare($sp_details_sql);
+                        if ($sp_stmt) {
+                            $sp_stmt->bind_param("s", $sp_id);
+                            $sp_stmt->execute();
+                            $sp_result = $sp_stmt->get_result();
+                            if ($sp_row = $sp_result->fetch_assoc()) {
+                                $sp_bank = $sp_row['bank'] ?? '';
+                                $sp_settlement = $sp_row['settled_online_check'] ?? '';
+                            }
+                            $sp_stmt->close();
+                        }
+                        
+                        if (!isSpecialWeeklyPartner($sp_id, $sp_bank, $sp_settlement)) {
+                            continue;
+                        }
+                        
+                        unset($combined_data[$sp_id]);
+                        
+                        $sp_entry = getPartnerTotalsByRegions(
+                            $conn,
+                            $sp_id,
+                            $selected_bank,
+                            $selected_settlement_type,
+                            $special_date_from,
+                            $special_date_to,
+                            [],
+                            null
+                        );
+                        
+                        if ($sp_entry !== null) {
+                            $sp_entry['special_weekly'] = true;
+                            $sp_entry['special_date_from'] = $special_date_from;
+                            $sp_entry['special_date_to'] = $special_date_to;
+                            $combined_data[$sp_id] = $sp_entry;
+                        }
+                    }
+                }
+
+                // ------------------------------------------------
+                // SPECIAL: Handle partner 1005 (BDO/ONLINE)
+                // Only include when date_to falls on a Tuesday.
+                // When included, re-fetch with Monday→Sunday range (week before the Tuesday).
+                // ------------------------------------------------
+                if (!$include_special_wb_partners) {
+                    // date_to is not Tuesday → remove partner 1005 from results
+                    foreach ($special_wb_partners as $wb_id) {
+                        if (isset($combined_data[$wb_id])) {
+                            unset($combined_data[$wb_id]);
+                        }
+                    }
+                } else {
+                    // date_to IS Tuesday - re-fetch partner 1005 with Mon→Sun range
+                    foreach ($special_wb_partners as $wb_id) {
+                        $should_process = isset($combined_data[$wb_id]) || $selected_partner === $wb_id;
+                        
+                        if (!$should_process) {
+                            continue;
+                        }
+                        
+                        // Verify bank + settlement type
+                        $wb_bank = '';
+                        $wb_settlement = '';
+                        $wb_details_sql = "SELECT bank, settled_online_check FROM masterdata.partner_masterfile WHERE partner_id_kpx = ?";
+                        $wb_stmt = $conn->prepare($wb_details_sql);
+                        if ($wb_stmt) {
+                            $wb_stmt->bind_param("s", $wb_id);
+                            $wb_stmt->execute();
+                            $wb_result = $wb_stmt->get_result();
+                            if ($wb_row = $wb_result->fetch_assoc()) {
+                                $wb_bank = $wb_row['bank'] ?? '';
+                                $wb_settlement = $wb_row['settled_online_check'] ?? '';
+                            }
+                            $wb_stmt->close();
+                        }
+                        
+                        if (!isSpecialWeekBeforePartner($wb_id, $wb_bank, $wb_settlement)) {
+                            continue;
+                        }
+                        
+                        // Remove existing entry and re-fetch
+                        unset($combined_data[$wb_id]);
+                        
+                        $wb_entry = getPartnerTotalsByRegions(
+                            $conn,
+                            $wb_id,
+                            $selected_bank,
+                            $selected_settlement_type,
+                            $special_wb_date_from,
+                            $special_wb_date_to,
+                            [],
+                            null
+                        );
+                        
+                        if ($wb_entry !== null) {
+                            $wb_entry['special_week_before'] = true;
+                            $wb_entry['special_wb_date_from'] = $special_wb_date_from;
+                            $wb_entry['special_wb_date_to'] = $special_wb_date_to;
+                            $combined_data[$wb_id] = $wb_entry;
+                        }
+                    }
+                }
+
+                // ------------------------------------------------
+                // Special: Split partner 256 (FDC Mindanao) into GENSAN and CDO
                 // ------------------------------------------------
                 if (isset($combined_data['256'])) {
-                    $base_256 = $combined_data['256'];
                     unset($combined_data['256']);
 
                     $fdc_sets = getFdcMindanaoRegionSets();
@@ -1509,21 +2083,15 @@ $reason_options = [
                             $entry['partner_name'] = 'FDC - ' . $set['suffix'];
                             $entry['partner_accName'] = $set['account_name'];
                             $entry['bank_accNumber'] = $set['account_number'];
-                            $entry['fdc_split'] = $key; // GENSAN or CDO
+                            $entry['fdc_split'] = $key;
                             $entry['fdc_regions'] = $set['regions'];
-                            // Use unique key so both rows appear
                             $combined_data['256-' . $key] = $entry;
                         }
                     }
                 }
 
                 // ------------------------------------------------
-                // Special: Split partner 257 (FAST DISTRIBUTION CORPORATION (VISAYAS)) into
-                // BDO-Panay + Chinabank (Bohol / Ormoc / Samar / Tacloban) rows
-                // BDO (default bank in masterfile) → FAST DISTRIBUTION CORPORATION (VISAYAS)
-                //   regions: R10 PANAY NORTH, R11 PANAY CENTRAL
-                // CHINABANK → FDC BOHOL (R05), FDC ORMOC (account/address), FDC SAMAR (R07), FDC TACLOBAN (account/address)
-                // Triggers when partner 257 is selected or already appears in results.
+                // Special: Split partner 257
                 // ------------------------------------------------
                 $selected_bank_upper_257 = strtoupper(trim($selected_bank));
                 $is_bdo_bank_257 = !empty($selected_bank) && (
@@ -1543,8 +2111,6 @@ $reason_options = [
                     $fdc257_sets = getPartner257Sets();
 
                     foreach ($fdc257_sets as $key => $set) {
-                        // Include based on selected bank filter (if any).
-                        // No bank selected → show all splits.
                         $include = true;
                         if (!empty($selected_bank)) {
                             if ($set['bank_key'] === 'BDO' && !$is_bdo_bank_257) {
@@ -1558,9 +2124,6 @@ $reason_options = [
                             continue;
                         }
 
-                        // For Chinabank splits ignore pm.bank (masterfile only has BDO for this partner)
-                        // For BDO-Panay also pass empty bank so region filter alone drives the data
-                        // (avoids missing rows if bank name string differs slightly)
                         $bank_for_query = '';
 
                         $entry = getPartnerTotalsByRegions(
@@ -1587,20 +2150,13 @@ $reason_options = [
                             $entry['fdc257_split'] = $key;
                             $entry['fdc257_regions'] = $set['regions'];
                             $entry['fdc257_extra_where'] = $set['extra_where'] ?? null;
-                            // Use unique key so multiple rows appear
                             $combined_data['257-' . $key] = $entry;
                         }
                     }
                 }
 
                 // ------------------------------------------------
-                // Special: Split partner 259 (FAST UNIMERCHANTS INC.) into
-                // BPI, BDO-Negros and BDO-Cebu/Bohol rows based on bt.region
-                // (masterfile only has BPI; BDO splits skip pm.bank filter)
-                // Triggers when:
-                //   - partner 259 is selected, OR
-                //   - partner 259 already appears in results, OR
-                //   - bank filter is BPI or BDO (so bank-only search still shows the splits)
+                // Special: Split partner 259
                 // ------------------------------------------------
                 $selected_bank_upper = strtoupper(trim($selected_bank));
                 $is_bpi_bank = !empty($selected_bank) && (
@@ -1615,8 +2171,6 @@ $reason_options = [
                     $fui_sets = getFuiUnimerchantsRegionSets();
 
                     foreach ($fui_sets as $key => $set) {
-                        // Include based on selected bank filter (if any).
-                        // No bank selected → show all three splits.
                         $include = true;
                         if (!empty($selected_bank)) {
                             if ($set['bank_key'] === 'BPI' && !$is_bpi_bank) {
@@ -1630,12 +2184,10 @@ $reason_options = [
                             continue;
                         }
 
-                        // Pass empty bank so we do not filter on pm.bank
-                        // (partner_masterfile only registers BPI for this partner)
                         $entry = getPartnerTotalsByRegions(
                             $conn,
                             '259',
-                            '', // ignore pm.bank
+                            '',
                             $selected_settlement_type,
                             $selected_date_from,
                             $selected_date_to,
@@ -1650,8 +2202,59 @@ $reason_options = [
                                 : 'BDO UNIBANK, INC.';
                             $entry['fui_split'] = $key;
                             $entry['fui_regions'] = $set['regions'];
-                            // Use unique key so multiple rows appear
                             $combined_data['259-' . $key] = $entry;
+                        }
+                    }
+                }
+
+                // ------------------------------------------------
+                // Special: LANDBANK (PCSO)
+                // ------------------------------------------------
+                $selected_bank_upper_pcso = strtoupper(trim($selected_bank));
+                $is_landbank_pcso = !empty($selected_bank) && (
+                    strpos($selected_bank_upper_pcso, 'LANDBANK') !== false ||
+                    strpos($selected_bank_upper_pcso, 'PCSO') !== false
+                );
+
+                $pcso_partner_ids = ['631', '648', '650', '651', '653', '655', '656', '658', '660', '662', '670', '680'];
+                $has_pcso_partners = false;
+                foreach ($pcso_partner_ids as $pcso_id) {
+                    if (isset($combined_data[$pcso_id])) {
+                        $has_pcso_partners = true;
+                        break;
+                    }
+                }
+
+                $selected_is_pcso = in_array($selected_partner, $pcso_partner_ids);
+
+                if ($is_landbank_pcso || $has_pcso_partners || $selected_is_pcso) {
+                    foreach ($pcso_partner_ids as $pcso_id) {
+                        if (isset($combined_data[$pcso_id])) {
+                            unset($combined_data[$pcso_id]);
+                        }
+                    }
+
+                    $pcso_sets = getPcsoLandbankSets();
+
+                    foreach ($pcso_sets as $key => $set) {
+                        if (!empty($selected_partner) && !in_array($selected_partner, $set['partner_ids'])) {
+                            continue;
+                        }
+
+                        $entries = getPcsoLandbankPartners(
+                            $conn,
+                            $set['partner_ids'],
+                            $selected_bank,
+                            $selected_settlement_type,
+                            $selected_date_from,
+                            $selected_date_to,
+                            $set['region_label']
+                        );
+                        
+                        foreach ($entries as $entry) {
+                            if ($entry !== null) {
+                                $combined_data['pcso-' . $entry['partner_id_kpx']] = $entry;
+                            }
                         }
                     }
                 }
@@ -1675,12 +2278,20 @@ $reason_options = [
                         ];
                         
                         $charge_to = strtoupper(trim($a['charge_to'] ?? ''));
-                        $serviceCharge = strtoupper(trim($a['serviceCharge'] ?? ''));
-                        $key_a = $charge_to . '_' . $serviceCharge;
+                        $charge_sched = normalizeChargeSched($a['charge_sched'] ?? '');
+                        if (empty($charge_to) || empty($charge_sched)) {
+                            $key_a = 'UNCATEGORIZED';
+                        } else {
+                            $key_a = $charge_to . '_' . $charge_sched;
+                        }
                         
                         $charge_to_b = strtoupper(trim($b['charge_to'] ?? ''));
-                        $serviceCharge_b = strtoupper(trim($b['serviceCharge'] ?? ''));
-                        $key_b = $charge_to_b . '_' . $serviceCharge_b;
+                        $charge_sched_b = normalizeChargeSched($b['charge_sched'] ?? '');
+                        if (empty($charge_to_b) || empty($charge_sched_b)) {
+                            $key_b = 'UNCATEGORIZED';
+                        } else {
+                            $key_b = $charge_to_b . '_' . $charge_sched_b;
+                        }
                         
                         $order_a = $order[$key_a] ?? 12;
                         $order_b = $order[$key_b] ?? 12;
@@ -1774,15 +2385,28 @@ $reason_options = [
                             if (empty($partner_id)) {
                                 continue;
                             }
-                            // Region-filtered daily breakdown for FDC (256), FUI (259), or Partner 257 (Visayas)
+                            
+                            $daily_date_from = $selected_date_from;
+                            $daily_date_to = $selected_date_to;
+                            if (!empty($row['special_weekly'])) {
+                                $daily_date_from = $row['special_date_from'] ?? $selected_date_from;
+                                $daily_date_to = $row['special_date_to'] ?? $selected_date_to;
+                            } elseif (!empty($row['special_week_before'])) {
+                                $daily_date_from = $row['special_wb_date_from'] ?? $selected_date_from;
+                                $daily_date_to = $row['special_wb_date_to'] ?? $selected_date_to;
+                            }
+                            
                             $regions = $row['fdc_regions'] ?? $row['fui_regions'] ?? $row['fdc257_regions'] ?? [];
                             $extra_where = $row['fdc257_extra_where'] ?? null;
+                            
                             if (!empty($row['fdc_split'])) {
                                 $cache_key = $partner_id . '-' . $row['fdc_split'];
                             } elseif (!empty($row['fui_split'])) {
                                 $cache_key = $partner_id . '-' . $row['fui_split'];
                             } elseif (!empty($row['fdc257_split'])) {
                                 $cache_key = $partner_id . '-' . $row['fdc257_split'];
+                            } elseif (!empty($row['is_pcso_landbank'])) {
+                                $cache_key = 'pcso-' . $partner_id;
                             } else {
                                 $cache_key = $partner_id;
                             }
@@ -1791,8 +2415,6 @@ $reason_options = [
                                 continue;
                             }
 
-                            // For FUI (259) and FDC Visayas (257) splits, ignore pm.bank filter
-                            // (masterfile only registers one bank for these partners)
                             $bank_for_daily = (!empty($row['fui_split']) || !empty($row['fdc257_split'])) ? '' : $selected_bank;
 
                             $daily_data = getDailyBreakdown(
@@ -1800,8 +2422,8 @@ $reason_options = [
                                 $partner_id,
                                 $bank_for_daily,
                                 $selected_settlement_type,
-                                $selected_date_from,
-                                $selected_date_to,
+                                $daily_date_from,
+                                $daily_date_to,
                                 $regions,
                                 $extra_where
                             );
@@ -1813,40 +2435,42 @@ $reason_options = [
                     
                     foreach ($data_array as $row) {
                         $charge_to = strtoupper(trim($row['charge_to'] ?? ''));
-                        $serviceCharge = strtoupper(trim($row['serviceCharge'] ?? ''));
+                        // Normalize charge_sched (PER TRANSACTION -> DAILY; NOT APPLICABLE / NO-BANK-SETTLEMENT / '' -> '')
+                        $charge_sched = normalizeChargeSched($row['charge_sched'] ?? '');
                         
                         $group_key = null;
                         
-                        if (empty($charge_to)) {
+                        if (empty($charge_to) || empty($charge_sched)) {
+                            // Any empty charge_to OR empty/normalized-to-empty charge_sched => UNCATEGORIZED
                             $group_key = 'UNCATEGORIZED';
                         } elseif ($charge_to === 'CUSTOMER') {
-                            if ($serviceCharge === 'DAILY') {
+                            if ($charge_sched === 'DAILY') {
                                 $group_key = 'CHARGE BY CUSTOMER DAILY';
-                            } elseif ($serviceCharge === 'WEEKLY') {
+                            } elseif ($charge_sched === 'WEEKLY') {
                                 $group_key = 'CHARGE BY CUSTOMER WEEKLY';
-                            } elseif ($serviceCharge === 'MONTHLY') {
+                            } elseif ($charge_sched === 'MONTHLY') {
                                 $group_key = 'CHARGE BY CUSTOMER MONTHLY';
                             } else {
                                 $group_key = 'UNCATEGORIZED';
                             }
                         } elseif ($charge_to === 'PARTNER') {
-                            if ($serviceCharge === 'DAILY') {
+                            if ($charge_sched === 'DAILY') {
                                 $group_key = 'CHARGE BY PARTNER DAILY';
-                            } elseif ($serviceCharge === 'WEEKLY') {
+                            } elseif ($charge_sched === 'WEEKLY') {
                                 $group_key = 'CHARGE BY PARTNER WEEKLY';
-                            } elseif ($serviceCharge === 'SEMI-MONTHLY') {
+                            } elseif ($charge_sched === 'SEMI-MONTHLY') {
                                 $group_key = 'CHARGE BY PARTNER SEMI MONTHLY';
-                            } elseif ($serviceCharge === 'MONTHLY') {
+                            } elseif ($charge_sched === 'MONTHLY') {
                                 $group_key = 'CHARGE BY PARTNER MONTHLY';
                             } else {
                                 $group_key = 'UNCATEGORIZED';
                             }
                         } elseif ($charge_to === 'BOTH') {
-                            if ($serviceCharge === 'DAILY') {
+                            if ($charge_sched === 'DAILY') {
                                 $group_key = 'CHARGE BY BOTH DAILY';
-                            } elseif ($serviceCharge === 'WEEKLY') {
+                            } elseif ($charge_sched === 'WEEKLY') {
                                 $group_key = 'CHARGE BY BOTH WEEKLY';
-                            } elseif ($serviceCharge === 'MONTHLY') {
+                            } elseif ($charge_sched === 'MONTHLY') {
                                 $group_key = 'CHARGE BY BOTH MONTHLY';
                             } else {
                                 $group_key = 'UNCATEGORIZED';
@@ -1867,7 +2491,7 @@ $reason_options = [
                         
                         $settlement_amount = calculateSettlementAmount(
                             $charge_to,
-                            $serviceCharge,
+                            $charge_sched,
                             $principal,
                             $charge_to_customer,
                             $charge_to_partner,
@@ -1906,9 +2530,12 @@ $reason_options = [
                             $daily_cache_key = $partner_id . '-' . $row['fui_split'];
                         } elseif (!empty($row['fdc257_split'])) {
                             $daily_cache_key = $partner_id . '-' . $row['fdc257_split'];
+                        } elseif (!empty($row['is_pcso_landbank'])) {
+                            $daily_cache_key = 'pcso-' . $partner_id;
                         } else {
                             $daily_cache_key = $partner_id;
                         }
+                        
                         $daily_data = $has_date_range && isset($daily_breakdown_cache[$daily_cache_key]) 
                             ? $daily_breakdown_cache[$daily_cache_key] 
                             : [];
@@ -1916,10 +2543,15 @@ $reason_options = [
                         
                         $is_excluded = $is_fully_settled;
                         
+                        $display_partner_name = $row['partner_name'] ?? $row['partner_id_kpx'];
+                        if (!empty($row['is_pcso_landbank']) && !empty($row['pcso_region'])) {
+                            $display_partner_name = $row['pcso_region'] . ' - ' . $display_partner_name;
+                        }
+                        
                         $groups[$group_key]['rows'][] = [
                             'row_index' => $row_index,
                             'partner_id' => $partner_id,
-                            'partner_name' => $row['partner_name'] ?? $row['partner_id_kpx'],
+                            'partner_name' => $display_partner_name,
                             'account_name' => $row['partner_accName'] ?? 'N/A',
                             'account_number' => $row['bank_accNumber'] ?? 'N/A',
                             'txn_count' => $txn_count,
@@ -1937,7 +2569,15 @@ $reason_options = [
                             'has_daily_breakdown' => $has_date_range,
                             'daily_html' => $daily_html,
                             'charge_to' => $charge_to,
-                            'service_charge' => $serviceCharge
+                            'charge_sched' => $charge_sched,
+                            'is_pcso_landbank' => !empty($row['is_pcso_landbank']),
+                            'pcso_region' => $row['pcso_region'] ?? '',
+                            'special_weekly' => !empty($row['special_weekly']),
+                            'special_date_from' => $row['special_date_from'] ?? null,
+                            'special_date_to' => $row['special_date_to'] ?? null,
+                            'special_week_before' => !empty($row['special_week_before']),
+                            'special_wb_date_from' => $row['special_wb_date_from'] ?? null,
+                            'special_wb_date_to' => $row['special_wb_date_to'] ?? null
                         ];
                         $row_index++;
                     }
@@ -1984,7 +2624,6 @@ $reason_options = [
                             <span class="table-badge" id="currentCadBadge">
                                 <i class="fas fa-hashtag"></i> CAD No.: <?php echo htmlspecialchars($cad_number); ?>
                             </span>
-                            <!-- Hidden input so JS can always read the CURRENT CAD after AJAX filter -->
                             <input type="hidden" id="currentCadNo" value="<?php echo htmlspecialchars($cad_number); ?>">
                             <input type="hidden" id="cadGenerated" value="<?php echo $cad_generated ? 'true' : 'false'; ?>">
                             <?php endif; ?>
@@ -1997,6 +2636,16 @@ $reason_options = [
                                 if (!empty($selected_date_to)) $date_range .= ' To: ' . date('M d, Y', strtotime($selected_date_to));
                                 echo htmlspecialchars($date_range);
                                 ?>
+                            </span>
+                            <?php endif; ?>
+                            <?php if ($include_special_partners && !empty($special_date_from) && !empty($special_date_to)): ?>
+                            <span class="table-badge" style="background: #856404; color: #fff;">
+                                <i class="fas fa-calendar-week"></i> Weekly Capture for LDS transactions: <?php echo date('M d, Y', strtotime($special_date_from)); ?> → <?php echo date('M d, Y', strtotime($special_date_to)); ?>
+                            </span>
+                            <?php endif; ?>
+                            <?php if ($include_special_wb_partners && !empty($special_wb_date_from) && !empty($special_wb_date_to)): ?>
+                            <span class="table-badge" style="background: #856404; color: #fff;">
+                                <i class="fas fa-calendar-week"></i> Week-Before Capture (Mon-Sun) for SHOPEE - LDS: <?php echo date('M d, Y', strtotime($special_wb_date_from)); ?> → <?php echo date('M d, Y', strtotime($special_wb_date_to)); ?>
                             </span>
                             <?php endif; ?>
                             <?php if (!$cad_generated && !empty($selected_partner)): ?>
@@ -2028,8 +2677,27 @@ $reason_options = [
                         <div class="alert-warning-custom">
                             <i class="fas fa-exclamation-triangle"></i>
                             <strong>Warning:</strong> 
-                            Some partners do not have a valid charge type configured. These are shown in the 
-                            <strong>"UNCATEGORIZED"</strong> group. Please update the partner masterfile to properly categorize these partners.
+                            Partners under <strong>"UNCATEGORIZED"</strong> group have no charge types. Please update the partner masterfile to properly categorize these partners.
+                        </div>
+                        <?php endif; ?>
+                        
+                        <?php if ($include_special_partners): ?>
+                        <div class="alert-info-custom" style="background: #fff3cd; border-color: #ffc107; color: #856404;">
+                            <i class="fas fa-calendar-week"></i>
+                            <strong>Weekly Settlement Notice:</strong> 
+                           LDS Partners 457, 458, 459 (CHINABANK/CHECK) and 460 (BDO/ONLINE) settle weekly on Tuesdays. 
+                            Transactions captured: <strong><?php echo date('M d, Y', strtotime($special_date_from)); ?></strong> 
+                            (Wednesday) → <strong><?php echo date('M d, Y', strtotime($special_date_to)); ?></strong> (Tuesday).
+                        </div>
+                        <?php endif; ?>
+                        
+                        <?php if ($include_special_wb_partners): ?>
+                        <div class="alert-info-custom" style="background: #fff3cd; border-color: #ffc107; color: #856404;">
+                            <i class="fas fa-calendar-week"></i>
+                            <strong>Week-Before Settlement Notice:</strong> 
+                            Partner SHOPEE - LSD 1005 (BDO/ONLINE) settles on Tuesdays but captures the full week <strong>before</strong> the Tuesday. 
+                            Transactions captured: <strong><?php echo date('M d, Y', strtotime($special_wb_date_from)); ?></strong> 
+                            (Monday) → <strong><?php echo date('M d, Y', strtotime($special_wb_date_to)); ?></strong> (Sunday).
                         </div>
                         <?php endif; ?>
                         
@@ -2099,7 +2767,6 @@ $reason_options = [
                                         $is_settled = $row_data['is_fully_settled'];
                                         $is_partial = $row_data['is_partially_settled'];
                                         $status_class = $is_settled ? 'settled' : ($is_partial ? 'partial' : 'unsettled');
-                                        $status_text = $is_settled ? 'Settled' : ($is_partial ? 'Partial' : 'Unsettled');
                                     ?>
                                         <tr class="data-row <?php echo $row_data['is_negative'] ? 'negative-row' : ''; ?> <?php echo $is_settled ? 'settled-row' : ($is_partial ? 'partial-row' : 'unsettled-row'); ?>" 
                                             data-row-index="<?php echo $row_data['row_index']; ?>"
@@ -2113,7 +2780,11 @@ $reason_options = [
                                             data-partner-name="<?php echo htmlspecialchars($row_data['partner_name']); ?>"
                                             data-is-settled="<?php echo $is_settled ? 'true' : 'false'; ?>"
                                             data-charge-to="<?php echo $row_data['charge_to']; ?>"
-                                            data-service-charge="<?php echo $row_data['service_charge']; ?>">
+                                            data-charge-sched="<?php echo $row_data['charge_sched']; ?>"
+                                            data-is-pcso="<?php echo $row_data['is_pcso_landbank'] ? 'true' : 'false'; ?>"
+                                            data-pcso-region="<?php echo htmlspecialchars($row_data['pcso_region']); ?>"
+                                            data-special-weekly="<?php echo $row_data['special_weekly'] ? 'true' : 'false'; ?>"
+                                            data-special-week-before="<?php echo $row_data['special_week_before'] ? 'true' : 'false'; ?>">
                                             <td class="center checkbox-cell">
                                                 <input type="checkbox" class="row-checkbox" 
                                                        data-row-index="<?php echo $row_data['row_index']; ?>"
@@ -2129,23 +2800,28 @@ $reason_options = [
                                                           onclick="toggleDailyBreakdown(this, <?php echo $row_data['row_index']; ?>)">
                                                         <i class="fas fa-chevron-down"></i>
                                                     </span>
-                                                <?php elseif ($row_data['has_daily_breakdown'] && empty($row_data['daily_html'])): ?>
-                                                    <span class="chevron-placeholder"></span>
                                                 <?php else: ?>
                                                     <span class="chevron-placeholder"></span>
                                                 <?php endif; ?>
                                             </td>
                                             <td class="partner-name-cell">
                                                 <?php echo htmlspecialchars($row_data['partner_name']); ?>
-                                                <?php if ($is_uncategorized): ?>
-                                                    <!-- <span style="font-size: 10px; color: #856404; margin-left: 5px;">
-                                                        <i class="fas fa-exclamation-circle"></i>
-                                                    </span> -->
+                                                <?php if ($row_data['special_weekly']): ?>
+                                                    <span style="font-size: 10px; color: #856404; margin-left: 5px;" 
+                                                          title="Weekly capture: <?php echo htmlspecialchars($row_data['special_date_from']); ?> → <?php echo htmlspecialchars($row_data['special_date_to']); ?>">
+                                                        <i class="fas fa-calendar-week"></i> Weekly
+                                                    </span>
                                                 <?php endif; ?>
-                                                <?php if ($is_both): ?>
-                                                    <!-- <span style="font-size: 10px; color: #0c5460; margin-left: 5px;">
-                                                        <i class="fas fa-handshake"></i>
-                                                    </span> -->
+                                                <?php if (!empty($row_data['special_week_before'])): ?>
+                                                    <span style="font-size: 10px; color: #856404; margin-left: 5px;" 
+                                                          title="Week-before capture: <?php echo htmlspecialchars($row_data['special_wb_date_from']); ?> (Mon) → <?php echo htmlspecialchars($row_data['special_wb_date_to']); ?> (Sun)">
+                                                        <i class="fas fa-calendar-week"></i> Weekly (Mon–Sun)
+                                                    </span>
+                                                <?php endif; ?>
+                                                <?php if ($row_data['is_pcso_landbank']): ?>
+                                                    <span style="font-size: 10px; color: #0c5460; margin-left: 5px;">
+                                                        <i class="fas fa-map-marker-alt"></i>
+                                                    </span>
                                                 <?php endif; ?>
                                             </td>
                                             <td><?php echo htmlspecialchars($row_data['account_name']); ?></td>
@@ -2294,6 +2970,9 @@ $reason_options = [
                             <button class="btn-export pdf" onclick="exportToPDF()">
                                 <i class="fa-solid fa-file-pdf"></i> Export PDF
                             </button>
+                            <button class="btn-export save-reasons" onclick="saveReasons()" style="margin-left: 10px;">
+                                <i class="fas fa-save"></i> Save Reasons
+                            </button>
                             <button class="btn-export settle <?php echo !$cad_generated ? 'btn-disabled' : ''; ?>" 
                                     onclick="settleSelected()" 
                                     <?php echo !$cad_generated ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''; ?> 
@@ -2308,7 +2987,25 @@ $reason_options = [
                     echo '<div class="no-records">';
                     echo '<i class="fas fa-inbox"></i>';
                     echo '<p>No records found matching your filters.</p>';
-                    echo '<p style="font-size: 14px; margin-top: 5px;">Please try adjusting your filter criteria.</p>';
+                    
+                    if ($selected_is_special && !$include_special_partners) {
+                        echo '<p style="font-size: 14px; margin-top: 15px; color: #856404; background: #fff3cd; padding: 15px; border-radius: 6px;">';
+                        echo '<i class="fas fa-calendar-week"></i> <strong>Weekly Settlement Notice:</strong><br>';
+                        echo 'Partner(s) 457, 458, 459 (CHINABANK/CHECK) and 460 (BDO/ONLINE) only settle on <strong>Tuesdays</strong>.<br>';
+                        echo 'The selected "Transaction Date To" (<strong>' . htmlspecialchars($selected_date_to) . '</strong>) is not a Tuesday.<br>';
+                        echo 'Please select a Tuesday as the end date to view these partners.';
+                        echo '</p>';
+                    } elseif ($selected_is_special_wb && !$include_special_wb_partners) {
+                        echo '<p style="font-size: 14px; margin-top: 15px; color: #856404; background: #fff3cd; padding: 15px; border-radius: 6px;">';
+                        echo '<i class="fas fa-calendar-week"></i> <strong>Week-Before Settlement Notice:</strong><br>';
+                        echo 'Partner 1005 (BDO/ONLINE) only settles on <strong>Tuesdays</strong>.<br>';
+                        echo 'The selected "Transaction Date To" (<strong>' . htmlspecialchars($selected_date_to) . '</strong>) is not a Tuesday.<br>';
+                        echo 'Please select a Tuesday as the end date to view this partner.';
+                        echo '</p>';
+                    } else {
+                        echo '<p style="font-size: 14px; margin-top: 5px;">Please try adjusting your filter criteria.</p>';
+                    }
+                    
                     echo '</div>';
                 }
                 
@@ -2340,9 +3037,6 @@ $reason_options = [
     var stepInterval = null;
     var isPageLoaded = false;
     var reasonData = {};
-    
-    // NOTE: Do NOT store CAD number here from PHP – it becomes stale after AJAX filter.
-    // Always read the live value from #currentCadNo (updated with the results).
     
     $(document).ready(function() {
         var initialPartner = $('#partner').data('selected') || '';
@@ -2619,7 +3313,6 @@ $reason_options = [
             reasonSelect.prop('disabled', true);
             reasonSelect.val('');
             reasonSelect.css('opacity', '0.5');
-            // Remove stored reason
             var rowIndex = row.data('row-index');
             if (rowIndex !== undefined) {
                 delete reasonData[rowIndex];
@@ -2648,13 +3341,11 @@ $reason_options = [
         var isChecked = $(checkbox).prop('checked');
         var cadGenerated = $('#cadGenerated').val() === 'true';
         
-        // If CAD is not generated, only allow toggling settled rows
         $('.row-checkbox:not(:disabled)').each(function() {
             var row = $(this).closest('.data-row');
             var isSettled = row.data('is-settled') === true;
             
             if (!cadGenerated && !isSettled) {
-                // Don't toggle unsettled rows when CAD is invalid
                 return;
             }
             
@@ -2873,6 +3564,141 @@ $reason_options = [
         }).format(value);
     }
 
+    // ============================================
+    // SAVE REASONS FUNCTION
+    // ============================================
+    function saveReasons() {
+        var hasReasons = false;
+        for (var key in reasonData) {
+            if (reasonData.hasOwnProperty(key) && reasonData[key].reason) {
+                hasReasons = true;
+                break;
+            }
+        }
+        
+        if (!hasReasons) {
+            Swal.fire({
+                icon: 'info',
+                title: 'No Reasons to Save',
+                text: 'Please select reasons for unsettled transactions before saving.',
+                confirmButtonColor: '#17a2b8'
+            });
+            return;
+        }
+        
+        var partner = $('#partner').val() || '';
+        var bank = $('#bank').val() || '';
+        var settlementType = $('#settlement_type').val() || '';
+        var dateFrom = $('#date_from').val() || '';
+        var dateTo = $('#date_to').val() || '';
+        var rfpNo = $('#rfp_no').val().trim() || '';
+        
+        Swal.fire({
+            title: 'Save Reasons?',
+            html: `
+                <div style="text-align: left;">
+                    <p>You are about to save reasons for <strong>${Object.keys(reasonData).length}</strong> partner(s).</p>
+                    <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-top: 10px; max-height: 200px; overflow-y: auto;">
+                        ${Object.values(reasonData).map(r => 
+                            `<p style="margin: 5px 0;"><strong>Partner ID ${r.partner_id}:</strong> ${r.reason}</p>`
+                        ).join('')}
+                    </div>
+                    <p style="color: #0c5460; margin-top: 10px;">
+                        <i class="fas fa-info-circle"></i> 
+                        This will only update the "Reason Not Settled" field. Settlement status will NOT be changed.
+                    </p>
+                </div>
+            `,
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonColor: '#17a2b8',
+            cancelButtonColor: '#dc3545',
+            confirmButtonText: 'Yes, Save Reasons',
+            cancelButtonText: 'Cancel',
+            preConfirm: () => {
+                return new Promise((resolve) => {
+                    Swal.fire({
+                        title: 'Saving Reasons',
+                        html: 'Please wait while we save the reasons...',
+                        allowOutsideClick: false,
+                        allowEscapeKey: false,
+                        didOpen: () => {
+                            Swal.showLoading();
+                        }
+                    });
+                    
+                    var settledBy = '<?php echo addslashes($display_name); ?>';
+                    var reasonDataStr = JSON.stringify(reasonData);
+                    
+                    $.ajax({
+                        url: 'save_reasons.php',
+                        type: 'POST',
+                        data: {
+                            reason_data: reasonDataStr,
+                            saved_by: settledBy,
+                            partner_filter: partner,
+                            bank_filter: bank,
+                            settlement_type_filter: settlementType,
+                            date_from: dateFrom,
+                            date_to: dateTo,
+                            rfp_no: rfpNo
+                        },
+                        dataType: 'json',
+                        timeout: 60000,
+                        success: function(response) {
+                            if (response.success) {
+                                resolve({ success: true, message: response.message, data: response.data });
+                            } else {
+                                resolve({ success: false, message: response.message || 'Failed to save reasons.' });
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            var errorMsg = 'An error occurred while saving reasons.';
+                            if (status === 'timeout') {
+                                errorMsg = 'Request timed out. Please try again.';
+                            }
+                            resolve({ success: false, message: errorMsg });
+                        }
+                    });
+                });
+            }
+        }).then((result) => {
+            if (result.isConfirmed && result.value) {
+                if (result.value.success) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Reasons Saved Successfully',
+                        html: `
+                            <p>${result.value.message}</p>
+                            ${result.value.data ? `
+                                <div style="text-align: left; margin-top: 15px; background: #f8f9fa; padding: 15px; border-radius: 4px;">
+                                    <strong>Summary:</strong>
+                                    <ul style="margin-top: 10px; padding-left: 20px;">
+                                        <li>Reasons updated for: ${result.value.data.updated_count} transaction(s)</li>
+                                        <li>Saved by: ${result.value.data.saved_by}</li>
+                                        <li>Date: ${result.value.data.save_date}</li>
+                                    </ul>
+                                </div>
+                            ` : ''}
+                        `,
+                        confirmButtonColor: '#17a2b8'
+                    });
+                    
+                    reasonData = {};
+                    $('.reason-dropdown').prop('disabled', true).css('opacity', '0.5');
+                    
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Failed to Save Reasons',
+                        text: result.value.message,
+                        confirmButtonColor: '#dc3545'
+                    });
+                }
+            }
+        });
+    }
+
     function exportToExcel() {
         var rfpNo = $('#rfp_no').val().trim();
         if (!rfpNo) {
@@ -2947,7 +3773,6 @@ $reason_options = [
                 exportUrl += '&excluded_rows=' + encodeURIComponent(excludedRows.join(','));
             }
             
-            // Include reason data for excluded rows
             var reasonDataStr = JSON.stringify(reasonData);
             exportUrl += '&reason_data=' + encodeURIComponent(reasonDataStr);
             
@@ -3033,7 +3858,6 @@ $reason_options = [
                 exportUrl += '&excluded_rows=' + encodeURIComponent(excludedRows.join(','));
             }
             
-            // Include reason data for excluded rows
             var reasonDataStr = JSON.stringify(reasonData);
             exportUrl += '&reason_data=' + encodeURIComponent(reasonDataStr);
             
@@ -3049,7 +3873,6 @@ $reason_options = [
     // SETTLE FUNCTION - UPDATED (No page reload)
     // ============================================
     function settleSelected() {
-        // Check if CAD is valid
         var cadGenerated = $('#cadGenerated').val() === 'true';
         if (!cadGenerated) {
             Swal.fire({
@@ -3061,7 +3884,6 @@ $reason_options = [
             return;
         }
         
-        // Get RFP No. from input
         var rfpNo = $('#rfp_no').val().trim();
         
         if (!rfpNo) {
@@ -3074,10 +3896,8 @@ $reason_options = [
             return;
         }
         
-        // Read the CURRENT CAD number from the results area (survives AJAX filter)
         var cadNo = $('#currentCadNo').val() || '';
         
-        // Fallback – extract from the badge text if the hidden input is missing
         if (!cadNo) {
             var badgeText = $('#currentCadBadge').text() || $('.table-badge:contains("CAD No.")').first().text() || '';
             var match = badgeText.match(/CAD No\.:\s*([A-Z0-9\-]+)/i);
@@ -3096,7 +3916,6 @@ $reason_options = [
             return;
         }
         
-        // Get all checked rows that are NOT settled
         var checkedRows = [];
         var totalVolume = 0;
         var totalSettlement = 0;
@@ -3131,7 +3950,6 @@ $reason_options = [
             }
         });
         
-        // Check for unchecked rows with reasons
         $('.data-row').each(function() {
             var checkbox = $(this).find('.row-checkbox');
             var isSettled = $(this).data('is-settled') === true;
@@ -3232,7 +4050,6 @@ $reason_options = [
                     var dateFrom = $('#date_from').val() || '';
                     var dateTo = $('#date_to').val() || '';
                     
-                    // Prepare reason data for unsettled rows
                     var reasonDataStr = JSON.stringify(reasonData);
                     
                     $.ajax({
@@ -3272,38 +4089,30 @@ $reason_options = [
         }).then((result) => {
             if (result.isConfirmed && result.value) {
                 if (result.value.success) {
-                    // Update the UI to reflect settlement changes WITHOUT reloading the page
                     var settledPartnerIds = result.value.partnerIds || [];
                     
-                    // 1. Mark the settled rows as settled in the UI
                     $('.data-row').each(function() {
                         var partnerId = $(this).data('partner-id');
                         if (settledPartnerIds.includes(partnerId)) {
-                            // Update data attribute
                             $(this).data('is-settled', true);
                             
-                            // Update checkbox - disable and check it
                             var checkbox = $(this).find('.row-checkbox');
                             checkbox.prop('disabled', true);
                             checkbox.prop('checked', true);
                             
-                            // Update status badge
                             var statusCell = $(this).find('.status-badge');
                             statusCell.removeClass('unsettled partial');
                             statusCell.addClass('settled');
                             statusCell.html('<i class="fas fa-check-circle"></i> Settled');
                             
-                            // Update reason dropdown - disable and hide
                             var reasonSelect = $(this).find('.reason-dropdown');
                             reasonSelect.prop('disabled', true);
                             reasonSelect.val('');
                             reasonSelect.css('opacity', '0.5');
                             
-                            // Update row styling
                             $(this).removeClass('unsettled-row partial-row');
                             $(this).addClass('settled-row');
                             
-                            // Remove from reason data
                             var rowIndex = $(this).data('row-index');
                             if (rowIndex !== undefined) {
                                 delete reasonData[rowIndex];
@@ -3311,10 +4120,8 @@ $reason_options = [
                         }
                     });
                     
-                    // 2. Recalculate all totals
                     updateTotals();
                     
-                    // 3. Show success message
                     Swal.fire({
                         icon: 'success',
                         title: 'Settlement Successful',

@@ -172,7 +172,7 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
                 font-family: 'Great Vibes', cursive !important;
                 font-size: 1.2em !important;
                 -webkit-print-color-adjust: exact !important;
-                color-adjust: exact !important;
+                print-color-adjust: exact !important;
             }
         }
 

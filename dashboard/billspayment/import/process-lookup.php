@@ -1,4 +1,5 @@
 ﻿<?php
+// process-lookup.php
 require_once __DIR__ . '/../../../config/config.php';
 header('Content-Type: application/json');
 
@@ -222,69 +223,168 @@ function resolveBranch($conn, $row, $isKP7) {
     ];
 }
 
+/**
+ * Resolve partner using (in order):
+ *   1) partner_id_kpx (exact)
+ *   2) partner_name (case-insensitive exact, then LIKE) - skipped if "ALL PARTNERS"
+ *   3) partner_id (fallback)
+ * Returns the resolved partner row or null.
+ */
+function resolvePartnerBySource($conn, $row) {
+    $partnerIdKpx = isset($row['partner_id_kpx']) ? trim((string)$row['partner_id_kpx']) : '';
+    $partnerName  = isset($row['partner_name'])     ? trim((string)$row['partner_name'])     : '';
+    $partnerId    = isset($row['partner_id'])       ? trim((string)$row['partner_id'])       : '';
+
+    // 1) partner_id_kpx exact match
+    if ($partnerIdKpx !== '' && $partnerIdKpx !== 'Not Found') {
+        $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
+                                FROM masterdata.partner_masterfile 
+                                WHERE partner_id_kpx = ? LIMIT 1");
+        if ($stmt) {
+            $stmt->bind_param("s", $partnerIdKpx);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            if ($pData = $res->fetch_assoc()) {
+                $stmt->close();
+                return $pData;
+            }
+            $stmt->close();
+        }
+    }
+
+    // 2) partner_name exact / case-insensitive match (new KPX variants)
+    //    Skip if the name is a wildcard placeholder.
+    $partnerNameUpper = strtoupper($partnerName);
+    if (
+        $partnerName !== '' &&
+        $partnerName !== 'Not Found' &&
+        $partnerNameUpper !== 'ALL PARTNERS'
+    ) {
+        $normalized = strtoupper(preg_replace('/\s+/', ' ', trim($partnerName)));
+
+        $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
+                                FROM masterdata.partner_masterfile 
+                                WHERE UPPER(REPLACE(partner_name, '  ', ' ')) = ? 
+                                LIMIT 1");
+        if ($stmt) {
+            $stmt->bind_param("s", $normalized);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            if ($pData = $res->fetch_assoc()) {
+                $stmt->close();
+                return $pData;
+            }
+            $stmt->close();
+        }
+
+        // 2b) partial / LIKE match as a last resort
+        $like = '%' . $normalized . '%';
+        $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
+                                FROM masterdata.partner_masterfile 
+                                WHERE UPPER(partner_name) LIKE ? 
+                                LIMIT 1");
+        if ($stmt) {
+            $stmt->bind_param("s", $like);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            if ($pData = $res->fetch_assoc()) {
+                $stmt->close();
+                return $pData;
+            }
+            $stmt->close();
+        }
+    }
+
+    // 3) partner_id fallback
+    if ($partnerId !== '' && $partnerId !== 'Not Found') {
+        $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
+                                FROM masterdata.partner_masterfile 
+                                WHERE partner_id = ? LIMIT 1");
+        if ($stmt) {
+            $stmt->bind_param("s", $partnerId);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            if ($pData = $res->fetch_assoc()) {
+                $stmt->close();
+                return $pData;
+            }
+            $stmt->close();
+        }
+    }
+
+    return null;
+}
+
 // Helper function to resolve partner for a row
 function resolvePartner($conn, $row, $isKP7) {
     $result = [
-        'partner_id' => 'Not Found',
-        'partner_id_kpx' => 'Not Found',
-        'partner_name' => 'Not Found',
-        'mpm_gl_code' => 'Not Found'
+        'partner_id'      => 'Not Found',
+        'partner_id_kpx'  => 'Not Found',
+        'partner_name'    => 'Not Found',
+        'mpm_gl_code'     => 'Not Found'
     ];
-    
+
     try {
-        if ($isKP7) {
-            // KP7: Use partner_id
-            $partner_id = isset($row['partner_id']) ? trim($row['partner_id']) : '';
-            if (!empty($partner_id) && $partner_id !== 'Not Found' && $partner_id !== '') {
-                $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
-                                       FROM masterdata.partner_masterfile 
-                                       WHERE partner_id = ? LIMIT 1");
-                if ($stmt) {
-                    $stmt->bind_param("s", $partner_id);
-                    $stmt->execute();
-                    $res = $stmt->get_result();
-                    if ($pData = $res->fetch_assoc()) {
-                        $result = [
-                            'partner_id' => $pData['partner_id'],
-                            'partner_id_kpx' => $pData['partner_id_kpx'],
-                            'partner_name' => $pData['partner_name'],
-                            'mpm_gl_code' => $pData['gl_code']
-                        ];
-                    } else {
-                        $result['partner_id'] = $partner_id;
-                    }
-                    $stmt->close();
-                }
+        // For BAYADCENTER, short-circuit
+        $isBayadCenter = !empty($row['is_bayadcenter']);
+        $fallback     = isset($row['partner_id_fallback_original']) ? trim((string)$row['partner_id_fallback_original']) : '';
+        if ($isBayadCenter || strtoupper($fallback) === 'BAYADCENTER') {
+            return [
+                'partner_id'      => null,
+                'partner_id_kpx'  => '9999',
+                'partner_name'    => 'BAYADCENTER',
+                'mpm_gl_code'     => null
+            ];
+        }
+
+        // For GSIS, short-circuit (only when no KPX is set)
+        if (strtoupper($fallback) === 'GSIS' && empty($row['partner_id_kpx'])) {
+            // Try to find GSIS in masterfile to fill in real name/gl_code
+            $pData = resolvePartnerBySource($conn, [
+                'partner_id_kpx' => '2898',
+                'partner_name'   => '',
+                'partner_id'     => ''
+            ]);
+            if ($pData) {
+                return [
+                    'partner_id'     => $pData['partner_id'],
+                    'partner_id_kpx' => $pData['partner_id_kpx'],
+                    'partner_name'   => $pData['partner_name'],
+                    'mpm_gl_code'    => $pData['gl_code']
+                ];
             }
-        } else {
-            // KPX: Use partner_id_kpx
-            $partner_id_kpx = isset($row['partner_id_kpx']) ? trim($row['partner_id_kpx']) : '';
-            if (!empty($partner_id_kpx) && $partner_id_kpx !== 'Not Found' && $partner_id_kpx !== '') {
-                $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
-                                       FROM masterdata.partner_masterfile 
-                                       WHERE partner_id_kpx = ? LIMIT 1");
-                if ($stmt) {
-                    $stmt->bind_param("s", $partner_id_kpx);
-                    $stmt->execute();
-                    $res = $stmt->get_result();
-                    if ($pData = $res->fetch_assoc()) {
-                        $result = [
-                            'partner_id' => $pData['partner_id'],
-                            'partner_id_kpx' => $pData['partner_id_kpx'],
-                            'partner_name' => $pData['partner_name'],
-                            'mpm_gl_code' => $pData['gl_code']
-                        ];
-                    } else {
-                        $result['partner_id_kpx'] = $partner_id_kpx;
-                    }
-                    $stmt->close();
-                }
-            }
+            return [
+                'partner_id'     => '2898',
+                'partner_id_kpx' => '2898',
+                'partner_name'   => 'GSIS',
+                'mpm_gl_code'    => null
+            ];
+        }
+
+        // Normal resolution path for both KP7 and KPX
+        $pData = resolvePartnerBySource($conn, $row);
+        if ($pData) {
+            return [
+                'partner_id'     => $pData['partner_id'],
+                'partner_id_kpx' => $pData['partner_id_kpx'],
+                'partner_name'   => $pData['partner_name'],
+                'mpm_gl_code'    => $pData['gl_code']
+            ];
+        }
+
+        // Not found: preserve whatever identifiers came in so UI can display them
+        if (!empty($row['partner_id_kpx'])) {
+            $result['partner_id_kpx'] = trim((string)$row['partner_id_kpx']);
+        } elseif (!empty($row['partner_id'])) {
+            $result['partner_id_kpx'] = trim((string)$row['partner_id']);
+        }
+        if (!empty($row['partner_name'])) {
+            $result['partner_name'] = trim((string)$row['partner_name']);
         }
     } catch (Exception $e) {
         error_log("Partner lookup error: " . $e->getMessage());
     }
-    
+
     return $result;
 }
 
@@ -360,7 +460,6 @@ if (isset($_POST['rows'])) {
         error_log("=== STARTING IMPORT ===");
         error_log("Total rows to import: " . count($rows));
         
-        // REMOVED: reason_for_adjustment, new_amount, deducted_amount - these columns don't exist
         $columns = [
             'status', 'billing_invoice', 'report_date', 'settlement_date', 'datetime', 'cancellation_date',
             'source_file', 'run_date', 'control_no', 'reference_no', 'payor', 'address', 'account_no', 'account_name',
@@ -536,11 +635,22 @@ if (isset($_POST['rows'])) {
     foreach ($rows as $index => $row) {
         $isKP7 = strtoupper(trim((string)($row['source_file'] ?? ''))) === 'KP7';
         
+        // Preserve original Excel branch identifiers before resolution overwrites them
+        $branchIdFromFile = isset($row['branch_id']) ? trim((string)$row['branch_id']) : '';
+        $mlOutletFromFile = isset($row['ml_outlet_from_file']) ? trim((string)$row['ml_outlet_from_file']) : '';
+        // Also accept ml_matic_branch_name as a possible source for KP7 / older payloads
+        if ($mlOutletFromFile === '' && isset($row['ml_matic_branch_name'])) {
+            $mlOutletFromFile = trim((string)$row['ml_matic_branch_name']);
+        }
+        
         // Resolve branch
         $branchData = resolveBranch($conn, $row, $isKP7);
         
         // Resolve partner
         $partnerData = resolvePartner($conn, $row, $isKP7);
+        
+        // Keep original partner_name from file if the DB returns Not Found
+        $originalPartnerName = $row['partner_name'] ?? null;
         
         // Apply resolved data to row
         $row['branch_id'] = $branchData['branch_id'];
@@ -550,10 +660,19 @@ if (isset($_POST['rows'])) {
         $row['region_code'] = $branchData['region_code'];
         $row['region'] = $branchData['region'];
         
+        // Preserve original Excel values for the remarks UI (fallback display)
+        $row['branch_id_from_file'] = $branchIdFromFile !== '' ? $branchIdFromFile : null;
+        $row['ml_outlet_from_file'] = $mlOutletFromFile !== '' ? $mlOutletFromFile : null;
+        
         $row['partner_id'] = $partnerData['partner_id'];
         $row['partner_id_kpx'] = $partnerData['partner_id_kpx'];
         $row['partner_name'] = $partnerData['partner_name'];
         $row['mpm_gl_code'] = $partnerData['mpm_gl_code'];
+        
+        // Preserve the original file-supplied partner_name for reference
+        if (($row['partner_name'] === 'Not Found' || empty($row['partner_name'])) && !empty($originalPartnerName)) {
+            $row['partner_name_from_file'] = $originalPartnerName;
+        }
         
         // Preserve run_date if it exists
         $row['run_date'] = $row['run_date'] ?? null;

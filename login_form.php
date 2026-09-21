@@ -1,4 +1,5 @@
 <?php
+// login_form.php
 // Connect to the database
 
 date_default_timezone_set('Asia/Manila');
@@ -15,7 +16,6 @@ if (!ob_get_level()) ob_start();
 // Handle password change success/error messages FIRST before redirect check
 if(isset($_SESSION['success_message']) || isset($_SESSION['error_message'])){
    // Don't redirect to dashboard if we have messages to show
-   // This will be handled after showing the messages
 } else {
    // Only check for redirect if there are no messages to show
    if(isset($_SESSION['user_type'])){
@@ -25,7 +25,6 @@ if(isset($_SESSION['success_message']) || isset($_SESSION['error_message'])){
 }
 
 // Include shared header (scripts/styles used across the app)
-// Keep this after redirect checks to avoid "headers already sent" warnings.
 @include_once __DIR__ . '/templates/header.php';
 
 echo '<script src="https://kit.fontawesome.com/30b908cc5a.js" crossorigin="anonymous"></script>';
@@ -46,7 +45,6 @@ if(isset($_SESSION['success_message'])){
                   showConfirmButton: true
                }).then((result) => {
                   if (result.isConfirmed) {
-                     // Clear session and redirect to login page
                      fetch('logout.php', {
                         method: 'POST'
                      }).then(() => {
@@ -57,7 +55,6 @@ if(isset($_SESSION['success_message'])){
             }
          </script>";
    unset($_SESSION['success_message']);
-   // Clear user session data to prevent auto-redirect
    unset($_SESSION['user_type']);
    unset($_SESSION['user_name']);
    unset($_SESSION['user_email']);
@@ -77,7 +74,6 @@ elseif(isset($_SESSION['error_message'])){
                   showConfirmButton: true
                }).then((result) => {
                   if (result.isConfirmed) {
-                     // Clear session and redirect to login page
                      fetch('logout.php', {
                         method: 'POST'
                      }).then(() => {
@@ -88,7 +84,6 @@ elseif(isset($_SESSION['error_message'])){
             }
          </script>";
    unset($_SESSION['error_message']);
-   // Clear user session data to prevent auto-redirect
    unset($_SESSION['user_type']);
    unset($_SESSION['user_name']);
    unset($_SESSION['user_email']);
@@ -103,121 +98,112 @@ elseif(isset($_POST['submit'])){
    $loginquery = "UPDATE mldb.user_form SET last_online = '$current_day_and_time' WHERE email = '$email'";
    $select = "SELECT * FROM mldb.user_form WHERE email = '$email' && password = '$pass'";
    $result = mysqli_query($conn, $select);
-   // Get the current day and time.
+
    if(mysqli_num_rows($result) > 0){
       $row = mysqli_fetch_array($result);
-      if($row['user_type'] == 'admin'){
-         if($row['status'] == 'Inactive'){
-            echo "<script>
-                     window.onload = function() {
-                        Swal.fire({
-                           title: 'End-User is Inactive',
-                           text: 'Please contact the system administrator.',
-                           icon: 'error',
-                           allowOutsideClick: false,
-                           allowEscapeKey: false,
-                           allowEnterKey: false,
-                           showConfirmButton: true
-                        });
-                     }
-                  </script>";
-         }else{
-            $loginresult = mysqli_query($conn, $loginquery);
-            $_SESSION['admin_name'] =  $row['first_name'].' '.$row['middle_name'].' '.$row['last_name'];
-            $_SESSION['admin_email'] = $row['email'];
-            $_SESSION['id_number'] = $row['id_number'] ?? '';
-            $_SESSION['user_type'] = $row['user_type'];
-            $_SESSION['user_access_level'] = isset($row['access_level'])
-               ? (int)$row['access_level']
-               : (isset($row['acess_level']) ? (int)$row['acess_level'] : 0);
-            $_SESSION['access_level'] = $_SESSION['user_access_level'];
-            // $_SESSION['user_roles'] = $row['roles'];
-            echo "<script>
-                  window.onload = function() {
-                     const Toast = Swal.mixin({
-                        toast: true,
-                        position: 'top-end',
-                        showConfirmButton: false,
-                        timer: 2000,
-                        backdrop: true,
-                        allowOutsideClick: false,
-                        allowEscapeKey: false,
-                        allowEnterKey: false,
-                        timerProgressBar: true,
-                        didOpen: (toast) => {
-                          toast.addEventListener('mouseenter', Swal.stopTimer)
-                          toast.addEventListener('mouseleave', Swal.resumeTimer)
-                        }
-                      })
-                      
-                      Toast.fire({
-                        icon: 'success',
-                        title: 'Signed in successfully'
-                      }).then(() => {
-                        // Redirect to the generate_payment.php page.
-                        window.location.href = 'dashboard/';
-                    });
-                  }
-               </script>";
-         }
-      }elseif($row['user_type'] == 'user'){
-         if($row['status'] == 'Inactive'){
-            echo "<script>
-                     window.onload = function() {
-                        Swal.fire({
-                           title: 'End-User is Inactive',
-                           text: 'Please contact the system administrator.',
-                           icon: 'error',
-                           allowOutsideClick: false,
-                           allowEscapeKey: false,
-                           allowEnterKey: false,
-                           allowOutsideClick: false,
-                           showConfirmButton: true
-                        });
-                     }
-                  </script>";
-         }else{
-            $loginresult = mysqli_query($conn, $loginquery);
-            $_SESSION['user_name'] =  $row['first_name'].' '.$row['middle_name'].' '.$row['last_name'];
-            $_SESSION['user_email'] = $row['email'];
-            $_SESSION['id_number'] = $row['id_number'] ?? '';
-            $_SESSION['user_type'] = $row['user_type'];
-            $_SESSION['user_access_level'] = isset($row['access_level'])
-               ? (int)$row['access_level']
-               : (isset($row['acess_level']) ? (int)$row['acess_level'] : 0);
-            $_SESSION['access_level'] = $_SESSION['user_access_level'];
-            // Check if the password is "Password1"
-            if($pass == md5("Mlinc1234")){
-               // Show a modal to prompt the user to create another password
-               echo '<script>
+
+      // Common: set session variables for both admin and user
+      $isAdmin = ($row['user_type'] == 'admin');
+
+      if($row['status'] == 'Inactive'){
+         echo "<script>
                   window.onload = function() {
                      Swal.fire({
-                        title: "Change Password",
-                        icon: "warning",
-                        showCancelButton: true,
+                        title: 'End-User is Inactive',
+                        text: 'Please contact the system administrator.',
+                        icon: 'error',
                         allowOutsideClick: false,
                         allowEscapeKey: false,
                         allowEnterKey: false,
-                        confirmButtonText: "OK",
-                        cancelButtonText: "Cancel"
-                     }).then((result) => {
-                        if (result.isConfirmed) {
-                           var changePasswordModal = document.getElementById("changePasswordModal");
-                           changePasswordModal.style.display = "block";
-                        } 
-                        else {
-                           // Send AJAX request to destroy session and redirect
-                           fetch("logout.php", {
-                              method: "POST"
-                           }).then(() => {
-                              window.location.href = "login_form.php";
-                           });
-                        }  
+                        showConfirmButton: true
                      });
                   }
-               </script>';
+               </script>";
+      } else {
+         // Update last_online
+         mysqli_query($conn, $loginquery);
+
+         // Set session based on user type
+         if ($isAdmin) {
+            $_SESSION['admin_name']  = $row['first_name'].' '.$row['middle_name'].' '.$row['last_name'];
+            $_SESSION['admin_email'] = $row['email'];
+         } else {
+            $_SESSION['user_name']  = $row['first_name'].' '.$row['middle_name'].' '.$row['last_name'];
+            $_SESSION['user_email'] = $row['email'];
+         }
+
+         $_SESSION['id_number'] = $row['id_number'] ?? '';
+         $_SESSION['user_type'] = $row['user_type'];
+         $_SESSION['user_access_level'] = isset($row['access_level'])
+            ? (int)$row['access_level']
+            : (isset($row['acess_level']) ? (int)$row['acess_level'] : 0);
+         $_SESSION['access_level'] = $_SESSION['user_access_level'];
+
+         // ============================================
+         // FORCE PASSWORD CHANGE FOR DEFAULT PASSWORD
+         // Works for BOTH admin and user
+         // ============================================
+         if($pass == md5("Mlinc1234")){
+            echo '<script>
+               window.onload = function() {
+                  Swal.fire({
+                     title: "Change Password",
+                     icon: "warning",
+                     text: "You are using the default password. Please create a new one.",
+                     showCancelButton: true,
+                     allowOutsideClick: false,
+                     allowEscapeKey: false,
+                     allowEnterKey: false,
+                     confirmButtonText: "OK",
+                     cancelButtonText: "Cancel"
+                  }).then((result) => {
+                     if (result.isConfirmed) {
+                        var changePasswordModal = document.getElementById("changePasswordModal");
+                        if (changePasswordModal) {
+                           changePasswordModal.style.display = "block";
+                        }
+                     } else {
+                        fetch("logout.php", {
+                           method: "POST"
+                        }).then(() => {
+                           window.location.href = "login_form.php";
+                        });
+                     }  
+                  });
+               }
+            </script>';
+         } else {
+            // Normal successful login (non-default password)
+            if ($isAdmin) {
+               // Admin redirect
+               echo "<script>
+                     window.onload = function() {
+                        const Toast = Swal.mixin({
+                           toast: true,
+                           position: 'top-end',
+                           showConfirmButton: false,
+                           timer: 2000,
+                           backdrop: true,
+                           allowOutsideClick: false,
+                           allowEscapeKey: false,
+                           allowEnterKey: false,
+                           timerProgressBar: true,
+                           didOpen: (toast) => {
+                             toast.addEventListener('mouseenter', Swal.stopTimer)
+                             toast.addEventListener('mouseleave', Swal.resumeTimer)
+                           }
+                         })
+                         
+                         Toast.fire({
+                           icon: 'success',
+                           title: 'Signed in successfully'
+                         }).then(() => {
+                           window.location.href = 'dashboard/';
+                       });
+                     }
+                  </script>";
             } else {
-               // Show a Sweetalert mixin with the success message
+               // Regular user – special redirects for specific accounts
                if ($_SESSION['user_email'] === 'pera94005055') {
                   echo '<script>
                      window.onload = function() {
@@ -273,7 +259,7 @@ elseif(isset($_POST['submit'])){
                         });
                      }
                   </script>';
-               }else{
+               } else {
                   echo '<script>
                      window.onload = function() {
                         const Toast = Swal.mixin({
@@ -304,7 +290,7 @@ elseif(isset($_POST['submit'])){
             }
          }
       }
-   }else{
+   } else {
       echo '<script>
                window.onload = function() {
                   Swal.fire({
@@ -321,46 +307,8 @@ elseif(isset($_POST['submit'])){
    }
 }
 
-// Remove the duplicate session message handling code at the bottom
-// Clear the session variables after displaying the modal
 unset($_SESSION['success_message']);
 unset($_SESSION['error_message']);
-
-// Add this code to handle password change success/error messages
-if(isset($_SESSION['success_message'])){
-   echo "<script>
-            window.onload = function() {
-               Swal.fire({
-                  title: 'Success!',
-                  text: '".$_SESSION['success_message']."',
-                  icon: 'success',
-                  allowOutsideClick: false,
-                  allowEscapeKey: false,
-                  allowEnterKey: false,
-                  showConfirmButton: true
-               });
-            }
-         </script>";
-   unset($_SESSION['success_message']);
-}
-
-if(isset($_SESSION['error_message'])){
-   echo "<script>
-            window.onload = function() {
-               Swal.fire({
-                  title: 'Error!',
-                  text: '".$_SESSION['error_message']."',
-                  icon: 'error',
-                  allowOutsideClick: false,
-                  allowEscapeKey: false,
-                  allowEnterKey: false,
-                  showConfirmButton: true
-               });
-            }
-         </script>";
-   unset($_SESSION['error_message']);
-}
-
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -416,7 +364,6 @@ if(isset($_SESSION['error_message'])){
 <!-- Split-panel Login Layout -->
 <div class="login-page">
 
-   <!-- Right: Form Panel (single-column layout) -->
    <div class="login-panel">
       <div class="login-card">
          <button type="button" class="card-close" id="cardClose" aria-label="Close login">&times;</button>
@@ -429,7 +376,6 @@ if(isset($_SESSION['error_message'])){
 
          <form action="" method="post" id="loginForm">
 
-            <!-- Username -->
             <div class="field-group">
                <label for="email">Username</label>
                <div class="field-input">
@@ -447,7 +393,6 @@ if(isset($_SESSION['error_message'])){
                </div>
             </div>
 
-            <!-- Password -->
             <div class="field-group">
                <label for="password">Password</label>
                <div class="field-input">
@@ -467,18 +412,14 @@ if(isset($_SESSION['error_message'])){
                </div>
             </div>
 
-            <!-- Remember username -->
             <div class="save-row">
                <input type="checkbox" id="save_as" name="save_as" <?php echo (isset($_COOKIE['saved_username']) || isset($_COOKIE['saved_password'])) ? 'checked' : ''; ?>>
                <label for="save_as">Remember me</label>
             </div>
 
-            <!-- Submit -->
             <button type="submit" name="submit" class="login-submit-btn">
                <i class="fa-solid fa-right-to-bracket" style="margin-right:8px;"></i>LOGIN
             </button>
-
-            <!-- Back link removed per UI update -->
 
          </form>
       </div>
@@ -486,7 +427,6 @@ if(isset($_SESSION['error_message'])){
 
 </div>
 <script>
-// Eye toggle
 document.addEventListener('DOMContentLoaded', function () {
    var toggle = document.getElementById('togglePassword');
    var pwd    = document.getElementById('password');
@@ -502,7 +442,6 @@ document.addEventListener('DOMContentLoaded', function () {
       });
    }
 
-   // Load remembered username/password from localStorage
    var emailInput   = document.getElementById('email');
    var saveCheckbox = document.getElementById('save_as');
    try {
@@ -516,39 +455,34 @@ document.addEventListener('DOMContentLoaded', function () {
       }
    } catch (e) {}
 
-      // Update left icon color when inputs are populated
-      function updateFilledState(input) {
-         if (!input) return;
-         var wrapper = input.closest('.field-input');
-         if (!wrapper) return;
-         if (input.value && input.value.trim() !== '') {
-            wrapper.classList.add('input-filled');
-         } else {
-            wrapper.classList.remove('input-filled');
-         }
+   function updateFilledState(input) {
+      if (!input) return;
+      var wrapper = input.closest('.field-input');
+      if (!wrapper) return;
+      if (input.value && input.value.trim() !== '') {
+         wrapper.classList.add('input-filled');
+      } else {
+         wrapper.classList.remove('input-filled');
       }
+   }
 
-      // Initialize filled state (covers pre-filled cookies/localStorage)
-      updateFilledState(emailInput);
-      updateFilledState(pwd);
+   updateFilledState(emailInput);
+   updateFilledState(pwd);
 
-         // Also initialize and bind for change-password modal inputs
-         var newPwdInput = document.getElementById('new_password');
-         var confirmPwdInput = document.getElementById('confirm_password');
-         updateFilledState(newPwdInput);
-         updateFilledState(confirmPwdInput);
-         if (newPwdInput) newPwdInput.addEventListener('input', function () { updateFilledState(newPwdInput); });
-         if (confirmPwdInput) confirmPwdInput.addEventListener('input', function () { updateFilledState(confirmPwdInput); });
+   var newPwdInput = document.getElementById('new_password');
+   var confirmPwdInput = document.getElementById('confirm_password');
+   updateFilledState(newPwdInput);
+   updateFilledState(confirmPwdInput);
+   if (newPwdInput) newPwdInput.addEventListener('input', function () { updateFilledState(newPwdInput); });
+   if (confirmPwdInput) confirmPwdInput.addEventListener('input', function () { updateFilledState(confirmPwdInput); });
 
-      // Update on user input
-      if (emailInput) {
-         emailInput.addEventListener('input', function () { updateFilledState(emailInput); });
-      }
-      if (pwd) {
-         pwd.addEventListener('input', function () { updateFilledState(pwd); });
-      }
+   if (emailInput) {
+      emailInput.addEventListener('input', function () { updateFilledState(emailInput); });
+   }
+   if (pwd) {
+      pwd.addEventListener('input', function () { updateFilledState(pwd); });
+   }
 
-   // Save / clear on submit (remember username + password when checked)
    var form = document.getElementById('loginForm');
    if (form) {
       form.addEventListener('submit', function () {
@@ -568,15 +502,13 @@ document.addEventListener('DOMContentLoaded', function () {
       });
    }
 
-      // Close button redirects back to index.php
-      var cardClose = document.getElementById('cardClose');
-      if (cardClose) {
-         cardClose.addEventListener('click', function () {
-            window.location.href = 'index.php';
-         });
-      }
+   var cardClose = document.getElementById('cardClose');
+   if (cardClose) {
+      cardClose.addEventListener('click', function () {
+         window.location.href = 'index.php';
+      });
+   }
 
-   // ESC closes change-password modal
    var modal = document.getElementById('changePasswordModal');
    document.addEventListener('keydown', function (e) {
       if ((e.key === 'Escape' || e.keyCode === 27) && modal) {
@@ -584,7 +516,6 @@ document.addEventListener('DOMContentLoaded', function () {
       }
    });
    
-   // Modal close button
    var cpmClose = document.getElementById('cpmClose');
    if (cpmClose && modal) {
       cpmClose.addEventListener('click', function () {
@@ -592,7 +523,6 @@ document.addEventListener('DOMContentLoaded', function () {
       });
    }
 
-   // Eye toggles for change-password fields
    var eyeBtns = document.querySelectorAll('.change-password-modal .eye-btn');
    eyeBtns.forEach(function(btn){
       btn.addEventListener('click', function(){
@@ -615,7 +545,6 @@ document.addEventListener('DOMContentLoaded', function () {
 </body>
 </html>
 <?php
-// Flush and end output buffering if started here
 if (ob_get_level()) {
    ob_end_flush();
 }

@@ -1,4 +1,5 @@
 <?php
+// user-management.php
 // Connect to the database
 require_once __DIR__ . '/../../../config/config.php';
 require '../../../vendor/autoload.php';

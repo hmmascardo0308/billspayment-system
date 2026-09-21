@@ -40,7 +40,7 @@ if ($time_frame === 'daily') {
 }
 
 // ============================================
-// FIX: Calculate start and end datetime for use in queries
+// Calculate start and end datetime for use in queries
 // ============================================
 $start_datetime = '';
 $end_datetime = '';
@@ -92,7 +92,6 @@ function buildWhereClauseForExport(
             if (!empty($date_from)) {
                 $start_datetime = $date_from . ' 00:00:00';
                 $end_datetime = $date_from . ' 23:59:59';
-                // FIX: Normal transactions based on datetime with status NULL/empty OR cancelled based on cancellation_date
                 $conditions[] = "((bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '')) OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
             }
             break;
@@ -132,7 +131,46 @@ function buildWhereClauseForExport(
 }
 
 // ============================================
-// FIX: Function to clean partner name for display
+// FUNCTION TO GET CHARGE TYPE DISPLAY
+// NOTE: 'PER TRANSACTION' is displayed as 'DAILY' so it matches
+// the CHARGE BY CUSTOMER DAILY behavior everywhere in the export.
+// ============================================
+function getChargeTypeDisplay($charge_sched, $charge_to) {
+    // Handle NULL or empty values
+    if (empty($charge_sched) && empty($charge_to)) {
+        return 'N/A';
+    }
+    
+    // Build the charge type string based on available data
+    $charge_parts = [];
+    
+    // Add charge_to description
+    if (!empty($charge_to)) {
+        if (strtoupper($charge_to) === 'PARTNER') {
+            $charge_parts[] = 'CHARGE BY PARTNER';
+        } elseif (strtoupper($charge_to) === 'CUSTOMER') {
+            $charge_parts[] = 'CHARGE BY CUSTOMER';
+        } else {
+            $charge_parts[] = strtoupper($charge_to);
+        }
+    }
+    
+    // Add charge_sched description
+    // Treat 'PER TRANSACTION' the same as 'DAILY'
+    if (!empty($charge_sched)) {
+        $charge_sched_upper = strtoupper($charge_sched);
+        if ($charge_sched_upper === 'PER TRANSACTION') {
+            $charge_parts[] = 'DAILY';
+        } else {
+            $charge_parts[] = $charge_sched_upper;
+        }
+    }
+    
+    return !empty($charge_parts) ? implode(' ', $charge_parts) : 'N/A';
+}
+
+// ============================================
+// Function to clean partner name for display
 // ============================================
 function cleanPartnerNameForExport($partner_id, $sub_billers_name = '') {
     global $conn;
@@ -169,44 +207,83 @@ if (!empty($partner_id)) {
 $where_clause = buildWhereClauseForExport($time_frame, $partner_id, $date_from, $date_to, $month_from, $month_to, $selected_day, $selected_month);
 
 // ============================================
-// FIX: Updated query - Normal transactions based on datetime with status NULL/empty
-// Cancelled transactions based on cancellation_date
+// QUERY - With partner_masterfile JOIN and all charge fields
+// Settlement Amount adjusted by charge type:
+//   CHARGE BY CUSTOMER DAILY / PER TRANSACTION → amount_paid - charge_to_partner
+//   BOTH → amount_paid - charge_to_partner
+//   CHARGE BY PARTNER → amount_paid
+//   CHARGE BY CUSTOMER (other) → amount_paid
 // ============================================
 $query = "SELECT 
-    -- FIX: Use COALESCE to handle NULL/empty partner_id_kpx
     COALESCE(NULLIF(bt.partner_id_kpx, ''), CONCAT('UNKNOWN_', bt.sub_billers_name, '_', bt.id)) as partner_id_kpx,
     CASE 
         WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
         ELSE bt.sub_billers_name
     END as sub_billers_name,
-    -- Normal Transactions (based on datetime AND status IS NULL OR status = '')
+    pm.partner_name,
+    pm.charge_sched,
+    pm.charge_to,
     COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as datetime_volume,
     SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as datetime_amount_paid,
-    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as datetime_charge,
-    -- Cancelled Transactions (based on cancellation_date)
+    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_partner ELSE 0 END) as datetime_charge_partner,
+    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_customer ELSE 0 END) as datetime_charge_customer,
+    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as datetime_charge_total,
     COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancellation_volume,
     SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancellation_amount_paid,
-    SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancellation_charge,
-    -- NET values (datetime - cancellation)
+    SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_partner ELSE 0 END) as cancellation_charge_partner,
+    SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_customer ELSE 0 END) as cancellation_charge_customer,
+    SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancellation_charge_total,
     (COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) - 
      COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as total_volume,
     (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) + 
      SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
+    (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_partner ELSE 0 END) - 
+     SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_partner ELSE 0 END)) as total_charge_partner,
+    (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_customer ELSE 0 END) - 
+     SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_customer ELSE 0 END)) as total_charge_customer,
     (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) - 
      SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge,
-    -- SETTLEMENT Transactions (include all settled based on datetime and status NULL/empty)
     COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN 1 END) as settlement_volume,
-    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN bt.amount_paid ELSE 0 END) as settlement_amount_paid,
+    SUM(CASE 
+        WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' 
+             AND (bt.status IS NULL OR bt.status = '') 
+             AND bt.settle_unsettle = 'Settled' 
+        THEN 
+            CASE 
+                -- CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): deduct partner charge
+                WHEN UPPER(COALESCE(pm.charge_to, '')) = 'CUSTOMER' 
+                     AND UPPER(COALESCE(pm.charge_sched, '')) IN ('DAILY', 'PER TRANSACTION')
+                THEN bt.amount_paid - IFNULL(bt.charge_to_partner, 0)
+                -- BOTH: deduct partner charge
+                WHEN UPPER(COALESCE(pm.charge_to, '')) = 'BOTH'
+                THEN bt.amount_paid - IFNULL(bt.charge_to_partner, 0)
+                -- CHARGE BY PARTNER (any frequency): full amount_paid
+                WHEN UPPER(COALESCE(pm.charge_to, '')) = 'PARTNER'
+                THEN bt.amount_paid
+                -- CHARGE BY CUSTOMER (Monthly/Semi-monthly/Weekly/other): full amount_paid
+                ELSE bt.amount_paid
+            END
+        ELSE 0 
+    END) as settlement_amount_paid,
+    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN bt.charge_to_partner ELSE 0 END) as settlement_charge_partner,
+    SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN bt.charge_to_customer ELSE 0 END) as settlement_charge_customer,
     SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
   FROM mldb.billspayment_transaction bt
+  LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
   $where_clause
   GROUP BY 
     COALESCE(NULLIF(bt.partner_id_kpx, ''), CONCAT('UNKNOWN_', bt.sub_billers_name, '_', bt.id)),
     CASE 
         WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
         ELSE bt.sub_billers_name
-    END
-  ORDER BY partner_id_kpx, total_volume DESC";
+    END,
+    pm.partner_name,
+    pm.charge_sched,
+    pm.charge_to
+  ORDER BY 
+    CASE WHEN pm.partner_name IS NULL THEN 1 ELSE 0 END,
+    pm.partner_name ASC,
+    total_volume DESC";
 
 $results = mysqli_query($conn, $query);
 
@@ -216,35 +293,80 @@ if (!$results) {
     error_log("Query: " . $query);
 }
 
-// Prepare display data
+// Prepare display data with variance calculations
 $display_results = [];
 $total_datetime_volume = 0;
 $total_datetime_amount = 0;
-$total_datetime_charge = 0;
+$total_datetime_charge_partner = 0;
+$total_datetime_charge_customer = 0;
+$total_datetime_charge_total = 0;
 $total_cancellation_volume = 0;
 $total_cancellation_amount = 0;
-$total_cancellation_charge = 0;
+$total_cancellation_charge_partner = 0;
+$total_cancellation_charge_customer = 0;
+$total_cancellation_charge_total = 0;
 $total_volume = 0;
 $total_amount = 0;
+$total_charge_partner = 0;
+$total_charge_customer = 0;
 $total_charge = 0;
 $total_settlement_volume = 0;
 $total_settlement_amount = 0;
+$total_settlement_charge_partner = 0;
+$total_settlement_charge_customer = 0;
 $total_settlement_charge = 0;
+$total_variance_volume = 0;
+$total_variance_amount = 0;
 
 while ($row = mysqli_fetch_assoc($results)) {
+    // Calculate variance for this row
+    $row['variance_volume'] = ($row['total_volume'] ?? 0) - ($row['settlement_volume'] ?? 0);
+    
+    // Check charge type for variance calculation
+    // NOTE: 'PER TRANSACTION' is treated the same as 'DAILY'
+    $charge_to = $row['charge_to'] ?? '';
+    $charge_sched = $row['charge_sched'] ?? '';
+    $is_partner_charge = (strtoupper($charge_to) === 'PARTNER');
+    $is_customer_daily = (strtoupper($charge_to) === 'CUSTOMER' && in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
+    $is_customer_non_daily = (strtoupper($charge_to) === 'CUSTOMER' && !in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
+    $is_both = (strtoupper($charge_to) === 'BOTH');
+    
+    if ($is_partner_charge || $is_customer_non_daily) {
+        $row['variance_amount'] = ($row['total_amount_paid'] ?? 0) - ($row['settlement_amount_paid'] ?? 0);
+    } elseif ($is_customer_daily) {
+        $row['variance_amount'] = ($row['total_amount_paid'] ?? 0) - (($row['settlement_amount_paid'] ?? 0) + ($row['settlement_charge_partner'] ?? 0));
+    } elseif ($is_both) {
+        $row['variance_amount'] = ($row['total_amount_paid'] ?? 0) - (($row['settlement_amount_paid'] ?? 0) + ($row['settlement_charge'] ?? 0));
+    } else {
+        $row['variance_amount'] = ($row['total_amount_paid'] ?? 0) - (($row['settlement_amount_paid'] ?? 0) + ($row['settlement_charge'] ?? 0));
+    }
+    
+    // Get charge type display
+    $row['charge_type_display'] = getChargeTypeDisplay($row['charge_sched'] ?? '', $row['charge_to'] ?? '');
+    
     $display_results[] = $row;
     $total_datetime_volume += $row['datetime_volume'];
     $total_datetime_amount += $row['datetime_amount_paid'];
-    $total_datetime_charge += $row['datetime_charge'];
+    $total_datetime_charge_partner += $row['datetime_charge_partner'];
+    $total_datetime_charge_customer += $row['datetime_charge_customer'];
+    $total_datetime_charge_total += $row['datetime_charge_total'];
     $total_cancellation_volume += $row['cancellation_volume'];
     $total_cancellation_amount += $row['cancellation_amount_paid'];
-    $total_cancellation_charge += $row['cancellation_charge'];
+    $total_cancellation_charge_partner += $row['cancellation_charge_partner'];
+    $total_cancellation_charge_customer += $row['cancellation_charge_customer'];
+    $total_cancellation_charge_total += $row['cancellation_charge_total'];
     $total_volume += $row['total_volume'];
     $total_amount += $row['total_amount_paid'];
+    $total_charge_partner += $row['total_charge_partner'];
+    $total_charge_customer += $row['total_charge_customer'];
     $total_charge += $row['total_charge'];
     $total_settlement_volume += $row['settlement_volume'];
     $total_settlement_amount += $row['settlement_amount_paid'];
+    $total_settlement_charge_partner += $row['settlement_charge_partner'];
+    $total_settlement_charge_customer += $row['settlement_charge_customer'];
     $total_settlement_charge += $row['settlement_charge'];
+    $total_variance_volume += $row['variance_volume'];
+    $total_variance_amount += $row['variance_amount'];
 }
 
 // Create new Spreadsheet
@@ -257,7 +379,7 @@ date_default_timezone_set('Asia/Manila');
 // HEADER SECTION
 // Row 1: BILLS PAYMENT DEPARTMENT - Centered, Bold
 $sheet->setCellValue('A1', 'BILLS PAYMENT DEPARTMENT');
-$sheet->getStyle('A1')->getFont()->setBold(true)->setSize(16);
+$sheet->getStyle('A1')->getFont()->setBold(true)->setSize(16)->getColor()->setRGB('000000');
 
 // Row 2: VOLUME REPORT
 $time_frame_display = strtoupper($time_frame);
@@ -269,7 +391,7 @@ if ($time_frame === 'daily') {
     $time_frame_display = 'MONTHLY';
 }
 $sheet->setCellValue('A2', "VOLUME REPORT - $time_frame_display");
-$sheet->getStyle('A2')->getFont()->setBold(true)->setSize(14);
+$sheet->getStyle('A2')->getFont()->setBold(true)->setSize(14)->getColor()->setRGB('000000');
 
 // Row 3: Empty row
 $sheet->setCellValue('A3', '');
@@ -277,13 +399,15 @@ $sheet->setCellValue('A3', '');
 // Row 4: Partners
 $sheet->setCellValue('A4', 'Partner Name');
 $sheet->setCellValue('B4', $selected_partner_name ?: 'All Partners');
-$sheet->getStyle('A4')->getFont()->setBold(true);
+$sheet->getStyle('A4')->getFont()->setBold(true)->getColor()->setRGB('000000');
+$sheet->getStyle('B4')->getFont()->getColor()->setRGB('000000');
 
 // Row 5: Generated Date
 $generated_date = date('F m, Y h:i:s A');
 $sheet->setCellValue('A5', 'Generated Date');
 $sheet->setCellValue('B5', $generated_date);
-$sheet->getStyle('A5')->getFont()->setBold(true);
+$sheet->getStyle('A5')->getFont()->setBold(true)->getColor()->setRGB('000000');
+$sheet->getStyle('B5')->getFont()->getColor()->setRGB('000000');
 
 // Row 6: Filtered Date
 $filtered_date = '';
@@ -304,82 +428,142 @@ if ($time_frame === 'daily') {
 }
 $sheet->setCellValue('A6', 'Filtered Date');
 $sheet->setCellValue('B6', $filtered_date);
-$sheet->getStyle('A6')->getFont()->setBold(true);
+$sheet->getStyle('A6')->getFont()->setBold(true)->getColor()->setRGB('000000');
+$sheet->getStyle('B6')->getFont()->getColor()->setRGB('000000');
 
 // Row 7: Filter Type
 $sheet->setCellValue('A7', 'Filter Type');
 $sheet->setCellValue('B7', $time_frame_display);
-$sheet->getStyle('A7')->getFont()->setBold(true);
+$sheet->getStyle('A7')->getFont()->setBold(true)->getColor()->setRGB('000000');
+$sheet->getStyle('B7')->getFont()->getColor()->setRGB('000000');
 
 // Row 8: Generated By
 $sheet->setCellValue('A8', 'Generated By');
 $sheet->setCellValue('B8', $display_name);
-$sheet->getStyle('A8')->getFont()->setBold(true);
+$sheet->getStyle('A8')->getFont()->setBold(true)->getColor()->setRGB('000000');
+$sheet->getStyle('B8')->getFont()->getColor()->setRGB('000000');
 
 // Row 9: Empty row before table
 $sheet->setCellValue('A9', '');
 
 // ============================================
-// TABLE HEADERS - With proper rowspan (2 rows)
+// TABLE HEADERS
+// Columns: No., Partner Name, Charge Type, Biller's Name, 
+//          Transaction (Vol, Amount, Partner, Customer), 
+//          Cancelled (Vol, Amount, Partner, Customer),
+//          NET (Vol, Amount, Partner, Customer),
+//          Settlement (Vol, Amount, Partner, Customer),
+//          Variance (Vol, Amount)
 // ============================================
 
-// ROW 10 - Main header row
-// Columns A-C: Main headers that will span 2 rows
+// ROW 10 - Main header row with rowspans
 $sheet->setCellValue('A10', 'No.');
 $sheet->setCellValue('B10', 'Partner Name');
-$sheet->setCellValue('C10', "Biller's Name");
+$sheet->setCellValue('C10', 'Charge Type');
+$sheet->setCellValue('D10', "Biller's Name");
 
-// Columns D-F: Normal Transaction group header (spans 3 columns)
-$sheet->setCellValue('D10', 'Normal Transaction');
-$sheet->mergeCells('D10:F10');
+// Transaction group (columns E-H)
+$sheet->setCellValue('E10', 'Transaction');
+$sheet->mergeCells('E10:H10');
 
-// Columns G-I: Cancelled Transaction group header (spans 3 columns)
-$sheet->setCellValue('G10', 'Cancelled Transaction');
-$sheet->mergeCells('G10:I10');
+// Cancelled group (columns I-L)
+$sheet->setCellValue('I10', 'Cancelled Transaction');
+$sheet->mergeCells('I10:L10');
 
-// Columns J-L: Net group header (spans 3 columns)
-$sheet->setCellValue('J10', 'NET');
-$sheet->mergeCells('J10:L10');
+// NET group (columns M-P)
+$sheet->setCellValue('M10', 'NET');
+$sheet->mergeCells('M10:P10');
 
-// Columns M-O: Settlement group header (spans 3 columns)
-$sheet->setCellValue('M10', 'Settlement');
-$sheet->mergeCells('M10:O10');
+// Settlement group (columns Q-T)
+$sheet->setCellValue('Q10', 'Settlement');
+$sheet->mergeCells('Q10:T10');
+
+// Variance group (columns U-V)
+$sheet->setCellValue('U10', 'Variance');
+$sheet->mergeCells('U10:V10');
 
 // ROW 11 - Sub-header row
-// Columns A-C: Leave empty (these will be merged from row 10)
+// Columns A-D: Leave empty (these will be merged from row 10)
 $sheet->setCellValue('A11', '');
 $sheet->setCellValue('B11', '');
 $sheet->setCellValue('C11', '');
+$sheet->setCellValue('D11', '');
 
-// Columns D-F: Normal sub-headers
-$sheet->setCellValue('D11', 'Vol.');
-$sheet->setCellValue('E11', 'Principal');
-$sheet->setCellValue('F11', 'Charge');
+// Transaction sub-headers (E-H)
+$sheet->setCellValue('E11', 'Vol.');
+$sheet->setCellValue('F11', 'Amount');
+$sheet->setCellValue('G11', 'Partner');
+$sheet->setCellValue('H11', 'Customer');
 
-// Columns G-I: Cancelled sub-headers
-$sheet->setCellValue('G11', 'Vol.');
-$sheet->setCellValue('H11', 'Principal');
-$sheet->setCellValue('I11', 'Charge');
+// Cancelled sub-headers (I-L)
+$sheet->setCellValue('I11', 'Vol.');
+$sheet->setCellValue('J11', 'Amount');
+$sheet->setCellValue('K11', 'Partner');
+$sheet->setCellValue('L11', 'Customer');
 
-// Columns J-L: Net sub-headers
-$sheet->setCellValue('J11', 'Vol.');
-$sheet->setCellValue('K11', 'Principal');
-$sheet->setCellValue('L11', 'Charge');
-
-// Columns M-O: Settlement sub-headers
+// NET sub-headers (M-P)
 $sheet->setCellValue('M11', 'Vol.');
-$sheet->setCellValue('N11', 'Principal');
-$sheet->setCellValue('O11', 'Charge');
+$sheet->setCellValue('N11', 'Amount');
+$sheet->setCellValue('O11', 'Partner');
+$sheet->setCellValue('P11', 'Customer');
 
-// MERGE cells for rowspan (A-C spanning rows 10-11)
+// Settlement sub-headers (Q-T)
+$sheet->setCellValue('Q11', 'Vol.');
+$sheet->setCellValue('R11', 'Amount');
+$sheet->setCellValue('S11', 'Partner');
+$sheet->setCellValue('T11', 'Customer');
+
+// Variance sub-headers (U-V)
+$sheet->setCellValue('U11', 'Vol.');
+$sheet->setCellValue('V11', 'Amount');
+
+// MERGE cells for rowspan (A-D spanning rows 10-11)
 $sheet->mergeCells('A10:A11');
 $sheet->mergeCells('B10:B11');
 $sheet->mergeCells('C10:C11');
+$sheet->mergeCells('D10:D11');
 
-// Style the header rows (both rows 10 and 11)
+// Style the header rows (both rows 10 and 11) - No background, black text
 $headerStyle = [
     'font' => [
         'bold' => true,
+        'color' => ['rgb' => '000000'],
+        'size' => 10,
+    ],
+    'alignment' => [
+        'horizontal' => Alignment::HORIZONTAL_CENTER,
+        'vertical' => Alignment::VERTICAL_CENTER,
+    ],
+    'borders' => [
+        'allBorders' => [
+            'borderStyle' => Border::BORDER_THIN,
+            'color' => ['rgb' => '000000'],
+        ],
+    ],
+    'fill' => [
+        'fillType' => Fill::FILL_NONE,
+    ],
+];
+
+// Apply header style to both rows
+$sheet->getStyle('A10:V11')->applyFromArray($headerStyle);
+
+// Set auto-width for all columns
+foreach (range('A', 'V') as $column) {
+    $sheet->getColumnDimension($column)->setAutoSize(true);
+}
+
+// Set row heights for header rows
+$sheet->getRowDimension(10)->setRowHeight(25);
+$sheet->getRowDimension(11)->setRowHeight(25);
+
+// DATA ROWS - Starting from row 12
+$row = 12;
+$counter = 1;
+
+// Define style for data rows - No background, black text
+$dataStyle = [
+    'font' => [
         'color' => ['rgb' => '000000'],
     ],
     'alignment' => [
@@ -393,74 +577,12 @@ $headerStyle = [
         ],
     ],
     'fill' => [
-        'fillType' => Fill::FILL_SOLID,
-        'startColor' => ['rgb' => 'F0F0F0'],
-    ],
-];
-
-// Apply header style to both rows
-$sheet->getStyle('A10:O11')->applyFromArray($headerStyle);
-
-// Set auto-width for all columns
-foreach (range('A', 'O') as $column) {
-    $sheet->getColumnDimension($column)->setAutoSize(true);
-}
-
-// Set row heights for header rows
-$sheet->getRowDimension(10)->setRowHeight(25);
-$sheet->getRowDimension(11)->setRowHeight(25);
-
-// DATA ROWS - Starting from row 12
-$row = 12;
-$counter = 1;
-
-// Define style for data rows
-$dataStyle = [
-    'alignment' => [
-        'horizontal' => Alignment::HORIZONTAL_CENTER,
-        'vertical' => Alignment::VERTICAL_CENTER,
-    ],
-    'borders' => [
-        'allBorders' => [
-            'borderStyle' => Border::BORDER_THIN,
-            'color' => ['rgb' => '000000'],
-        ],
-    ],
-];
-
-// Define column-specific background colors
-$normalStyle = [
-    'fill' => [
-        'fillType' => Fill::FILL_SOLID,
-        'startColor' => ['rgb' => 'E6F4EA'], // Light green
-    ],
-];
-
-$cancelledStyle = [
-    'fill' => [
-        'fillType' => Fill::FILL_SOLID,
-        'startColor' => ['rgb' => 'FCE8E6'], // Light red
-    ],
-];
-
-$netStyle = [
-    'fill' => [
-        'fillType' => Fill::FILL_SOLID,
-        'startColor' => ['rgb' => 'E8F0FE'], // Light blue
-    ],
-];
-
-$settlementStyle = [
-    'fill' => [
-        'fillType' => Fill::FILL_SOLID,
-        'startColor' => ['rgb' => 'FFF3CD'], // Light yellow
+        'fillType' => Fill::FILL_NONE,
     ],
 ];
 
 foreach ($display_results as $data) {
-    // ============================================
-    // FIX: Clean partner name display using the new function
-    // ============================================
+    // Clean partner name
     $partner_name = cleanPartnerNameForExport($data['partner_id_kpx'], $data['sub_billers_name']);
     
     // Check if this is an unassigned partner
@@ -472,61 +594,73 @@ foreach ($display_results as $data) {
         $display_sub_biller = 'Unassigned Partner Transaction';
     }
     
+    // Get charge type display
+    $charge_type_display = $data['charge_type_display'] ?? 'N/A';
+    
     $sheet->setCellValue('A' . $row, $counter++);
     $sheet->setCellValue('B' . $row, $partner_name);
-    $sheet->setCellValue('C' . $row, $display_sub_biller);
+    $sheet->setCellValue('C' . $row, $charge_type_display);
+    $sheet->setCellValue('D' . $row, $display_sub_biller);
     
-    // Apply italic/color style for unassigned partners
+    // Apply italic style for unassigned partners (but keep text black)
     if ($is_unassigned) {
-        $sheet->getStyle('B' . $row)->getFont()->setItalic(true)->getColor()->setRGB('D93025');
+        $sheet->getStyle('B' . $row)->getFont()->setItalic(true)->getColor()->setRGB('000000');
     }
     
-    // NORMAL columns (D, E, F) - Based on datetime with status NULL/empty
-    $sheet->setCellValue('D' . $row, number_format($data['datetime_volume']));
-    $sheet->setCellValue('E' . $row, $data['datetime_amount_paid']);
-    $sheet->setCellValue('F' . $row, $data['datetime_charge']);
+    // TRANSACTION columns (E-H)
+    $sheet->setCellValue('E' . $row, number_format($data['datetime_volume']));
+    $sheet->setCellValue('F' . $row, $data['datetime_amount_paid']);
+    $sheet->setCellValue('G' . $row, $data['datetime_charge_partner']);
+    $sheet->setCellValue('H' . $row, $data['datetime_charge_customer']);
     
-    // CANCELLED columns (G, H, I) - Based on cancellation_date, display as positive numbers (absolute values)
-    $sheet->setCellValue('G' . $row, number_format($data['cancellation_volume']));
-    $sheet->setCellValue('H' . $row, abs($data['cancellation_amount_paid']));
-    $sheet->setCellValue('I' . $row, abs($data['cancellation_charge']));
+    // CANCELLED columns (I-L)
+    $sheet->setCellValue('I' . $row, number_format($data['cancellation_volume']));
+    $sheet->setCellValue('J' . $row, abs($data['cancellation_amount_paid']));
+    $sheet->setCellValue('K' . $row, abs($data['cancellation_charge_partner']));
+    $sheet->setCellValue('L' . $row, abs($data['cancellation_charge_customer']));
     
-    // NET columns (J, K, L) - These are datetime - cancellation
-    $sheet->setCellValue('J' . $row, number_format($data['total_volume']));
-    $sheet->setCellValue('K' . $row, $data['total_amount_paid']);
-    $sheet->setCellValue('L' . $row, $data['total_charge']);
+    // NET columns (M-P)
+    $sheet->setCellValue('M' . $row, number_format($data['total_volume']));
+    $sheet->setCellValue('N' . $row, $data['total_amount_paid']);
+    $sheet->setCellValue('O' . $row, $data['total_charge_partner']);
+    $sheet->setCellValue('P' . $row, $data['total_charge_customer']);
     
-    // SETTLEMENT columns (M, N, O) - Based on datetime with status NULL/empty and settled
-    $sheet->setCellValue('M' . $row, number_format($data['settlement_volume']));
-    $sheet->setCellValue('N' . $row, $data['settlement_amount_paid']);
-    $sheet->setCellValue('O' . $row, $data['settlement_charge']);
+    // SETTLEMENT columns (Q-T)
+    $sheet->setCellValue('Q' . $row, number_format($data['settlement_volume']));
+    $sheet->setCellValue('R' . $row, $data['settlement_amount_paid']);
+    $sheet->setCellValue('S' . $row, $data['settlement_charge_partner']);
+    $sheet->setCellValue('T' . $row, $data['settlement_charge_customer']);
     
-    // Apply data style
-    $sheet->getStyle('A' . $row . ':O' . $row)->applyFromArray($dataStyle);
+    // VARIANCE columns (U-V)
+    $sheet->setCellValue('U' . $row, number_format($data['variance_volume']));
+    $sheet->setCellValue('V' . $row, $data['variance_amount']);
     
-    // Apply column-specific background colors
-    $sheet->getStyle('D' . $row . ':F' . $row)->applyFromArray($normalStyle);
-    $sheet->getStyle('G' . $row . ':I' . $row)->applyFromArray($cancelledStyle);
-    $sheet->getStyle('J' . $row . ':L' . $row)->applyFromArray($netStyle);
-    $sheet->getStyle('M' . $row . ':O' . $row)->applyFromArray($settlementStyle);
+    // Apply data style to all columns
+    $sheet->getStyle('A' . $row . ':V' . $row)->applyFromArray($dataStyle);
     
     // Apply number formatting for currency columns
-    $sheet->getStyle('E' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('F' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('G' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('H' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
-    $sheet->getStyle('I' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('J' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('K' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('L' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('N' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('O' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('P' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('R' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('S' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('T' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('V' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     
     // Bold the NET columns
-    $sheet->getStyle('J' . $row . ':L' . $row)->getFont()->setBold(true);
+    $sheet->getStyle('M' . $row . ':P' . $row)->getFont()->setBold(true)->getColor()->setRGB('000000');
     
     // Left align text columns
     $sheet->getStyle('A' . $row)->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
     $sheet->getStyle('B' . $row)->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
     $sheet->getStyle('C' . $row)->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
+    $sheet->getStyle('D' . $row)->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
     
     $row++;
 }
@@ -535,51 +669,68 @@ foreach ($display_results as $data) {
 if (!empty($display_results)) {
     $sheet->setCellValue('A' . $row, '');
     $sheet->setCellValue('B' . $row, '');
-    $sheet->setCellValue('C' . $row, 'TOTAL');
-    $sheet->getStyle('C' . $row)->getFont()->setBold(true);
-    $sheet->getStyle('C' . $row)->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+    $sheet->setCellValue('C' . $row, '');
+    $sheet->setCellValue('D' . $row, 'TOTAL');
+    $sheet->getStyle('D' . $row)->getFont()->setBold(true)->getColor()->setRGB('000000');
+    $sheet->getStyle('D' . $row)->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
     
-    $sheet->setCellValue('D' . $row, number_format($total_datetime_volume));
-    $sheet->setCellValue('E' . $row, $total_datetime_amount);
-    $sheet->setCellValue('F' . $row, $total_datetime_charge);
-    $sheet->setCellValue('G' . $row, number_format($total_cancellation_volume));
-    $sheet->setCellValue('H' . $row, abs($total_cancellation_amount));
-    $sheet->setCellValue('I' . $row, abs($total_cancellation_charge));
-    $sheet->setCellValue('J' . $row, number_format($total_volume));
-    $sheet->setCellValue('K' . $row, $total_amount);
-    $sheet->setCellValue('L' . $row, $total_charge);
-    $sheet->setCellValue('M' . $row, number_format($total_settlement_volume));
-    $sheet->setCellValue('N' . $row, $total_settlement_amount);
-    $sheet->setCellValue('O' . $row, $total_settlement_charge);
+    // Transaction totals
+    $sheet->setCellValue('E' . $row, number_format($total_datetime_volume));
+    $sheet->setCellValue('F' . $row, $total_datetime_amount);
+    $sheet->setCellValue('G' . $row, $total_datetime_charge_partner);
+    $sheet->setCellValue('H' . $row, $total_datetime_charge_customer);
+    
+    // Cancelled totals
+    $sheet->setCellValue('I' . $row, number_format($total_cancellation_volume));
+    $sheet->setCellValue('J' . $row, abs($total_cancellation_amount));
+    $sheet->setCellValue('K' . $row, abs($total_cancellation_charge_partner));
+    $sheet->setCellValue('L' . $row, abs($total_cancellation_charge_customer));
+    
+    // NET totals
+    $sheet->setCellValue('M' . $row, number_format($total_volume));
+    $sheet->setCellValue('N' . $row, $total_amount);
+    $sheet->setCellValue('O' . $row, $total_charge_partner);
+    $sheet->setCellValue('P' . $row, $total_charge_customer);
+    
+    // Settlement totals
+    $sheet->setCellValue('Q' . $row, number_format($total_settlement_volume));
+    $sheet->setCellValue('R' . $row, $total_settlement_amount);
+    $sheet->setCellValue('S' . $row, $total_settlement_charge_partner);
+    $sheet->setCellValue('T' . $row, $total_settlement_charge_customer);
+    
+    // Variance totals
+    $sheet->setCellValue('U' . $row, number_format($total_variance_volume));
+    $sheet->setCellValue('V' . $row, $total_variance_amount);
     
     // Apply data style to Total
-    $sheet->getStyle('A' . $row . ':O' . $row)->applyFromArray($dataStyle);
-    
-    // Apply column-specific background colors to Total
-    $sheet->getStyle('D' . $row . ':F' . $row)->applyFromArray($normalStyle);
-    $sheet->getStyle('G' . $row . ':I' . $row)->applyFromArray($cancelledStyle);
-    $sheet->getStyle('J' . $row . ':L' . $row)->applyFromArray($netStyle);
-    $sheet->getStyle('M' . $row . ':O' . $row)->applyFromArray($settlementStyle);
+    $totalStyle = $dataStyle;
+    $totalStyle['font']['bold'] = true;
+    $sheet->getStyle('A' . $row . ':V' . $row)->applyFromArray($totalStyle);
     
     // Apply number formatting for Total
-    $sheet->getStyle('E' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('F' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('G' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('H' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
-    $sheet->getStyle('I' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('J' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('K' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('L' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('N' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     $sheet->getStyle('O' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('P' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('R' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('S' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('T' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('V' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     
-    // Make Total row bold
-    $sheet->getStyle('C' . $row . ':O' . $row)->getFont()->setBold(true);
+    // Bold the NET columns in total row
+    $sheet->getStyle('M' . $row . ':P' . $row)->getFont()->setBold(true)->getColor()->setRGB('000000');
     
     // Add double border on top of Total
-    $sheet->getStyle('A' . $row . ':O' . $row)->getBorders()->getTop()->setBorderStyle(Border::BORDER_DOUBLE);
+    $sheet->getStyle('A' . $row . ':V' . $row)->getBorders()->getTop()->setBorderStyle(Border::BORDER_DOUBLE);
 }
 
 // Auto-size columns for all columns
-foreach (range('A', 'O') as $column) {
+foreach (range('A', 'V') as $column) {
     $sheet->getColumnDimension($column)->setAutoSize(true);
 }
 
