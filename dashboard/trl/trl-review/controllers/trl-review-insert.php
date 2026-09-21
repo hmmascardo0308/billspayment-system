@@ -51,7 +51,8 @@ try {
         throw new Exception('Selected TRL row was not found.');
     }
 
-    if (!is_null($row['status']) && trim((string) $row['status']) !== '') {
+    if (!is_null($row['status']) && trim((string) $row['status']) !== '' &&
+        trim((string) $row['status']) !== 'PENDING_APPROVAL') {
         throw new Exception('This reference has already been refunded.');
     }
 
@@ -71,7 +72,7 @@ try {
     if ($hasRefundedBy) {
         $updSql .= ", refunded_by = ?";
     }
-    $updSql .= " WHERE trl_no = ? AND status IS NULL";
+    $updSql .= " WHERE trl_no = ? AND (status IS NULL OR status = 'PENDING_APPROVAL')";
 
     $updStmt = $conn->prepare($updSql);
     if (!$updStmt) {

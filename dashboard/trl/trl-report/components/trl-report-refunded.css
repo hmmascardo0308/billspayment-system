@@ -18,6 +18,38 @@
     font-size: 13px;
 }
 
+.trl-refunded-filter-row {
+    margin-top: 14px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.trl-refunded-filter-row .trl-summary-filters {
+    margin-top: 0;
+}
+
+.trl-refunded-actions {
+    margin-left: auto;
+}
+
+.trl-refunded-export-btn {
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border-radius: 8px;
+    padding: 0 14px;
+    font-weight: 700;
+}
+
+.trl-refunded-export-btn.is-disabled {
+    opacity: 0.6;
+}
+
 .trl-refunded-empty {
     margin-top: 14px;
     border: 1px dashed #d1d5db;

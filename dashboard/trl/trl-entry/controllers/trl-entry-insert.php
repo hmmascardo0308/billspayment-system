@@ -271,7 +271,7 @@ try {
     exit;
 }
 
-$trlStatus = empty($attachments) ? 'DRAFT' : 'PENDING_APPROVAL';
+$trlStatus = empty($attachments) ? 'DRAFT' : null;
 
 // Duplicate check: ensure reference number isn't already present
 $refToCheck = trim((string) $payload['ref_no']);
@@ -457,11 +457,11 @@ try {
         'title' => empty($attachments) ? 'Draft Saved' : 'Transaction Request Log',
         'message' => empty($attachments)
             ? 'No attachment was provided, so the transaction was saved as a draft.'
-            : 'Transaction Request Log has been submitted and is now pending approval.',
+            : 'Transaction Request Log has been submitted and is now available for review.',
         'redirect' => empty($attachments)
             ? 'trl-entry.php?mode=draft'
-            : (((($_SESSION['user_type'] ?? '') === 'admin') || ((string) $id === '17098209'))
-                ? 'trl-entry.php?mode=pending'
+            : ((function_exists('has_any_permission') && has_any_permission(['TRL Review', 'Bills Payment']))
+                ? '../trl-review/trl-review.php'
                 : 'trl-entry.php')
     ]);
     exit;

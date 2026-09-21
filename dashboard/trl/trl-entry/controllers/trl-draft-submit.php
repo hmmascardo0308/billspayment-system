@@ -124,13 +124,14 @@ try {
     }
 
     $updateStmt = $conn->prepare("UPDATE mldb.trl
-        SET status = 'PENDING_APPROVAL'
+        SET status = NULL
         WHERE trl_no = ? AND (status = 'DRAFT' OR status IS NULL)");
     if (!$updateStmt) throw new Exception('Unable to prepare draft submission.');
     $updateStmt->bind_param('i', $trlNo);
-    if (!$updateStmt->execute() || $updateStmt->affected_rows !== 1) {
+    if (!$updateStmt->execute() ||
+        (((string) ($draft['status'] ?? '')) === 'DRAFT' && $updateStmt->affected_rows !== 1)) {
         $updateStmt->close();
-        throw new Exception('The draft could not be submitted for approval.');
+        throw new Exception('The draft could not be sent to review.');
     }
     $updateStmt->close();
 
@@ -138,9 +139,9 @@ try {
     $conn->autocommit(true);
     echo json_encode([
         'success' => true,
-        'message' => 'The attachment was saved and the transaction is now pending approval.',
-        'redirect' => ((($_SESSION['user_type'] ?? '') === 'admin') || ((string) $userId === '17098209'))
-            ? 'trl-entry.php?mode=pending'
+        'message' => 'The attachment was saved and the transaction is now available for review.',
+        'redirect' => (function_exists('has_any_permission') && has_any_permission(['TRL Review', 'Bills Payment']))
+            ? '../trl-review/trl-review.php'
             : 'trl-entry.php'
     ]);
     exit;

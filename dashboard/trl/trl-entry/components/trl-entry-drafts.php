@@ -188,8 +188,8 @@ if (isset($conn)) {
                         Swal.fire({ icon: 'error', title: 'Submission Failed', text: data.message || 'Unable to submit the draft.' });
                         return;
                     }
-                    Swal.fire({ icon: 'success', title: 'Pending Approval', text: data.message, confirmButtonText: 'Acknowledged' })
-                        .then(function () { window.location.href = data.redirect || 'trl-entry.php?mode=pending'; });
+                    Swal.fire({ icon: 'success', title: 'Sent to Review', text: data.message, confirmButtonText: 'Acknowledged' })
+                        .then(function () { window.location.href = data.redirect || 'trl-entry.php'; });
                 })
                 .catch(function () {
                     Swal.close();

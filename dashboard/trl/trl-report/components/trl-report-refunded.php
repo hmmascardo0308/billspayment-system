@@ -67,6 +67,9 @@ if ($selectedPartnerId !== '' && !isset($partners[$selectedPartnerId])) {
 
 $selectedPartner = $selectedPartnerId !== '' ? $partners[$selectedPartnerId] : null;
 $selectedPartnerName = $selectedPartner ? (string) $selectedPartner['label'] : '';
+$refundedExportUrl = $selectedPartnerId !== ''
+    ? 'controllers/trl-report-refunded-excel.php?partner_id=' . rawurlencode($selectedPartnerId)
+    : '';
 
 $rows = [];
 
@@ -186,22 +189,33 @@ if ($selectedPartnerId !== '') {
         <p>List of refunded transactions for the selected partner.</p>
     </div>
 
-    <form method="get" class="trl-summary-filters" id="refundedFilterForm">
-        <input type="hidden" name="mode" value="refunded">
-        <label for="partner_id_refunded">Partner</label>
-        <div class="subbiller-dropdown partner-dropdown" id="partnerDropdownRefunded">
-            <button type="button" id="partnerToggleRefunded" class="subbiller-toggle partner-toggle"><?php echo $selectedPartnerName !== '' ? htmlspecialchars($selectedPartnerName) : 'Select Partner'; ?> <i class="fa-solid fa-caret-down" aria-hidden="true"></i></button>
-            <div class="subbiller-list partner-list" id="partnerListRefunded" aria-hidden="true">
-                <div class="partner-search-wrap">
-                    <input type="search" id="partnerSearchRefunded" class="partner-search" placeholder="Search partner..." aria-label="Search partners" autocomplete="off">
+    <div class="trl-refunded-filter-row">
+        <form method="get" class="trl-summary-filters" id="refundedFilterForm">
+            <input type="hidden" name="mode" value="refunded">
+            <label for="partner_id_refunded">Partner</label>
+            <div class="subbiller-dropdown partner-dropdown" id="partnerDropdownRefunded">
+                <button type="button" id="partnerToggleRefunded" class="subbiller-toggle partner-toggle"><?php echo $selectedPartnerName !== '' ? htmlspecialchars($selectedPartnerName) : 'Select Partner'; ?> <i class="fa-solid fa-caret-down" aria-hidden="true"></i></button>
+                <div class="subbiller-list partner-list" id="partnerListRefunded" aria-hidden="true">
+                    <div class="partner-search-wrap">
+                        <input type="search" id="partnerSearchRefunded" class="partner-search" placeholder="Search partner..." aria-label="Search partners" autocomplete="off">
+                    </div>
+                    <?php foreach ($partners as $partnerKey => $partner): ?>
+                        <button type="button" class="partner-item" data-value="<?php echo htmlspecialchars($partnerKey); ?>"><?php echo htmlspecialchars((string) $partner['label']); ?></button>
+                    <?php endforeach; ?>
                 </div>
-                <?php foreach ($partners as $partnerKey => $partner): ?>
-                    <button type="button" class="partner-item" data-value="<?php echo htmlspecialchars($partnerKey); ?>"><?php echo htmlspecialchars((string) $partner['label']); ?></button>
-                <?php endforeach; ?>
             </div>
+            <input type="hidden" id="partner_id_refunded" name="partner_id" value="<?php echo htmlspecialchars($selectedPartnerId); ?>">
+        </form>
+
+        <div class="trl-refunded-actions">
+            <a
+                href="<?php echo htmlspecialchars($refundedExportUrl !== '' ? $refundedExportUrl : '#'); ?>"
+                id="trlRefundedExportBtn"
+                class="btn btn-danger trl-refunded-export-btn <?php echo $selectedPartnerId === '' ? 'is-disabled' : ''; ?>"
+                data-partner="<?php echo htmlspecialchars($selectedPartnerId); ?>"
+            ><i class="fa-solid fa-file-excel" aria-hidden="true"></i> Export Excel</a>
         </div>
-        <input type="hidden" id="partner_id_refunded" name="partner_id" value="<?php echo htmlspecialchars($selectedPartnerId); ?>">
-    </form>
+    </div>
 
     <?php if ($selectedPartnerId === ''): ?>
         <div class="trl-refunded-empty">Choose a partner to view refunded transactions.</div>
@@ -306,6 +320,43 @@ if ($selectedPartnerId !== '') {
                 pInput.value = val;
                 pToggle.innerHTML = it.textContent + ' <i class="fa-solid fa-caret-down" aria-hidden="true"></i>';
                 if (pForm) pForm.submit();
+            });
+        });
+    }
+
+    var exportBtn = document.getElementById('trlRefundedExportBtn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', function(e) {
+            var partnerId = (exportBtn.getAttribute('data-partner') || '').trim();
+            var href = exportBtn.getAttribute('href') || '#';
+
+            e.preventDefault();
+            if (!partnerId || href === '#') {
+                if (window.Swal) {
+                    Swal.fire({
+                        icon: 'info',
+                        title: 'Select Partner First',
+                        text: 'Please choose a partner before exporting refunded transactions.'
+                    });
+                }
+                return;
+            }
+
+            if (!window.Swal) {
+                window.location.href = href;
+                return;
+            }
+
+            Swal.fire({
+                icon: 'question',
+                title: 'Export Refunded Transactions?',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Export',
+                cancelButtonText: 'Cancel'
+            }).then(function(result) {
+                if (result.isConfirmed) {
+                    window.location.href = href;
+                }
             });
         });
     }

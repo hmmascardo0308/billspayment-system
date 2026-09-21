@@ -57,6 +57,23 @@ if ($remarksColumnCheck && mysqli_num_rows($remarksColumnCheck) > 0) {
     $remarksSelect = 't.remarks AS remarks';
 }
 
+$reviewAttachments = [];
+$attachmentSql = "SELECT a.id, a.trl_no, a.file_name
+                  FROM mldb.trl_attachments a
+                  INNER JOIN mldb.trl t ON t.trl_no = a.trl_no
+                  WHERE t.status IS NULL OR t.status = 'PENDING_APPROVAL'
+                  ORDER BY a.id ASC";
+$attachmentResult = $conn->query($attachmentSql);
+if ($attachmentResult) {
+    while ($attachment = $attachmentResult->fetch_assoc()) {
+        $attachmentTrlNo = (int) ($attachment['trl_no'] ?? 0);
+        if (!isset($reviewAttachments[$attachmentTrlNo])) {
+            $reviewAttachments[$attachmentTrlNo] = [];
+        }
+        $reviewAttachments[$attachmentTrlNo][] = $attachment;
+    }
+}
+
 $sql = "SELECT
             t.trl_no,
             t.transfer_datetime,
@@ -83,7 +100,7 @@ $sql = "SELECT
         LEFT JOIN mldb.trl_wrongbiller wb ON wb.trl_no = t.trl_no
         LEFT JOIN mldb.trl_overstatedamount oa ON oa.trl_no = t.trl_no
         LEFT JOIN mldb.trl_cancelledtransaction ct ON ct.trl_no = t.trl_no
-        WHERE t.status IS NULL";
+        WHERE (t.status IS NULL OR t.status = 'PENDING_APPROVAL')";
 
 $types = '';
 $params = [];
@@ -137,7 +154,8 @@ if ($stmt) {
                 'correct_amount' => $correctAmount,
                 'difference_value' => $difference,
                 'reason' => (string) ($row['reason'] ?? ''),
-                'remarks' => (string) ($row['remarks'] ?? '')
+                'remarks' => (string) ($row['remarks'] ?? ''),
+                'attachments' => $reviewAttachments[(int) ($row['trl_no'] ?? 0)] ?? []
             ];
 
             $rows[] = $item;
@@ -289,6 +307,7 @@ unset($_SESSION['trl_review_flash']);
                                                 <?php endif; ?>
                                                 <th>REASON</th>
                                                 <th>REMARKS</th>
+                                                <th>ATTACHMENTS</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -316,6 +335,14 @@ unset($_SESSION['trl_review_flash']);
                                                     <?php endif; ?>
                                                     <td><?php echo htmlspecialchars((string) ($row['reason'] ?? '')); ?></td>
                                                     <td><?php echo htmlspecialchars((string) ($row['remarks'] ?? '')); ?></td>
+                                                    <td>
+                                                        <?php foreach (($row['attachments'] ?? []) as $attachment): ?>
+                                                            <a href="controllers/trl-review-attachment.php?id=<?php echo (int) ($attachment['id'] ?? 0); ?>"
+                                                               target="_blank" rel="noopener" onclick="event.stopPropagation();">
+                                                                <?php echo htmlspecialchars((string) ($attachment['file_name'] ?? 'Attachment')); ?>
+                                                            </a><br>
+                                                        <?php endforeach; ?>
+                                                    </td>
                                                 </tr>
                                             <?php endforeach; ?>
                                         </tbody>
@@ -485,7 +512,6 @@ unset($_SESSION['trl_review_flash']);
                     Swal.fire({
                         icon: 'question',
                         title: 'Finalize Refund?',
-                        html: 'You are about to mark this record as <b>REFUNDED</b>.<br>Do you want to continue?',
                         showCancelButton: true,
                         confirmButtonText: 'Yes, Confirm Refund',
                         cancelButtonText: 'No, Go Back'
