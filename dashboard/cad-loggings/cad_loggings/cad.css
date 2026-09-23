@@ -1,0 +1,349 @@
+/* CAD Form Container - Compact Layout */
+.cad-form-container { 
+    max-width: 1500px; 
+    margin: 10px auto 20px; 
+    padding: 0 15px; 
+}
+
+.cad-form-card { 
+    background: #fcecec; 
+    border-radius: 8px; 
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06); 
+    padding: 16px 22px; 
+}
+
+.cad-form-grid { 
+    display: grid; 
+    grid-template-columns: repeat(4, 1fr); 
+    gap: 10px 16px; 
+}
+
+.cad-form-group { 
+    display: flex; 
+    flex-direction: column; 
+}
+
+.cad-form-group.full-width { 
+    grid-column: 1 / -1; 
+}
+
+.cad-form-group label { 
+    font-weight: 600; 
+    font-size: 15px; 
+    color: #333; 
+    margin-bottom: 3px; 
+}
+
+.cad-form-group input, 
+.cad-form-group select, 
+.cad-form-group textarea { 
+    padding: 6px 9px; 
+    border: 1.5px solid #7c7c7c; 
+    border-radius: 5px; 
+    font-size: 0.85rem; 
+    transition: border-color 0.2s; 
+    height: 45px;
+    box-sizing: border-box;
+}
+
+.cad-form-group input:focus, 
+.cad-form-group select:focus, 
+.cad-form-group textarea:focus { 
+    outline: none; 
+    border-color: #a90000; 
+    box-shadow: 0 0 0 2px rgba(171,0,0,0.12); 
+}
+
+.cad-form-group textarea { 
+    min-height: 50px; 
+    resize: vertical; 
+    height: auto;
+}
+
+.cad-form-actions { 
+    margin-top: 14px; 
+    display: flex; 
+    gap: 10px; 
+    justify-content: flex-end; 
+}
+
+.cad-btn { 
+    padding: 7px 18px; 
+    border-radius: 5px; 
+    font-weight: 600; 
+    font-size: 0.85rem; 
+    cursor: pointer; 
+    border: none; 
+    transition: background 0.2s, transform 0.1s; 
+}
+
+.cad-btn-primary { 
+    background: #f74a4a; 
+    color: #fff; 
+}
+
+.cad-btn-primary:hover { 
+    background: #8a0000; 
+}
+
+.cad-btn-secondary { 
+    background: #c7d2d2; 
+    color: #333; 
+}
+
+.cad-btn-secondary:hover { 
+    background: #6b6b6b; 
+    color: #ffffff;
+}
+
+/* Select2 adjustments for compact form */
+.select2-container .select2-selection--single { 
+    height: 34px; 
+    border: 1px solid #d0d5dd; 
+    border-radius: 5px; 
+    padding: 2px 6px; 
+}
+
+.select2-container--default .select2-selection--single .select2-selection__rendered { 
+    line-height: 28px; 
+    color: #333; 
+    font-size: 0.85rem;
+}
+
+.select2-container--default .select2-selection--single .select2-selection__arrow { 
+    height: 32px; 
+}
+
+/* BP Ref spinner */
+.bp-ref-wrap { 
+    position: relative; 
+}
+
+.bp-ref-spinner {
+    position: absolute; 
+    right: 28px; 
+    top: 50%; 
+    transform: translateY(-50%);
+    color: #a90000; 
+    display: none; 
+    z-index: 5;
+}
+
+/* Attachments compact */
+.attach-hint {
+    display: block;
+    font-size: 11px;
+    color: #6b7280;
+    margin-top: 2px;
+    line-height: 1.3;
+}
+
+.attach-list {
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.attach-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    background: #f4f6f9;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 12px;
+}
+
+.attach-item .attach-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.attach-item .attach-remove {
+    color: #dc2626;
+    cursor: pointer;
+}
+
+/* Read-only fields */
+.readonly-select .select2-selection--single {
+    background-color: #f4f6f9;
+    cursor: not-allowed;
+}
+
+.readonly-input {
+    background-color: #f4f6f9;
+    cursor: not-allowed;
+    color: #374151;
+}
+
+/* Responsive fallback */
+@media (max-width: 900px) { 
+    .cad-form-grid { 
+        grid-template-columns: 1fr 1fr; 
+    } 
+}
+
+@media (max-width: 600px) { 
+    .cad-form-grid { 
+        grid-template-columns: 1fr; 
+    } 
+}
+
+
+
+        /* Hide reason-dependent fields by default */
+        .reason-dependent { display: none; }
+        .reason-dependent.visible { display: block; }
+
+        /* Read-only look for the wrong biller display */
+        .readonly-select .select2-selection--single {
+            background-color: #f4f6f9;
+            cursor: not-allowed;
+        }
+
+        /* Read-only look for the transacted-by input */
+        .readonly-input {
+            background-color: #f4f6f9;
+            cursor: not-allowed;
+            color: #374151;
+        }
+
+        /* Read-only date input — hide the native calendar picker icon */
+        input[type="date"].readonly-input::-webkit-calendar-picker-indicator {
+            display: none;
+            -webkit-appearance: none;
+        }
+        input[type="date"].readonly-input::-webkit-inner-spin-button,
+        input[type="date"].readonly-input::-webkit-clear-button {
+            display: none;
+        }
+
+        /* Attachments UI */
+        .attach-hint {
+            display: block;
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+        .attach-list {
+            margin-top: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .attach-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            background: #f4f6f9;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 13px;
+        }
+        .attach-item .attach-name {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .attach-item .attach-remove {
+            color: #dc2626;
+            cursor: pointer;
+        }
+
+        /* ---- Drag & Drop Zone ---- */
+        .attach-drop-zone {
+            border: 2px dashed #c0c4cc;
+            border-radius: 6px;
+            padding: 20px;
+            text-align: center;
+            background: #fafafa;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+        .attach-drop-zone:hover {
+            border-color: #a90000;
+            background: #fff5f5;
+        }
+        .attach-drop-zone.dragover {
+            border-color: #f74a4a;
+            background: #ffe8e8;
+            box-shadow: 0 0 0 3px rgba(247, 74, 74, 0.15);
+        }
+        .attach-drop-zone .drop-icon {
+            font-size: 28px;
+            color: #a90000;
+            margin-bottom: 6px;
+        }
+        .attach-drop-zone .drop-text {
+            font-size: 13px;
+            color: #4b5563;
+        }
+        .attach-drop-zone .drop-text strong {
+            color: #a90000;
+        }
+        .attach-drop-zone input[type="file"] {
+            display: none;
+        }
+
+        /* ---- Cancelled lock state ---- */
+        .cad-locked-section {
+            position: relative;
+            pointer-events: none;
+            opacity: 0.55;
+            filter: grayscale(0.4);
+        }
+        .cad-locked-section::after {
+            content: "🔒 LOGGING DISABLED — TRANSACTION IS CANCELLED";
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #fef2f2;
+            color: #b91c1c;
+            border: 1px solid #fca5a5;
+            border-radius: 4px;
+            padding: 4px 10px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .cad-btn-primary:disabled,
+        .cad-btn-primary[disabled] {
+            background: #b0b0b0 !important;
+            cursor: not-allowed !important;
+            opacity: 0.6;
+        }
+        .cad-locked-section .cad-btn-secondary {
+            pointer-events: auto;
+        }
+
+        /* Permission-restricted field hint */
+        .perm-hint {
+            font-weight: normal;
+            color: #6b7280;
+            font-size: 12px;
+        }
+
+        /* Disabled autofill fields — keep Select2 greyed look */
+        .select2-container--default.select2-container--disabled .select2-selection--single {
+            background-color: #eef1f5;
+            cursor: not-allowed;
+        }
+        input[disabled].readonly-input {
+            background-color: #eef1f5 !important;
+            cursor: not-allowed;
+        }

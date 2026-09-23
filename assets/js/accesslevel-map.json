@@ -97,14 +97,38 @@
                     "key": "Bills Payment",
                     "label": "Bills Payment",
                     "icon": "check_circle"
-                },
-                { 
-                    "key": "CAD Loggings", 
-                    "label": "CAD Loggings", 
-                    "icon": "check_circle" }
+                }
 
             ]
         },
+
+
+      {
+    "key": "CAD",
+    "label": "CAD Loggings",
+    "icon": "check_circle",
+    "children": [
+        {
+            "key": "CAD Loggings",
+            "label": "CAD Loggings",
+            "icon": "check_circle"
+        },
+        {
+            "key": "CAD Loggings Report",
+            "label": "CAD Loggings Report",
+            "icon": "check_circle"
+        },
+        {
+            "key": "VPO",
+            "label": "VPO",
+            "icon": "check_circle"
+        }
+    ]
+}
+,
+
+
+
         {
             "key": "Billspayment - TRL",
             "label": "Billspayment - TRL",

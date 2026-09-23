@@ -52,6 +52,17 @@ function default_permission_catalog()
                 ['key' => 'BP Report Balance Sheet', 'label' => 'Report > Balance Sheet', 'icon' => 'analytics']
             ]
         ],
+
+[
+    'key' => 'CAD',
+    'label' => 'CAD Loggings',
+    'icon' => 'list',
+    'children' => [
+        ['key' => 'CAD Loggings', 'label' => 'CAD Loggings', 'icon' => 'book'],
+        ['key' => 'CAD Loggings Report', 'label' => 'CAD Loggings Report', 'icon' => 'chart_bar'],
+        ['key' => 'VPO', 'label' => 'VPO', 'icon' => 'visibility']
+    ]
+],
         [
             'key' => 'Billing Invoice',
             'label' => 'Billing Invoice',

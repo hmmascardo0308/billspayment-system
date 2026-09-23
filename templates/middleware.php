@@ -200,6 +200,10 @@ function permission_aliases($perm)
         'View Partner List' => ['Masterfiles View Partner List'],
         'Volume Report' => ['BP Report Volume'],
          'CAD Loggings' => ['CAD Loggings'],
+         'CAD Loggings Report'  => ['CAD Loggings Report'],
+         'VPO' => ['VPO'],
+         
+
     ];
 
     $keys = [$perm];
