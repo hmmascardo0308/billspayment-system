@@ -1,45 +1,69 @@
-        /* ---- Filters bar ---- */
-        .cad-filters {
-            background: #fff;
-            border: 1px solid #e5e7eb;
-            border-radius: 10px;
-            padding: 14px 16px;
-            margin-bottom: 16px;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 12px;
-            align-items: end;
-            width: 1870px;
-            margin-left: 1%;
-        }
-        .cad-filters .filter-group { display: flex; flex-direction: column; gap: 4px; }
-        .cad-filters label { font-size: 12px; color: #000000; font-weight: 600; }
-        .cad-filters input, .cad-filters select {
-            padding: 8px 10px;
-            border: 1px solid #d1d5db;
-            border-radius: 6px;
-            font-size: 13px;
-            background: #fff;
-        }
-        .cad-filters .filter-actions { display: flex; gap: 5px; }
-        .cad-filters .filter-actions button,
-        .cad-filters .filter-actions a {
-            padding: 8px 8px;
-            border-radius: 6px;
-            font-size: 13px;
-            cursor: pointer;
-            text-decoration: none;
-            border: 1px solid transparent;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .btn-apply   { background: #d30000; color:#fff; }
-        .btn-apply:hover   { background: #ab0000; }
-        .btn-reset   { background:#c4c4c4; color:#374151; border-color:#e5e7eb; }
-        .btn-reset:hover   { background:#e5e7eb; }
-         .btn-new   { background:#700000; color:#ffffff; border-color:#e5e7eb; }
-        .btn-new:hover   { background:#ff0000; }
+/* ---- Filters bar ---- */
+.cad-filters {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    align-items: end;
+    width: 100%;
+    max-width: 97%; /* Matches your table width */
+    margin-left: auto;
+    margin-right: auto;
+    box-sizing: border-box; /* Ensures padding doesn't cause overflow */
+}
+
+.cad-filters .filter-group { 
+    display: flex; 
+    flex-direction: column; 
+    gap: 4px; 
+}
+
+.cad-filters label { 
+    font-size: 12px; 
+    color: #000000; 
+    font-weight: 600; 
+}
+
+.cad-filters input, 
+.cad-filters select {
+    padding: 8px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 13px;
+    background: #fff;
+    width: 100%; /* Ensures inputs fill their grid cell */
+    box-sizing: border-box;
+}
+
+.cad-filters .filter-actions { 
+    display: flex; 
+    gap: 5px; 
+}
+
+.cad-filters .filter-actions button,
+.cad-filters .filter-actions a {
+    padding: 8px 12px; /* Slightly wider padding for better click area */
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    text-decoration: none;
+    border: 1px solid transparent;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.btn-apply   { background: #d30000; color:#fff; }
+.btn-apply:hover   { background: #ab0000; }
+.btn-reset   { background:#c4c4c4; color:#374151; border-color:#e5e7eb; }
+.btn-reset:hover   { background:#e5e7eb; }
+.btn-new   { background:#700000; color:#ffffff; border-color:#e5e7eb; }
+.btn-new:hover   { background:#ff0000; }
 
         /* ---- Table ---- */
         .cad-table-wrap {

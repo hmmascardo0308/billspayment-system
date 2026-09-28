@@ -75,7 +75,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bp_ref_no'])) {
     $cad_remarks       = strtoupper(trim($_POST['cad_status_remarks']  ?? ''));
     $requested_date    = date('Y-m-d H:i:s');
 
-    $status            = 'OPEN';
+    // === ADDED: Status (user-selectable, defaults to OPEN) ===
+    $allowed_statuses = ['OPEN', 'CLOSED'];
+    $status = strtoupper(trim($_POST['status'] ?? 'OPEN'));
+    if (!in_array($status, $allowed_statuses, true)) {
+        $status = 'OPEN';
+    }
+    // === END ADDED ===
 
     $correct_biller_id = '';
     $correct_biller    = '';
@@ -308,7 +314,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bp_ref_no'])) {
                 $requested_date,
                 $transacted_by,
                 $user_type_label,
-                $status,
+                $status,          // === now user-selectable ===
                 $send_to
             );
 
@@ -543,10 +549,23 @@ try {
                     </select>
                 </div>
 
+               
+
                 <div class="cad-form-group">
                     <label for="irno">IR No.:</label>
                     <input type="text" id="irno" name="irno" placeholder="Enter IR Number" required>
                 </div>
+
+                 <!-- === ADDED: Status dropdown (OPEN / CLOSED) === -->
+                <div class="cad-form-group">
+                    <label for="status">Status:</label>
+                    <select id="status" name="status" class="cad-select" required
+                            data-placeholder="-- Select Status --">
+                        <option value="OPEN" selected>OPEN</option>
+                        <option value="CLOSED">CLOSED</option>
+                    </select>
+                </div>
+                <!-- === END ADDED === -->
 
                 <!-- ATTACHMENTS -->
                 <div class="cad-form-group full-width" style="margin-top: 15px;">
@@ -1040,12 +1059,30 @@ try {
                 }
 
                 // Sync Select2 disabled state for lockable selects
-                $lockableSection.find('.cad-select').each(function() {
-                    var $el = $(this);
-                    if ($el.data('select2')) {
-                        $el.select2('enable', !$el.prop('disabled'));
-                    }
-                });
+               $lockableSection.find('.cad-select').each(function() {
+    var $el = $(this);
+    var isDisabled = $el.prop('disabled');
+    var placeholder = $el.data('placeholder') || '-- Select --';
+    var currentVal = $el.val();
+
+    if ($el.data('select2')) {
+        $el.select2('destroy');
+    }
+
+    $el.prop('disabled', isDisabled);
+    $el.toggleClass('readonly-select', isDisabled);
+
+    $el.select2({
+        width: '100%',
+        placeholder: placeholder,
+        allowClear: true,
+        disabled: isDisabled
+    });
+
+    if (currentVal !== null && currentVal !== undefined && currentVal !== '') {
+        $el.val(currentVal).trigger('change.select2');
+    }
+});
 
                 $dropZone.css('pointer-events', '');
 
@@ -1071,6 +1108,10 @@ try {
                 $('#regionname').val(null).trigger('change.select2');
                 filterBranches();
                 $('#branchname').val(null).trigger('change.select2');
+
+                // === ADDED: Reset Status back to OPEN ===
+                $('#status').val('OPEN').trigger('change.select2');
+                // === END ADDED ===
 
                 // Re-lock them
                 lockAutofillFields();
@@ -1163,6 +1204,10 @@ try {
                                     filterBranches();
                                     $('#branchname').val(null).trigger('change.select2');
 
+                                    // === ADDED: Manual/Excel entry → default Status to CLOSED ===
+                                    $('#status').val('CLOSED').trigger('change.select2');
+                                    // === END ADDED ===
+
                                     Swal.fire({
                                         icon: 'info',
                                         title: 'Not Found',
@@ -1202,6 +1247,10 @@ try {
                                 }
                                 if (d.account_no)   $('#account_no').val(d.account_no);
                                 if (d.account_name) $('#account_name').val(d.account_name);
+
+                                // === ADDED: Auto-filled from DB → default Status to OPEN ===
+                                $('#status').val('OPEN').trigger('change.select2');
+                                // === END ADDED ===
 
                                 if (d.is_cancelled) {
                                     lockFormForCancelled();

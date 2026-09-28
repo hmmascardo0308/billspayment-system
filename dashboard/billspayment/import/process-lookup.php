@@ -471,14 +471,17 @@ if (isset($_POST['rows'])) {
             'imported_by', 'imported_date', 'rfp_no', 'cad_no', 'hold_status', 'post_transaction'
         ];
 
-        // Prepare duplicate check statement
+        // ============================================
+        // DUPLICATE CHECK
+        // Rule: same reference_no + same status + same cancellation_date state
+        // run_date, report_date, datetime are IGNORED so that re-uploads of the
+        // same reference (even with different run_date / report_date) are caught.
+        // A normal and its cancellation still coexist (different status + cancellation_date).
+        // ============================================
         $duplicateSql = "SELECT id FROM mldb.billspayment_transaction 
-            WHERE report_date = ? 
-              AND reference_no = ? 
-              AND (cancellation_date = ? OR (cancellation_date IS NULL AND ? IS NULL))
+            WHERE reference_no = ? 
               AND (status = ? OR (status IS NULL AND ? IS NULL))
-              AND datetime = ? 
-              AND (run_date = ? OR (run_date IS NULL AND ? IS NULL))
+              AND (cancellation_date = ? OR (cancellation_date IS NULL AND ? IS NULL))
             LIMIT 1";
         
         $duplicateStmt = $conn->prepare($duplicateSql);
@@ -516,13 +519,11 @@ if (isset($_POST['rows'])) {
             $runDateValue = bp_normalize_datetime($row['run_date'] ?? null);
 
             // Create duplicate key for file-level checking
+            // Matches the DB duplicate rule: reference_no + status + cancellation_date
             $duplicateKey = implode('|', [
-                $reportDate ?? 'NULL',
                 $referenceNo ?? 'NULL',
-                $cancellationDate ?? 'NULL',
                 $statusValue ?? 'NULL',
-                $datetimeValue ?? 'NULL',
-                $runDateValue ?? 'NULL'
+                $cancellationDate ?? 'NULL'
             ]);
 
             // Check file-level duplicates
@@ -533,27 +534,19 @@ if (isset($_POST['rows'])) {
             $seen[$duplicateKey] = true;
 
             // Check database duplicates
-            $dupReportDate = $reportDate ?? '';
             $dupReferenceNo = $referenceNo ?? '';
             $dupCancellationDate = $cancellationDate ?? '';
             $dupCancellationDateNull = $cancellationDate === null ? null : '';
             $dupStatus = $statusValue ?? '';
             $dupStatusNull = $statusValue === null ? null : '';
-            $dupDatetime = $datetimeValue ?? '';
-            $dupRunDate = $runDateValue ?? '';
-            $dupRunDateNull = $runDateValue === null ? null : '';
 
             $duplicateStmt->bind_param(
-                'sssssssss',
-                $dupReportDate,
+                'sssss',
                 $dupReferenceNo,
-                $dupCancellationDate,
-                $dupCancellationDateNull,
                 $dupStatus,
                 $dupStatusNull,
-                $dupDatetime,
-                $dupRunDate,
-                $dupRunDateNull
+                $dupCancellationDate,
+                $dupCancellationDateNull
             );
 
             if (!$duplicateStmt->execute()) {

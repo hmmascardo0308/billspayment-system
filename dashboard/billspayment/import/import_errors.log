@@ -345,3 +345,54 @@ Stack trace:
 [16-Sep-2026 08:45:45 Europe/Berlin] === STARTING LOOKUP ===
 [16-Sep-2026 08:45:45 Europe/Berlin] Total rows to lookup: 38087
 [16-Sep-2026 08:46:20 Europe/Berlin] Lookup completed. Processed: 38087 rows
+[24-Sep-2026 03:39:15 Europe/Berlin] === STARTING LOOKUP ===
+[24-Sep-2026 03:39:15 Europe/Berlin] Total rows to lookup: 297
+[24-Sep-2026 03:39:15 Europe/Berlin] Lookup completed. Processed: 297 rows
+[24-Sep-2026 03:39:20 Europe/Berlin] === STARTING IMPORT ===
+[24-Sep-2026 03:39:20 Europe/Berlin] Total rows to import: 297
+[24-Sep-2026 03:39:22 Europe/Berlin] Import completed. Inserted: 297, Duplicates: 0, Errors: 0
+[24-Sep-2026 03:44:00 Europe/Berlin] === STARTING LOOKUP ===
+[24-Sep-2026 03:44:00 Europe/Berlin] Total rows to lookup: 16
+[24-Sep-2026 03:44:00 Europe/Berlin] Lookup completed. Processed: 16 rows
+[24-Sep-2026 03:44:50 Europe/Berlin] === STARTING LOOKUP ===
+[24-Sep-2026 03:44:50 Europe/Berlin] Total rows to lookup: 23
+[24-Sep-2026 03:44:50 Europe/Berlin] Lookup completed. Processed: 23 rows
+[24-Sep-2026 03:45:01 Europe/Berlin] === STARTING LOOKUP ===
+[24-Sep-2026 03:45:01 Europe/Berlin] Total rows to lookup: 23
+[24-Sep-2026 03:45:01 Europe/Berlin] Lookup completed. Processed: 23 rows
+[24-Sep-2026 03:45:02 Europe/Berlin] === STARTING IMPORT ===
+[24-Sep-2026 03:45:02 Europe/Berlin] Total rows to import: 23
+[24-Sep-2026 03:45:02 Europe/Berlin] Import completed. Inserted: 23, Duplicates: 0, Errors: 0
+[24-Sep-2026 04:15:44 Europe/Berlin] === STARTING LOOKUP ===
+[24-Sep-2026 04:15:44 Europe/Berlin] Total rows to lookup: 130
+[24-Sep-2026 04:15:44 Europe/Berlin] Lookup completed. Processed: 130 rows
+[24-Sep-2026 04:18:00 Europe/Berlin] === STARTING LOOKUP ===
+[24-Sep-2026 04:18:00 Europe/Berlin] Total rows to lookup: 2
+[24-Sep-2026 04:18:00 Europe/Berlin] Lookup completed. Processed: 2 rows
+[24-Sep-2026 04:18:01 Europe/Berlin] === STARTING IMPORT ===
+[24-Sep-2026 04:18:01 Europe/Berlin] Total rows to import: 2
+[24-Sep-2026 04:18:01 Europe/Berlin] Import completed. Inserted: 0, Duplicates: 2, Errors: 0
+[24-Sep-2026 04:18:56 Europe/Berlin] === STARTING LOOKUP ===
+[24-Sep-2026 04:18:56 Europe/Berlin] Total rows to lookup: 4
+[24-Sep-2026 04:18:56 Europe/Berlin] Lookup completed. Processed: 4 rows
+[24-Sep-2026 04:18:57 Europe/Berlin] === STARTING IMPORT ===
+[24-Sep-2026 04:18:58 Europe/Berlin] Total rows to import: 4
+[24-Sep-2026 04:18:58 Europe/Berlin] Import completed. Inserted: 0, Duplicates: 4, Errors: 0
+[24-Sep-2026 04:21:03 Europe/Berlin] === STARTING LOOKUP ===
+[24-Sep-2026 04:21:03 Europe/Berlin] Total rows to lookup: 18
+[24-Sep-2026 04:21:03 Europe/Berlin] Lookup completed. Processed: 18 rows
+[24-Sep-2026 04:21:05 Europe/Berlin] === STARTING IMPORT ===
+[24-Sep-2026 04:21:05 Europe/Berlin] Total rows to import: 18
+[24-Sep-2026 04:21:05 Europe/Berlin] Import completed. Inserted: 18, Duplicates: 0, Errors: 0
+[24-Sep-2026 04:42:22 Europe/Berlin] === STARTING LOOKUP ===
+[24-Sep-2026 04:42:22 Europe/Berlin] Total rows to lookup: 441
+[24-Sep-2026 04:42:22 Europe/Berlin] Lookup completed. Processed: 441 rows
+[24-Sep-2026 04:42:24 Europe/Berlin] === STARTING IMPORT ===
+[24-Sep-2026 04:42:24 Europe/Berlin] Total rows to import: 441
+[24-Sep-2026 04:42:28 Europe/Berlin] Import completed. Inserted: 423, Duplicates: 18, Errors: 0
+[24-Sep-2026 04:43:20 Europe/Berlin] === STARTING LOOKUP ===
+[24-Sep-2026 04:43:20 Europe/Berlin] Total rows to lookup: 37212
+[24-Sep-2026 04:43:46 Europe/Berlin] Lookup completed. Processed: 37212 rows
+[24-Sep-2026 04:43:50 Europe/Berlin] === STARTING IMPORT ===
+[24-Sep-2026 04:43:50 Europe/Berlin] Total rows to import: 37212
+[24-Sep-2026 04:48:47 Europe/Berlin] Import completed. Inserted: 36730, Duplicates: 482, Errors: 0

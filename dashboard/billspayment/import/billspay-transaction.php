@@ -1834,8 +1834,9 @@ $(document).ready(function() {
                             const duplicateCount = parseInt(response.duplicate_count || 0, 10);
                             const errorCount = parseInt(response.error_count || 0, 10);
                             const duplicateRows = (response.duplicates || []).slice(0, 10).map(item => {
-                                const source = item.type === 'file' ? 'same file batch' : 'database';
-                                return `<li>Row ${item.row}: ${item.reference_no || '(blank reference)'} (${source})</li>`;
+                                const source = item.type === 'file' ? 'duplicate within this upload batch' : 'already imported in the database';
+                                const typeLabel = item.type === 'file' ? 'batch dup' : 'already imported';
+                                return `<li>Row ${item.row}: <code>${item.reference_no || '(blank reference)'}</code> &mdash; ${source} <span class="badge bg-danger ms-1">${typeLabel}</span></li>`;
                             }).join('');
                             const errorRows = (response.errors || []).slice(0, 10).map(item => {
                                 return `<li>Row ${item.row}: ${item.message || 'Unable to insert'}</li>`;
@@ -1847,7 +1848,7 @@ $(document).ready(function() {
                                 html: `
                                     <div class="text-start">
                                         <p><strong>${inserted}</strong> record(s) imported.</p>
-                                        <p><strong>${duplicateCount}</strong> duplicate record(s) skipped.</p>
+                                        <p><strong>${duplicateCount}</strong> duplicate reference(s) skipped (same reference + same transaction type already exists).</p>
                                         ${errorCount > 0 ? `<p><strong>${errorCount}</strong> record(s) failed.</p>` : ''}
                                         ${duplicateRows ? `<hr><strong>Duplicate samples:</strong><ul>${duplicateRows}</ul>` : ''}
                                         ${errorRows ? `<hr><strong>Error samples:</strong><ul>${errorRows}</ul>` : ''}

@@ -275,6 +275,14 @@ if (isset($_SESSION['user_type']) && ($_SESSION['user_type'] === 'admin' || $_SE
                     <a href="<?php echo $base_url; ?>billspayment/report/recon-report.php" id="recon-report-link"><i class="fa-solid fa-chart-simple"></i> Recon Report</a>
                 </div>
             <?php endif; ?>
+
+            <?php if (has_permission('BP Report Recon')): ?>
+                <div class="sub" onclick="parent.location='<?php echo $base_url; ?>billspayment/report/billspay-gle-recon-report.php'">
+                    <a href="<?php echo $base_url; ?>billspayment/report/billspay-gle-recon-report.php" id="recon-report-link"><i class="fa-solid fa-code-compare"></i> Billspayment vs GLE Recon Report</a>
+                </div>
+            <?php endif; ?>
+
+
         </div>
         <?php endif; ?>
         <?php endif; ?>

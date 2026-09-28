@@ -598,18 +598,57 @@ if ($r5 = $conn->query("SELECT DISTINCT send_to FROM cad_loggings.cad_loggings_r
     while ($x = $r5->fetch_assoc()) { $sendToOptions[] = $x['send_to']; } $r5->free();
 }
 
-function sortUrl($col, $currentCol, $currentDir) {
+/**
+ * Build a sort URL for a table column.
+ *
+ * @param string $col        Column being linked.
+ * @param string $currentCol Currently active sort column.
+ * @param string $currentDir Current sort direction ('ASC'|'DESC').
+ * @return string
+ */
+function sortUrl(string $col, string $currentCol, string $currentDir): string {
     $dir = ($col === $currentCol && $currentDir === 'ASC') ? 'DESC' : 'ASC';
-    $qs  = $_GET; $qs['sort'] = $col; $qs['dir'] = $dir; $qs['page'] = 1;
+    $qs  = $_GET;
+    $qs['sort'] = $col;
+    $qs['dir']  = $dir;
+    $qs['page'] = 1;
     return '?' . http_build_query($qs);
 }
-function sortIcon($col, $currentCol, $currentDir) {
-    if ($col !== $currentCol) return '<i class="fa-solid fa-sort" style="opacity:.3"></i>';
-    return $currentDir === 'ASC' ? '<i class="fa-solid fa-sort-up"></i>' : '<i class="fa-solid fa-sort-down"></i>';
-}
-function e($v) { return htmlspecialchars((string)$v, ENT_QUOTES); }
 
-function statusBadge($status) {
+/**
+ * Return the sort icon markup for a column header.
+ *
+ * @param string $col        Column being rendered.
+ * @param string $currentCol Currently active sort column.
+ * @param string $currentDir Current sort direction ('ASC'|'DESC').
+ * @return string
+ */
+function sortIcon(string $col, string $currentCol, string $currentDir): string {
+    if ($col !== $currentCol) {
+        return '<i class="fa-solid fa-sort" style="opacity:.3"></i>';
+    }
+    return $currentDir === 'ASC'
+        ? '<i class="fa-solid fa-sort-up"></i>'
+        : '<i class="fa-solid fa-sort-down"></i>';
+}
+
+/**
+ * Escape a value for safe HTML output.
+ *
+ * @param mixed $v
+ * @return string
+ */
+function e($v): string {
+    return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
+}
+
+/**
+ * Render a status badge.
+ *
+ * @param string|null $status
+ * @return string
+ */
+function statusBadge(?string $status): string {
     $status = strtoupper((string)$status);
     if ($status === '') return '<span class="badge badge-none">—</span>';
     $class = 'badge-status-default';
@@ -618,12 +657,21 @@ function statusBadge($status) {
     return '<span class="badge ' . $class . '">' . e($status) . '</span>';
 }
 
-function sendToBadge($sendTo) {
+/**
+ * Render a "send to" badge.
+ *
+ * @param string|null $sendTo
+ * @return string
+ */
+function sendToBadge(?string $sendTo): string {
     $sendTo = (string)$sendTo;
     if ($sendTo === '') return '<span class="badge badge-none">—</span>';
     $cls = 'badge-sendto-default';
-    if ($sendTo === 'VPO') $cls = 'badge-sendto-vpo';
-    elseif ($sendTo === 'CAD - Bills Payment') $cls = 'badge-sendto-cad';
+    if ($sendTo === 'VPO') {
+        $cls = 'badge-sendto-vpo';
+    } elseif ($sendTo === 'CAD - Bills Payment') {
+        $cls = 'badge-sendto-cad';
+    }
     return '<span class="badge ' . $cls . '">' . e($sendTo) . '</span>';
 }
 ?>
@@ -740,6 +788,8 @@ function sendToBadge($sendTo) {
                         <th><a href="<?= e(sortUrl('status', $sortCol, $sortDir)) ?>">Status <?= sortIcon('status', $sortCol, $sortDir) ?></a></th>
                         <th><a href="<?= e(sortUrl('send_to', $sortCol, $sortDir)) ?>">Location <?= sortIcon('send_to', $sortCol, $sortDir) ?></a></th>
                         <th><a href="<?= e(sortUrl('reason', $sortCol, $sortDir)) ?>">Reason <?= sortIcon('reason', $sortCol, $sortDir) ?></a></th>
+                        <th><a href="<?= e(sortUrl('fault', $sortCol, $sortDir)) ?>">Fault <?= sortIcon('fault', $sortCol, $sortDir) ?></a></th>
+
                         <th><a href="<?= e(sortUrl('payment_date', $sortCol, $sortDir)) ?>">Payment Date <?= sortIcon('payment_date', $sortCol, $sortDir) ?></a></th>
                         <th><a href="<?= e(sortUrl('cancelled_date', $sortCol, $sortDir)) ?>">Cancelled Date <?= sortIcon('cancelled_date', $sortCol, $sortDir) ?></a></th>
                         <th><a href="<?= e(sortUrl('account_no', $sortCol, $sortDir)) ?>">Account No <?= sortIcon('account_no', $sortCol, $sortDir) ?></a></th>
@@ -748,7 +798,6 @@ function sendToBadge($sendTo) {
                         <th><a href="<?= e(sortUrl('original_biller', $sortCol, $sortDir)) ?>">Partner <?= sortIcon('original_biller', $sortCol, $sortDir) ?></a></th>
                         <th><a href="<?= e(sortUrl('correct_biller', $sortCol, $sortDir)) ?>">Correct Partner <?= sortIcon('correct_biller', $sortCol, $sortDir) ?></a></th>
                         <th>Correct Amount</th>
-                        <th><a href="<?= e(sortUrl('fault', $sortCol, $sortDir)) ?>">Fault <?= sortIcon('fault', $sortCol, $sortDir) ?></a></th>
                         <th><a href="<?= e(sortUrl('partner_action', $sortCol, $sortDir)) ?>">Partner Action <?= sortIcon('partner_action', $sortCol, $sortDir) ?></a></th>
                         <th><a href="<?= e(sortUrl('requested_date', $sortCol, $sortDir)) ?>">Requested Date <?= sortIcon('requested_date', $sortCol, $sortDir) ?></a></th>
                         <th><a href="<?= e(sortUrl('transacted_by', $sortCol, $sortDir)) ?>">Transacted By <?= sortIcon('transacted_by', $sortCol, $sortDir) ?></a></th>
@@ -816,6 +865,11 @@ function sendToBadge($sendTo) {
                                     <span class="badge badge-reason"><?= e($r['reason']) ?></span>
                                 <?php else: ?><span class="badge badge-none">—</span><?php endif; ?>
                             </td>
+                            <td>
+                                <?php if ($r['fault']): ?>
+                                    <span class="badge badge-fault"><?= e($r['fault']) ?></span>
+                                <?php else: ?><span class="badge badge-none">—</span><?php endif; ?>
+                            </td>
                             <td><?= $r['payment_date'] ? date('m/d/Y', strtotime($r['payment_date'])) : '—' ?></td>
                             <td><?= $r['cancelled_date'] ? date('m/d/Y', strtotime($r['cancelled_date'])) : '—' ?></td>
                             <td><?= e($r['account_no']) ?></td>
@@ -844,11 +898,7 @@ function sendToBadge($sendTo) {
                             <td style="text-align:right;">
                                 <?= $r['correct_amount'] !== null ? '₱ ' . number_format((float)$r['correct_amount'], 2) : '<span style="color:#9ca3af;">—</span>' ?>
                             </td>
-                            <td>
-                                <?php if ($r['fault']): ?>
-                                    <span class="badge badge-fault"><?= e($r['fault']) ?></span>
-                                <?php else: ?><span class="badge badge-none">—</span><?php endif; ?>
-                            </td>
+                            
                             <td>
                                 <?php if ($r['partner_action']): ?>
                                     <span class="badge badge-action"><?= e($r['partner_action']) ?></span>

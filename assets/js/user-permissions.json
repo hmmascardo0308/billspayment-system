@@ -78,13 +78,12 @@
         "BP Report Transaction Details",
         "BP Report Transaction Summary",
         "BP Report Volume",
+        "CAD Loggings",
+        "CAD Loggings Report",
         "Invoice Review",
         "Masterfiles View Partner List",
         "Profile Signature",
-        "Profile View",
-        "TRL Entry",
-        "TRL Report",
-        "TRL Review"
+        "Profile View"
     ],
     "20217237": [
         "BP Import Cancellation",
@@ -408,8 +407,18 @@
         "CAD Loggings Report"
     ],
     "12345678": [
+        "BI Report Billing Invoice",
+        "BP Report Balance Sheet",
+        "BP Report Billers",
+        "BP Report Cancellation",
+        "BP Report EDI",
+        "BP Report Transaction Details",
+        "BP Report Transaction Summary",
+        "BP Report Volume",
         "CAD Loggings",
         "CAD Loggings Report",
+        "Invoice Review",
+        "Masterfiles View Partner List",
         "Profile Signature",
         "Profile View"
     ],
