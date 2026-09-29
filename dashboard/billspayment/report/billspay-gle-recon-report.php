@@ -76,13 +76,30 @@ if (isset($_GET['filter'])) {
     $date_to      = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
     $reference_no = isset($_GET['reference_no']) ? trim($_GET['reference_no']) : '';
 
-    // ---------- MANDATORY: Reference No ----------
-    if (empty($reference_no)) {
-        $debug_message = "Reference No is required.";
+    // Resolve partner name (used for GLE desc matching)
+    $partner_name = '';
+    if ($partner_id !== '') {
+        foreach ($partners as $p) {
+            if ((string)$p['partner_id_kpx'] === (string)$partner_id) {
+                $partner_name = $p['partner_name'];
+                break;
+            }
+        }
+    }
+
+    // ---------- Validation ----------
+    if ($reference_no === '' && $partner_id === '') {
+        $debug_message = "Either Reference No or Partner is required.";
+    } elseif ($partner_id !== '' && ($date_from === '' || $date_to === '')) {
+        $debug_message = "When filtering by Partner, both Date From and Date To are required.";
+    } elseif ($date_from !== '' && $date_to !== '' && $date_from > $date_to) {
+        $debug_message = "Date From cannot be later than Date To.";
     } else {
         $filter_applied = true;
 
-        // ---------- LOCAL QUERY (mldb) — FAST: exact match + index-friendly ----------
+        // ============================================================
+        // LOCAL (Bills Payment) QUERY
+        // ============================================================
         $sql = "
             SELECT 
                 t.partner_id_kpx,
@@ -97,27 +114,33 @@ if (isset($_GET['filter'])) {
             FROM mldb.billspayment_transaction t
             LEFT JOIN masterdata.partner_masterfile p 
                 ON t.partner_id_kpx = p.partner_id_kpx
-            WHERE t.`{$reference_column}` = ?
+            WHERE 1=1
         ";
 
-        $params = [$reference_no];
-        $types  = "s";
+        $params = [];
+        $types  = '';
 
-        // Optional refinements
-        if (!empty($partner_id)) {
+        if ($reference_no !== '') {
+            $sql .= " AND t.`{$reference_column}` = ?";
+            $params[] = $reference_no;
+            $types   .= 's';
+        }
+
+        if ($partner_id !== '') {
             $sql .= " AND t.partner_id_kpx = ?";
             $params[] = $partner_id;
-            $types   .= "s";
+            $types   .= 's';
         }
-        if (!empty($date_from)) {
+
+        if ($date_from !== '') {
             $sql .= " AND t.datetime >= ?";
             $params[] = $date_from . ' 00:00:00';
-            $types   .= "s";
+            $types   .= 's';
         }
-        if (!empty($date_to)) {
+        if ($date_to !== '') {
             $sql .= " AND t.datetime <= ?";
             $params[] = $date_to . ' 23:59:59';
-            $types   .= "s";
+            $types   .= 's';
         }
 
         $sql .= " ORDER BY t.datetime DESC LIMIT 500";
@@ -125,7 +148,9 @@ if (isset($_GET['filter'])) {
         $local_rows = [];
         $stmt = $conn->prepare($sql);
         if ($stmt) {
-            $stmt->bind_param($types, ...$params);
+            if ($types !== '') {
+                $stmt->bind_param($types, ...$params);
+            }
             $stmt->execute();
             $result = $stmt->get_result();
             while ($row = $result->fetch_assoc()) {
@@ -136,65 +161,116 @@ if (isset($_GET['filter'])) {
             $debug_message = "Local query error: " . $conn->error;
         }
 
-        // ---------- EXACTDB (GLE) QUERY — FAST: exact match on reference ----------
-        $gle_sql = "
-            SELECT 
-                datetime,
-                gl_code,
-                gl_desc,
-                partner_id,
-                `desc`,
-                reference,
-                entry_number,
-                currency,
-                debit,
-                credit,
-                transaction_type,
-                branch_id,
-                branch_code,
-                item,
-                main_zone,
-                zone,
-                region
-            FROM gle
-            WHERE reference = ?
-        ";
-
-        $gle_params = [$reference_no];
-        $gle_types  = "s";
-
-        if (!empty($date_from)) {
-            $gle_sql .= " AND datetime >= ?";
-            $gle_params[] = $date_from . ' 00:00:00';
-            $gle_types   .= "s";
+        // Collect unique references from local rows (for GLE IN-clause)
+        $refs = [];
+        foreach ($local_rows as $lr) {
+            $r = trim($lr['reference_no'] ?? '');
+            if ($r !== '') {
+                $refs[$r] = true;
+            }
         }
-        if (!empty($date_to)) {
-            $gle_sql .= " AND datetime <= ?";
-            $gle_params[] = $date_to . ' 23:59:59';
-            $gle_types   .= "s";
-        }
+        $refs = array_keys($refs);
 
-        $gle_sql .= " ORDER BY entry_number ASC, gl_code ASC LIMIT 5000";
-
+        // ============================================================
+        // EXACTDB (GLE) QUERY
+        // - Primary: match on reference (IN list when multiple)
+        // - Also pull rows where desc contains the partner name
+        //   (especially useful for gl_code = 428101)
+        // ============================================================
         $gle_by_ref = [];
 
-        $stmt_gle = $conn_exact->prepare($gle_sql);
-        if ($stmt_gle) {
-            $stmt_gle->bind_param($gle_types, ...$gle_params);
-            $stmt_gle->execute();
-            $result_gle = $stmt_gle->get_result();
-            while ($row = $result_gle->fetch_assoc()) {
-                $ref = trim($row['reference'] ?? '');
-                if ($ref !== '') {
-                    $gle_by_ref[$ref][] = $row;
+        if (!empty($refs) || $partner_id !== '') {
+            $gle_sql = "
+                SELECT 
+                    datetime,
+                    gl_code,
+                    gl_desc,
+                    partner_id,
+                    `desc`,
+                    reference,
+                    entry_number,
+                    currency,
+                    debit,
+                    credit,
+                    transaction_type,
+                    branch_id,
+                    branch_code,
+                    item,
+                    main_zone,
+                    zone,
+                    region
+                FROM gle
+                WHERE 1=1
+            ";
+
+            $gle_params = [];
+            $gle_types  = '';
+
+            // Build OR conditions for reference list + partner-desc match
+            $or_parts = [];
+
+            if (!empty($refs)) {
+                $placeholders = implode(',', array_fill(0, count($refs), '?'));
+                $or_parts[] = "reference IN ($placeholders)";
+                foreach ($refs as $r) {
+                    $gle_params[] = $r;
+                    $gle_types   .= 's';
                 }
             }
-            $stmt_gle->close();
-        } else {
-            $debug_message .= ($debug_message ? ' | ' : '') . "ExactDB query error: " . $conn_exact->error;
+
+            // Partner match via description (partner_name appears in desc)
+            // Focus on gl_code 428101 as requested
+            if ($partner_id !== '' && $partner_name !== '') {
+                $or_parts[] = "(gl_code = '428101' AND `desc` LIKE ?)";
+                $gle_params[] = '%' . $partner_name . '%';
+                $gle_types   .= 's';
+            }
+
+            if (!empty($or_parts)) {
+                $gle_sql .= " AND (" . implode(' OR ', $or_parts) . ")";
+            } else {
+                // Safety: should not reach here
+                $gle_sql .= " AND 1=0";
+            }
+
+            if ($date_from !== '') {
+                $gle_sql .= " AND datetime >= ?";
+                $gle_params[] = $date_from . ' 00:00:00';
+                $gle_types   .= 's';
+            }
+            if ($date_to !== '') {
+                $gle_sql .= " AND datetime <= ?";
+                $gle_params[] = $date_to . ' 23:59:59';
+                $gle_types   .= 's';
+            }
+
+            $gle_sql .= " ORDER BY entry_number ASC, gl_code ASC LIMIT 5000";
+
+            $stmt_gle = $conn_exact->prepare($gle_sql);
+            if ($stmt_gle) {
+                if ($gle_types !== '') {
+                    $stmt_gle->bind_param($gle_types, ...$gle_params);
+                }
+                $stmt_gle->execute();
+                $result_gle = $stmt_gle->get_result();
+                while ($row = $result_gle->fetch_assoc()) {
+                    $ref = trim($row['reference'] ?? '');
+                    if ($ref !== '') {
+                        $gle_by_ref[$ref][] = $row;
+                    } else {
+                        // GLE rows that matched only via desc (no usable reference)
+                        $gle_by_ref['__DESC_MATCH__'][] = $row;
+                    }
+                }
+                $stmt_gle->close();
+            } else {
+                $debug_message .= ($debug_message ? ' | ' : '') . "ExactDB query error: " . $conn_exact->error;
+            }
         }
 
-        // ---------- RECONCILIATION ----------
+        // ============================================================
+        // RECONCILIATION (driven by local BP rows)
+        // ============================================================
         foreach ($local_rows as $local) {
             $ref = trim($local['reference_no'] ?? '');
 
@@ -214,7 +290,7 @@ if (isset($_GET['filter'])) {
                 $gle_credit_total += (float)($g['credit'] ?? 0);
             }
 
-            usort($gle_rows, function($a, $b) {
+            usort($gle_rows, function ($a, $b) {
                 $cmp = strcmp((string)($a['entry_number'] ?? ''), (string)($b['entry_number'] ?? ''));
                 if ($cmp !== 0) return $cmp;
                 return strcmp((string)($a['gl_code'] ?? ''), (string)($b['gl_code'] ?? ''));
@@ -234,7 +310,7 @@ if (isset($_GET['filter'])) {
                 'gle_credit_total'   => $has_match ? $gle_credit_total : null,
                 'gle_rows'           => $gle_rows,
 
-                'match_status'       => $has_match ? 'MATCHED' : 'UNMATCHED (Bills Payment only)	',
+                'match_status'       => $has_match ? 'MATCHED' : 'UNMATCHED (Bills Payment only)',
             ];
 
             $total_amount_paid     += (float)($local['amount_paid'] ?? 0);
@@ -246,8 +322,38 @@ if (isset($_GET['filter'])) {
                 $total_credit += $gle_credit_total;
             }
         }
+
+        // Optional: also surface pure GLE rows that matched only via desc
+        // (no corresponding local BP row). Uncomment the block below if needed.
+        
+        // if (isset($gle_by_ref['__DESC_MATCH__'])) {
+        //     foreach ($gle_by_ref['__DESC_MATCH__'] as $g) {
+        //         $transactions[] = [
+        //             'partner_id_kpx'     => $partner_id,
+        //             'partner_name'       => $partner_name,
+        //             'reference_no'       => $g['reference'] ?? '—',
+        //             'datetime'           => $g['datetime'] ?? null,
+        //             'amount_paid'        => null,
+        //             'charge_to_customer' => null,
+        //             'charge_to_partner'  => null,
+        //             'gle_row_count'      => 1,
+        //             'gle_debit_total'    => (float)($g['debit'] ?? 0),
+        //             'gle_credit_total'   => (float)($g['credit'] ?? 0),
+        //             'gle_rows'           => [$g],
+        //             'match_status'       => 'UNMATCHED (GLE only – desc match)',
+        //         ];
+        //     }
+        // }
+        
     }
 }
+
+// Combined total for Bills Payment (Amount Paid + Charge to Customer + Charge to Partner)
+$total_bp_combined = $total_amount_paid + $total_charge_customer + $total_charge_partner;
+
+// Variances
+$variance_vs_debit  = $total_bp_combined - $total_debit;
+$variance_vs_credit = $total_bp_combined - $total_credit;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -265,8 +371,6 @@ if (isset($_GET['filter'])) {
     <link rel="stylesheet" href="css/billsgle.css?v=<?= time(); ?>">
 
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
-
-  
 </head>
 <body>
     <div class="main-container">
@@ -300,17 +404,15 @@ if (isset($_GET['filter'])) {
 
                 <div class="filter-row" style="display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: flex-end;">
 
-                    <!-- Reference No — MANDATORY -->
+                    <!-- Reference No — optional when Partner + dates are used -->
                     <div style="flex: 1 1 320px; min-width: 260px;">
                         <label for="reference_no" style="display: block; font-weight: 600; margin-bottom: 0.3rem; font-size: 15px; color: #333;">
                             <i class="fa-solid fa-hashtag"></i> Reference No
-                            <span style="color:#c62828; font-weight:700;">*</span>
-                            <small style="color:#888; font-weight:400;"></small>
+                            <small style="color:#888; font-weight:400;"> (or select Partner + dates)</small>
                         </label>
                         <input type="text" name="reference_no" id="reference_no" class="bp-input"
                                placeholder="Enter reference number..."
                                value="<?php echo isset($_GET['reference_no']) ? htmlspecialchars($_GET['reference_no']) : ''; ?>"
-                               required
                                autocomplete="off"
                                style="width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px;">
                     </div>
@@ -319,7 +421,6 @@ if (isset($_GET['filter'])) {
                     <div style="flex: 1 1 260px; min-width: 220px;">
                         <label for="partner" style="display: block; font-weight: 600; margin-bottom: 0.3rem; font-size: 15px; color: #333;">
                             <i class="fa-solid fa-handshake"></i> Partner
-                            <small style="color:#888; font-weight:400;"></small>
                         </label>
                         <select name="partner" id="partner" class="bp-select2" style="width: 100%;">
                             <option value="">— Any Partner (Partner ID - Partner Name) —</option>
@@ -339,7 +440,7 @@ if (isset($_GET['filter'])) {
                         </label>
                         <input type="date" name="date_from" id="date_from" class="bp-input"
                                value="<?php echo isset($_GET['date_from']) ? htmlspecialchars($_GET['date_from']) : ''; ?>"
-                               style="width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px;">
+                               style="width: 100%; padding: 0.2rem; border: 1px solid #ccc; border-radius: 4px;">
                     </div>
 
                     <div style="flex: 0 1 170px;">
@@ -349,7 +450,7 @@ if (isset($_GET['filter'])) {
                         </label>
                         <input type="date" name="date_to" id="date_to" class="bp-input"
                                value="<?php echo isset($_GET['date_to']) ? htmlspecialchars($_GET['date_to']) : ''; ?>"
-                               style="width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px;">
+                               style="width: 100%; padding: 0.2rem; border: 1px solid #ccc; border-radius: 4px;">
                     </div>
 
                     <div style="flex: 0 0 auto; display: flex; gap: 0.5rem;">
@@ -377,40 +478,68 @@ if (isset($_GET['filter'])) {
         <!-- Summary cards -->
         <?php if ($filter_applied && count($transactions) > 0): ?>
             <div style="display: flex; flex-wrap: wrap; gap: 1rem; margin: 1.5rem;">
-                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 1rem 1.2rem; border-left: 5px solid #1a3c5e;">
+                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1.2rem; border-left: 5px solid #1a3c5e;">
                     <div style="font-size: 0.75rem; color: #666; text-transform: uppercase;">Total Amount Paid</div>
-                    <div style="font-size: 1.4rem; font-weight: 700; color: #1a3c5e; margin-top: 0.2rem;">
+                    <div style="font-size: 1rem; font-weight: 700; color: #1a3c5e; margin-top: 0.2rem;">
                         <?php echo number_format($total_amount_paid, 2); ?>
                     </div>
                 </div>
-                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 1rem 1.2rem; border-left: 5px solid #b30000;">
+                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1.2rem; border-left: 5px solid #b30000;">
                     <div style="font-size: 0.75rem; color: #666; text-transform: uppercase;">Charge to Customer</div>
-                    <div style="font-size: 1.4rem; font-weight: 700; color: #b30000; margin-top: 0.2rem;">
+                    <div style="font-size: 1rem; font-weight: 700; color: #b30000; margin-top: 0.2rem;">
                         <?php echo number_format($total_charge_customer, 2); ?>
                     </div>
                 </div>
-                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 1rem 1.2rem; border-left: 5px solid #2e7d32;">
+                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1.2rem; border-left: 5px solid #2e7d32;">
                     <div style="font-size: 0.75rem; color: #666; text-transform: uppercase;">Charge to Partner</div>
-                    <div style="font-size: 1.4rem; font-weight: 700; color: #2e7d32; margin-top: 0.2rem;">
+                    <div style="font-size: 1rem; font-weight: 700; color: #2e7d32; margin-top: 0.2rem;">
                         <?php echo number_format($total_charge_partner, 2); ?>
                     </div>
                 </div>
-                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 1rem 1.2rem; border-left: 5px solid #1565c0;">
+                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1.2rem; border-left: 5px solid #0d47a1;">
+                    <div style="font-size: 0.75rem; color: #666; text-transform: uppercase;">BP Total</div>
+                    <div style="font-size: 1rem; font-weight: 700; color: #0d47a1; margin-top: 0.2rem;">
+                        <?php echo number_format($total_bp_combined, 2); ?>
+                    </div>
+                </div>
+                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1.2rem; border-left: 5px solid #1565c0;">
                     <div style="font-size: 0.75rem; color: #666; text-transform: uppercase;">GLE Debit</div>
-                    <div style="font-size: 1.4rem; font-weight: 700; color: #1565c0; margin-top: 0.2rem;">
+                    <div style="font-size: 1rem; font-weight: 700; color: #1565c0; margin-top: 0.2rem;">
                         <?php echo number_format($total_debit, 2); ?>
                     </div>
                 </div>
-                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 1rem 1.2rem; border-left: 5px solid #6a1b9a;">
+                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1.2rem; border-left: 5px solid #6a1b9a;">
                     <div style="font-size: 0.75rem; color: #666; text-transform: uppercase;">GLE Credit</div>
-                    <div style="font-size: 1.4rem; font-weight: 700; color: #6a1b9a; margin-top: 0.2rem;">
+                    <div style="font-size: 1rem; font-weight: 700; color: #6a1b9a; margin-top: 0.2rem;">
                         <?php echo number_format($total_credit, 2); ?>
                     </div>
                 </div>
-                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 1rem 1.2rem; border-left: 5px solid #ef6c00;">
+                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1.2rem; border-left: 5px solid #ef6c00;">
                     <div style="font-size: 0.75rem; color: #666; text-transform: uppercase;">Matched / Unmatched</div>
-                    <div style="font-size: 1.2rem; font-weight: 700; color: #ef6c00; margin-top: 0.2rem;">
+                    <div style="font-size: 1rem; font-weight: 700; color: #ef6c00; margin-top: 0.2rem;">
                         <?php echo $matched_count; ?> / <?php echo $unmatched_local; ?>
+                    </div>
+                </div>
+                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1.2rem; border-left: 5px solid #c62828;">
+                    <div style="font-size: 0.75rem; color: #666; text-transform: uppercase;">BP Total - GLE Debit</div>
+                    <div style="font-size: 1rem; font-weight: 700; color: <?php echo $variance_vs_debit == 0 ? '#2e7d32' : '#c62828'; ?>; margin-top: 0.2rem;">
+                        <?php if ($variance_vs_debit == 0): ?>
+                            <i class="fa-solid fa-circle-check" style="font-size:0.8rem;"></i>
+                        <?php else: ?>
+                            <i class="fa-solid fa-triangle-exclamation" style="font-size:0.8rem;"></i>
+                        <?php endif; ?>
+                        <?php echo number_format($variance_vs_debit, 2); ?>
+                    </div>
+                </div>
+                <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1.2rem; border-left: 5px solid #ad1457;">
+                    <div style="font-size: 0.75rem; color: #666; text-transform: uppercase;">BP Total - GLE Credit</div>
+                    <div style="font-size: 1rem; font-weight: 700; color: <?php echo $variance_vs_credit == 0 ? '#2e7d32' : '#ad1457'; ?>; margin-top: 0.2rem;">
+                        <?php if ($variance_vs_credit == 0): ?>
+                            <i class="fa-solid fa-circle-check" style="font-size:0.8rem;"></i>
+                        <?php else: ?>
+                            <i class="fa-solid fa-triangle-exclamation" style="font-size:0.8rem;"></i>
+                        <?php endif; ?>
+                        <?php echo number_format($variance_vs_credit, 2); ?>
                     </div>
                 </div>
             </div>
@@ -433,12 +562,14 @@ if (isset($_GET['filter'])) {
                         <?php if ($filter_applied): ?>
                             <i class="fa-solid fa-circle-info"></i> <?php echo count($transactions); ?> record(s)
                         <?php else: ?>
-                            <i class="fa-solid fa-circle-info"></i> Enter a Reference No. to view results
+                            <i class="fa-solid fa-circle-info"></i> Enter a Reference No or select Partner + dates to view results
                         <?php endif; ?>
                     </span>
                 </div>
             </div>
-            <div style="overflow-x: auto; max-height: 650px; overflow-y: auto;">
+
+            <!-- Scrollable area – max-height + sticky headers -->
+            <div style="overflow-x: auto; max-height: 49vh; overflow-y: auto;">
                 <table class="bp-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
                     <thead>
                         <tr class="group-header">
@@ -450,30 +581,28 @@ if (isset($_GET['filter'])) {
                             </th>
                         </tr>
                         <tr class="col-header" style="color: #fff;">
-                            <th class="col-local" style="padding: 0.65rem 0.8rem; text-align: center;">Status</th>
-                            <th class="col-local" style="padding: 0.65rem 0.8rem; text-align: center;">Partner</th>
-                            <th class="col-local" style="padding: 0.65rem 0.8rem; text-align: center;">Reference</th>
-                            <th class="col-local" style="padding: 0.65rem 0.8rem; text-align: center;">Datetime</th>
-                            <th class="col-local" style="padding: 0.65rem 0.8rem; text-align: center;">Amount Paid</th>
-                            <th class="col-local" style="padding: 0.65rem 0.8rem; text-align: center;">Chg Customer</th>
-                            <th class="col-local divider-right" style="padding: 0.65rem 0.8rem; text-align: center;">Chg Partner</th>
-                            <th class="col-gle" style="padding: 0.65rem 0.8rem; text-align: center;">GL Desc</th>
-                            <th class="col-gle" style="padding: 0.65rem 0.8rem; text-align: center;">Description</th>
-                            <th class="col-gle" style="padding: 0.65rem 0.8rem; text-align: center;">Ref</th>
-                            <th class="col-gle" style="padding: 0.65rem 0.8rem; text-align: center;">Datetime</th>
-                            <th class="col-gle" style="padding: 0.65rem 0.8rem; text-align: center;">Debit</th>
-                            <th class="col-gle" style="padding: 0.65rem 0.8rem; text-align: center;">Credit</th>
-                            <th class="col-gle" style="padding: 0.65rem 0.8rem; text-align: center;">GL Code</th>
-                            <th class="col-gle" style="padding: 0.65rem 0.8rem; text-align: center;">Entry No</th>
+                            <th class="col-local" style="padding: 0.65rem 0.5rem; text-align: center;">Status</th>
+                            <th class="col-local" style="padding: 0.65rem 0.5rem; text-align: center;">Partner</th>
+                            <th class="col-local" style="padding: 0.65rem 0.5rem; text-align: center;">Reference</th>
+                            <th class="col-local" style="padding: 0.65rem 0.5rem; text-align: center;">Datetime</th>
+                            <th class="col-local" style="padding: 0.65rem 0.5rem; text-align: center;">Amount Paid</th>
+                            <th class="col-local" style="padding: 0.65rem 0.5rem; text-align: center;">Chg Cust</th>
+                            <th class="col-local divider-right" style="padding: 0.65rem 0.5rem; text-align: center;">Chg Partr</th>
+                            <th class="col-gle" style="padding: 0.65rem 0.5rem; text-align: center;">GL Code</th>
+
+                            <th class="col-gle" style="padding: 0.65rem 0.5rem; text-align: center;">GL Desc</th>
+                            <th class="col-gle" style="padding: 0.65rem 0.5rem; text-align: center;">Partner</th>
+                            <th class="col-gle" style="padding: 0.65rem 0.5rem; text-align: center;">Reference</th>
+                            <th class="col-gle" style="padding: 0.65rem 0.5rem; text-align: center;">Datetime</th>
+                            <th class="col-gle" style="padding: 0.65rem 0.5rem; text-align: center;">Debit</th>
+                            <th class="col-gle" style="padding: 0.65rem 0.5rem; text-align: center;">Credit</th>
+                            <th class="col-gle" style="padding: 0.65rem 0.5rem; text-align: center;">Entry No.</th>
                         </tr>
                     </thead>
                     <tbody id="results-body">
                         <?php if ($filter_applied && count($transactions) > 0): ?>
                             <?php foreach ($transactions as $idx => $row): ?>
                                 <?php
-                                    // ---- DEFAULT EXPAND VIEW ----
-                                    // Rows with children are always expandable.
-                                    // Children start VISIBLE (not collapsed).
                                     $child_rows = $row['gle_rows'] ?? [];
                                     $can_expand = !empty($child_rows);
                                     $has_match  = ($row['match_status'] === 'MATCHED');
@@ -482,11 +611,10 @@ if (isset($_GET['filter'])) {
 
                                 <tr class="parent-row <?php echo $can_expand ? 'expandable' : ''; ?>"
                                     data-target="detail-<?php echo $idx; ?>">
-                                    <td style="padding: 0.55rem 0.8rem;">
+                                    <td style="padding: 0.35rem 0.5rem;">
                                         <?php if ($has_match): ?>
                                             <span class="status-matched<?php echo $is_multi ? ' multi' : ''; ?>">
                                                 <?php if ($can_expand): ?>
-                                                    <!-- Icon default = OPEN because children start expanded -->
                                                     <i class="fa-solid fa-caret-down toggle-icon" style="margin-right:4px;"></i>
                                                 <?php endif; ?>
                                                 MATCHED<?php echo $is_multi ? ' (' . $row['gle_row_count'] . ' rows)' : ''; ?>
@@ -495,31 +623,32 @@ if (isset($_GET['filter'])) {
                                             <span class="status-unmatched"><?php echo htmlspecialchars($row['match_status']); ?></span>
                                         <?php endif; ?>
                                     </td>
-                                    <td style="padding: 0.55rem 0.8rem;">
+                                    <td style="padding: 0.35rem 0.5rem;">
                                         <?php echo htmlspecialchars(trim(($row['partner_id_kpx'] ?? '') . ' - ' . ($row['partner_name'] ?? ''), ' -')); ?>
                                     </td>
-                                    <td style="padding: 0.55rem 0.8rem;"><?php echo htmlspecialchars($row['reference_no'] ?? '—'); ?></td>
-                                    <td style="padding: 0.55rem 0.8rem;"><?php echo htmlspecialchars($row['datetime'] ?? '—'); ?></td>
-                                    <td style="padding: 0.55rem 0.8rem; text-align: right;"><?php echo $row['amount_paid'] !== null ? number_format((float)$row['amount_paid'], 2) : '—'; ?></td>
-                                    <td style="padding: 0.55rem 0.8rem; text-align: right;"><?php echo $row['charge_to_customer'] !== null ? number_format((float)$row['charge_to_customer'], 2) : '—'; ?></td>
-                                    <td class="divider-right" style="padding: 0.55rem 0.8rem; text-align: right;"><?php echo $row['charge_to_partner'] !== null ? number_format((float)$row['charge_to_partner'], 2) : '—'; ?></td>
+                                    <td style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($row['reference_no'] ?? '—'); ?></td>
+                                    <td style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($row['datetime'] ?? '—'); ?></td>
+                                    <td style="padding: 0.35rem 0.5rem; text-align: right;"><?php echo $row['amount_paid'] !== null ? number_format((float)$row['amount_paid'], 2) : '—'; ?></td>
+                                    <td style="padding: 0.35rem 0.5rem; text-align: right;"><?php echo $row['charge_to_customer'] !== null ? number_format((float)$row['charge_to_customer'], 2) : '—'; ?></td>
+                                    <td class="divider-right" style="padding: 0.35rem 0.5rem; text-align: right;"><?php echo $row['charge_to_partner'] !== null ? number_format((float)$row['charge_to_partner'], 2) : '—'; ?></td>
 
-                                    <!-- GLE side on parent row — keep blank; totals are in tfoot -->
-                                    <td style="padding: 0.55rem 0.8rem;">—</td>
-                                    <td style="padding: 0.55rem 0.8rem;"><?php echo htmlspecialchars($g['desc'] ?? '—'); ?></td>
-                                    <td style="padding: 0.55rem 0.8rem;"><?php echo htmlspecialchars($row['reference_no'] ?? '—'); ?></td>
-                                    <td style="padding: 0.55rem 0.8rem;"><?php echo htmlspecialchars($g['datetime'] ?? '—'); ?></td>
-                                    <td style="padding: 0.55rem 0.8rem; text-align: right; font-weight: 600; color:#1565c0;">—</td>
-                                    <td style="padding: 0.55rem 0.8rem; text-align: right; font-weight: 600; color:#6a1b9a;">—</td>
-                                    <td style="padding: 0.55rem 0.8rem; text-align: right;">—</td>
-                                    <td style="padding: 0.55rem 0.8rem;"><?php echo htmlspecialchars($g['entry_number'] ?? '—'); ?></td>
+                                    <!-- GLE side on parent – always placeholders (details live in children) -->
+                                    <td style="padding: 0.35rem 0.5rem; text-align: right;">—</td>
+                                    <td style="padding: 0.35rem 0.5rem;">—</td>
+                                    <td style="padding: 0.35rem 0.5rem;">—</td>
+                                    <td style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($row['reference_no'] ?? '—'); ?></td>
+
+                                    <td style="padding: 0.35rem 0.5rem; text-align: right; font-weight: 600; color:#1565c0;">—</td>
+                                    <td style="padding: 0.35rem 0.5rem; text-align: right; font-weight: 600; color:#6a1b9a;">—</td>
+                                    <td style="padding: 0.35rem 0.5rem; text-align: right;">—</td>
+                                    <td style="padding: 0.35rem 0.5rem;">—</td>
                                 </tr>
 
                                 <!-- ============ CHILD ROWS — VISIBLE BY DEFAULT ============ -->
                                 <?php if ($can_expand): ?>
                                     <?php foreach ($child_rows as $g): ?>
                                         <tr class="detail-row" data-parent="detail-<?php echo $idx; ?>">
-                                            <td class="cell-local" style="padding: 0.45rem 0.8rem 0.45rem 1.6rem;">
+                                            <td class="cell-local" style="padding: 0.35rem 0.5rem 0.35rem 1.6rem;">
                                                 <?php if ($is_multi): ?>
                                                     <i class="fa-solid fa-turn-up fa-rotate-90" style="opacity:.5; margin-right:6px;"></i>
                                                 <?php endif; ?>
@@ -531,30 +660,30 @@ if (isset($_GET['filter'])) {
                                             <td class="cell-local"></td>
                                             <td class="cell-local"></td>
                                             <td class="cell-local divider-right"></td>
-
-                                            <td style="padding: 0.45rem 0.8rem;">
-                                                <?php echo htmlspecialchars($g['gl_desc'] ?? '—'); ?>
-                                            </td>
-                                            <td style="padding: 0.45rem 0.8rem;">
-                                                <!-- <?php echo htmlspecialchars($g['desc'] ?? '—'); ?> -->
-                                            </td>
-                                            <td style="padding: 0.45rem 0.8rem;">
-                                                <!-- <?php echo htmlspecialchars($g['reference'] ?? '—'); ?> -->
-                                            </td>
-                                            <td style="padding: 0.45rem 0.8rem; color:#5a6b80;">
-                                                <!-- <?php echo htmlspecialchars($g['datetime'] ?? '—'); ?> -->
-                                            </td>
-                                            <td style="padding: 0.45rem 0.8rem; text-align: right; color:#1565c0; font-weight:600;">
-                                                <?php echo number_format((float)($g['debit'] ?? 0), 2); ?>
-                                            </td>
-                                            <td style="padding: 0.45rem 0.8rem; text-align: right; color:#6a1b9a; font-weight:600;">
-                                                <?php echo number_format((float)($g['credit'] ?? 0), 2); ?>
-                                            </td>
-                                            <td style="padding: 0.45rem 0.8rem; font-weight:600; color:#1a3c5e; text-align: right;">
+                                            <td style="padding: 0.35rem 0.5rem; font-weight:600; color:#1a3c5e; text-align: right;">
                                                 <?php echo htmlspecialchars($g['gl_code'] ?? '—'); ?>
                                             </td>
-                                            <td style="padding: 0.45rem 0.8rem;">
-                                                <!-- <?php echo htmlspecialchars($g['entry_number'] ?? '—'); ?> -->
+                                            <td style="padding: 0.35rem 0.5rem;">
+                                                <?php echo htmlspecialchars($g['gl_desc'] ?? '—'); ?>
+                                            </td>
+                                            <td style="padding: 0.35rem 0.5rem;">
+                                                <?php echo htmlspecialchars($g['desc'] ?? '—'); ?>
+                                            </td>
+                                            <td style="padding: 0.35rem 0.5rem;">
+                                                <?php echo htmlspecialchars($g['reference'] ?? '—'); ?>
+                                            </td>
+                                            <td style="padding: 0.35rem 0.5rem; color:#000000;">
+                                                <?php echo htmlspecialchars($g['datetime'] ?? '—'); ?>
+                                            </td>
+                                            <td style="padding: 0.35rem 0.5rem; text-align: right; color:#1565c0; font-weight:600;">
+                                                <?php echo number_format((float)($g['debit'] ?? 0), 2); ?>
+                                            </td>
+                                            <td style="padding: 0.35rem 0.5rem; text-align: right; color:#6a1b9a; font-weight:600;">
+                                                <?php echo number_format((float)($g['credit'] ?? 0), 2); ?>
+                                            </td>
+                                            
+                                            <td style="padding: 0.35rem 0.5rem;">
+                                                <?php echo htmlspecialchars($g['entry_number'] ?? '—'); ?>
                                             </td>
                                         </tr>
                                     <?php endforeach; ?>
@@ -571,7 +700,7 @@ if (isset($_GET['filter'])) {
                             <tr>
                                 <td colspan="15" style="padding: 2rem; text-align: center; color: #888;">
                                     <i class="fa-regular fa-folder-open" style="font-size: 1.5rem; display: block; margin-bottom: 0.5rem;"></i>
-                                    Enter / select criteria and click Filter &amp; Recon.<br>
+                                    Enter a Reference No or select Partner + dates, then click Filter &amp; Recon.
                                 </td>
                             </tr>
                         <?php endif; ?>
@@ -585,10 +714,17 @@ if (isset($_GET['filter'])) {
                                 <td style="text-align: right;"><?php echo number_format($total_amount_paid, 2); ?></td>
                                 <td style="text-align: right;"><?php echo number_format($total_charge_customer, 2); ?></td>
                                 <td class="divider-right" style="text-align: right;"><?php echo number_format($total_charge_partner, 2); ?></td>
-                                <td colspan="4"></td>
+                                <td colspan="5"></td>
                                 <td style="text-align: right;"><?php echo number_format($total_debit, 2); ?></td>
                                 <td style="text-align: right;"><?php echo number_format($total_credit, 2); ?></td>
-                                <td colspan="2"></td>
+                                <td></td>
+                            </tr>
+                            <tr  class="total-row">
+                                <td colspan="4" style="text-align: right;"><i class="fa-solid fa-calculator"></i> Total (Amount + Charges): </td>
+                                <td colspan="2" style="text-align: center;"><strong><?php echo number_format($total_bp_combined, 2); ?></strong></td>
+                                <td class="divider-right" style="text-align: right;"></td>
+                                <td colspan="8"></td>
+
                             </tr>
                         </tfoot>
                     <?php endif; ?>
@@ -630,23 +766,28 @@ if (isset($_GET['filter'])) {
                 .addClass('fa-caret-right');
         });
 
-        // ---------- Form submit validation (Reference is mandatory) ----------
+        // ---------- Form submit validation ----------
         $('#filter-form').on('submit', function(e) {
-            var from = $('#date_from').val();
-            var to = $('#date_to').val();
-            var refno = $('#reference_no').val().trim();
+            var from    = $('#date_from').val();
+            var to      = $('#date_to').val();
+            var refno   = $('#reference_no').val().trim();
+            var partner = $('#partner').val();
 
-            // Reference is MANDATORY
-            if (!refno) {
+            // Either Reference No OR Partner is required
+            if (!refno && !partner) {
                 e.preventDefault();
-                $('#reference_no').addClass('input-required-error').focus();
-                Swal.fire('Missing Reference No', 'Reference No is required to run reconciliation.', 'warning');
+                Swal.fire('Missing Filter', 'Please enter a Reference No or select a Partner.', 'warning');
                 return false;
-            } else {
-                $('#reference_no').removeClass('input-required-error');
             }
 
-            // Date range sanity (only if both are set)
+            // Partner requires both dates (to keep result set manageable)
+            if (partner && (!from || !to)) {
+                e.preventDefault();
+                Swal.fire('Dates Required', 'When filtering by Partner, both Date From and Date To are required.', 'warning');
+                return false;
+            }
+
+            // Date range sanity
             if (from && to && from > to) {
                 e.preventDefault();
                 Swal.fire('Invalid Date Range', '"Date From" cannot be later than "Date To".', 'warning');
