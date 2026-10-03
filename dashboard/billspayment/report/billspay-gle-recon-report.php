@@ -188,72 +188,124 @@ if (isset($_GET['filter'])) {
 
             // ------------------------------------------------------
             // PASS 1 — Find candidate references
+            //
+            // Split into TWO separate queries so MySQL can pick the
+            // right index for each branch:
+            //   Query A: reference-based lookup  -> idx_gle_reference_only
+            //   Query B: commission 428101 lookup -> idx_gle_glcode_datetime_ref
+            //
+            // (Previously this was a single query with OR across columns,
+            //  which prevented index selection.)
             // ------------------------------------------------------
-            $pass1_sql = "SELECT DISTINCT reference FROM gle WHERE 1=1";
-            $p1_params = [];
-            $p1_types  = '';
-            $p1_or     = [];
-
-            // (a) Explicit reference from form
-            if ($reference_no !== '') {
-                $p1_or[] = "reference = ?";
-                $p1_params[] = $reference_no;
-                $p1_types   .= 's';
-            }
-
-            // (b) References found in local BP rows
-            if (!empty($refs)) {
-                $ph = implode(',', array_fill(0, count($refs), '?'));
-                $p1_or[] = "reference IN ($ph)";
-                foreach ($refs as $r) {
-                    $p1_params[] = $r;
-                    $p1_types   .= 's';
-                }
-            }
-
-            // (c) Partner desc match — finds the "428101" commission lines,
-            //     whose references are GLE-only (no BP row)
-            if ($partner_id !== '' && $partner_name !== '') {
-                $p1_or[] = "(gl_code = '428101' AND `desc` LIKE ?)";
-                $p1_params[] = '%' . $partner_name . '%';
-                $p1_types   .= 's';
-            }
-
-            if (!empty($p1_or)) {
-                $pass1_sql .= " AND (" . implode(' OR ', $p1_or) . ")";
-            } else {
-                $pass1_sql .= " AND 1=0";
-            }
-
-            if ($date_from !== '') {
-                $pass1_sql .= " AND datetime >= ?";
-                $p1_params[] = $date_from . ' 00:00:00';
-                $p1_types   .= 's';
-            }
-            if ($date_to !== '') {
-                $pass1_sql .= " AND datetime <= ?";
-                $p1_params[] = $date_to . ' 23:59:59';
-                $p1_types   .= 's';
-            }
-
             $candidate_refs = [];
 
-            $stmt1 = $conn_exact->prepare($pass1_sql);
-            if ($stmt1) {
-                if ($p1_types !== '') {
-                    $stmt1->bind_param($p1_types, ...$p1_params);
+            // Shared date-range fragments
+            $date_where  = '';
+            $date_params = [];
+            $date_types  = '';
+            if ($date_from !== '') {
+                $date_where   .= " AND datetime >= ?";
+                $date_params[] = $date_from . ' 00:00:00';
+                $date_types   .= 's';
+            }
+            if ($date_to !== '') {
+                $date_where   .= " AND datetime <= ?";
+                $date_params[] = $date_to . ' 23:59:59';
+                $date_types   .= 's';
+            }
+
+            // ------------------------------------------------------
+            // PASS 1A — Reference-based lookup
+            //   Covers: explicit reference from form + references
+            //           discovered from local BP rows
+            // ------------------------------------------------------
+            $refs_to_lookup = [];
+            if ($reference_no !== '') {
+                $refs_to_lookup[$reference_no] = true;
+            }
+            foreach ($refs as $r) {
+                if ($r !== '') $refs_to_lookup[$r] = true;
+            }
+            $refs_to_lookup = array_keys($refs_to_lookup);
+
+            if (!empty($refs_to_lookup)) {
+                $ph = implode(',', array_fill(0, count($refs_to_lookup), '?'));
+
+                $sql1a = "SELECT DISTINCT reference FROM gle
+                          WHERE reference IN ($ph)";
+
+                $p1a_params = $refs_to_lookup;
+                $p1a_types  = str_repeat('s', count($refs_to_lookup));
+
+                if ($date_where !== '') {
+                    $sql1a      .= $date_where;
+                    $p1a_params  = array_merge($p1a_params, $date_params);
+                    $p1a_types  .= $date_types;
                 }
-                $stmt1->execute();
-                $res1 = $stmt1->get_result();
-                while ($r = $res1->fetch_assoc()) {
-                    $rref = trim($r['reference'] ?? '');
-                    if ($rref !== '') {
-                        $candidate_refs[$rref] = true;
+
+                $stmt1a = $conn_exact->prepare($sql1a);
+                if ($stmt1a) {
+                    $stmt1a->bind_param($p1a_types, ...$p1a_params);
+                    $stmt1a->execute();
+                    $res1a = $stmt1a->get_result();
+                    while ($r = $res1a->fetch_assoc()) {
+                        $rref = trim($r['reference'] ?? '');
+                        if ($rref !== '') {
+                            $candidate_refs[$rref] = true;
+                        }
                     }
+                    $stmt1a->close();
+                } else {
+                    $debug_message .= ($debug_message ? ' | ' : '') . "GLE pass1a error: " . $conn_exact->error;
                 }
-                $stmt1->close();
-            } else {
-                $debug_message .= ($debug_message ? ' | ' : '') . "GLE pass1 error: " . $conn_exact->error;
+            }
+
+            // ------------------------------------------------------
+            // PASS 1B — Commission (428101) lookup by partner name
+            //   Finds GLE-only references (no BP row) via desc match.
+            //   Uses idx_gle_glcode_datetime_ref (gl_code, datetime, reference).
+            //
+            //   NOTE: SQL does a coarse LIKE '%name%' (non-sargable but
+            //   narrow because gl_code + datetime range prune the set).
+            //   PHP then applies a strict word-boundary regex to avoid
+            //   false positives like "ANECO" matching "ZANECO".
+            // ------------------------------------------------------
+            if ($partner_id !== '' && $partner_name !== '') {
+                $sql1b = "SELECT DISTINCT reference, `desc` FROM gle
+                          WHERE gl_code = '428101'
+                            AND `desc` LIKE ?";
+                $p1b_params = ['%' . $partner_name . '%'];
+                $p1b_types  = 's';
+
+                if ($date_where !== '') {
+                    $sql1b      .= $date_where;
+                    $p1b_params  = array_merge($p1b_params, $date_params);
+                    $p1b_types  .= $date_types;
+                }
+
+                $stmt1b = $conn_exact->prepare($sql1b);
+                if ($stmt1b) {
+                    $stmt1b->bind_param($p1b_types, ...$p1b_params);
+                    $stmt1b->execute();
+                    $res1b = $stmt1b->get_result();
+
+                    // Strict word-boundary match: partner name must be
+                    // bounded by start/end or non-alphanumeric chars.
+                    // Prevents "ANECO" from matching "ZANECO".
+                    $word_boundary_pattern =
+                        '/(^|[^A-Za-z0-9])' . preg_quote($partner_name, '/') . '([^A-Za-z0-9]|$)/i';
+
+                    while ($r = $res1b->fetch_assoc()) {
+                        $rref  = trim($r['reference'] ?? '');
+                        $rdesc = (string)($r['desc'] ?? '');
+                        if ($rref !== '' && preg_match($word_boundary_pattern, $rdesc)) {
+                            $candidate_refs[$rref] = true;
+                        }
+                    }
+                    $stmt1b->close();
+                } else {
+                    $debug_message .= ($debug_message ? ' | ' : '') . "GLE pass1b error: " . $conn_exact->error;
+                }
             }
 
             $candidate_refs = array_keys($candidate_refs);
@@ -803,16 +855,16 @@ $export_qs = http_build_query([
                                     <?php elseif ($can_expand): ?>
                                         <td class="col-glcode" style="padding: 0.35rem 0.5rem; text-align: right; color:#999;">(<?php echo $row['gle_row_count']; ?> rows)</td>
                                         <td class="col-gldesc" style="padding: 0.35rem 0.5rem;">—</td>
-                                        <td class="col-desc" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($g['desc'] ?? '—'); ?></td>
+                                        <td class="col-desc" style="padding: 0.35rem 0.5rem;">—</td>
                                         <td class="col-reference" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($row['reference_no'] ?? '—'); ?></td>
-                                        <td class="col-datetime" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($g['datetime'] ?? '—'); ?></td>
+                                        <td class="col-datetime" style="padding: 0.35rem 0.5rem;">—</td>
                                         <td class="col-debit" style="padding: 0.35rem 0.5rem; text-align: right; font-weight:600; color:#1565c0;">
                                             <?php echo number_format((float)$row['gle_debit_total'], 2); ?>
                                         </td>
                                         <td class="col-credit" style="padding: 0.35rem 0.5rem; text-align: right; font-weight:600; color:#6a1b9a;">
                                             <?php echo number_format((float)$row['gle_credit_total'], 2); ?>
                                         </td>
-                                        <td class="col-entry" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($g['entry_number'] ?? '—'); ?></td>
+                                        <td class="col-entry" style="padding: 0.35rem 0.5rem;">—</td>
                                     <?php else: ?>
                                         <td class="col-glcode" style="padding: 0.35rem 0.5rem; text-align: right;">—</td>
                                         <td class="col-gldesc" style="padding: 0.35rem 0.5rem;">—</td>
