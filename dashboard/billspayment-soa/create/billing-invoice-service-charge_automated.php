@@ -46,6 +46,99 @@ $partners_query = "SELECT DISTINCT partner_id_kpx, partner_name, soa_status, abb
                    ORDER BY partner_name ASC";
 $partners_result = mysqli_query($conn, $partners_query);
 
+/**
+ * Calculate the next date range based on service charge type
+ * @param string $last_to_date The last TO date from previous SOA
+ * @param string $service_charge The service charge type (WEEKLY, MONTHLY, SEMI-MONTHLY, DAILY)
+ * @param string $partner_id The partner ID (for special cases)
+ * @param string|null $last_from_date The last FROM date from previous SOA (for cancelled reuse)
+ * @param string $last_status The status of the last SOA (Cancelled/Prepared/etc.)
+ * @return array ['from_date' => 'YYYY-MM-DD', 'to_date' => 'YYYY-MM-DD']
+ */
+function calculateNextDates($last_to_date, $service_charge, $partner_id = '', $last_from_date = null, $last_status = '') {
+    $last_to = new DateTime($last_to_date);
+    $next_from = clone $last_to;
+    $next_to = clone $last_to;
+    
+    $service_charge_upper = strtoupper(trim($service_charge));
+    $status_upper = strtoupper(trim($last_status));
+    
+    // If the previous SOA was Cancelled, reuse the same date range.
+    // The reference number will still be incremented separately.
+    if ($status_upper === 'CANCELLED' && !empty($last_from_date)) {
+        return [
+            'from_date' => (new DateTime($last_from_date))->format('Y-m-d'),
+            'to_date'   => (new DateTime($last_to_date))->format('Y-m-d')
+        ];
+    }
+    
+    // Special partners that need 14-day rolling semi-monthly
+    $special_semi_monthly_partners = ['457', '458', '459', '460'];
+    $is_special_partner = in_array($partner_id, $special_semi_monthly_partners);
+    
+    switch ($service_charge_upper) {
+        case 'WEEKLY':
+            // Next from = last to + 1 day, next to = last to + 7 days
+            $next_from->modify('+1 day');
+            $next_to->modify('+7 days');
+            break;
+            
+        case 'MONTHLY':
+            // Next from = 1st of next month, next to = last day of next month
+            $next_from->modify('first day of next month');
+            $next_to->modify('last day of next month');
+            break;
+            
+        case 'SEMI-MONTHLY':
+            if ($is_special_partner) {
+                // Special 14-day rolling semi-monthly for partners 457, 458, 459, 460
+                // Next from = last to + 1 day, next to = last to + 14 days
+                $next_from->modify('+1 day');
+                $next_to->modify('+14 days');
+            } else {
+                // Standard semi-monthly: 1st-15th and 16th-last day
+                $last_day = clone $last_to;
+                $last_day->modify('last day of this month');
+                $last_day_of_month = $last_day->format('d');
+                $last_to_day = $last_to->format('d');
+                
+                if ($last_to_day == 15) {
+                    // Last was 1st-15th period, next is 16th to last day
+                    $next_from->modify('+1 day');
+                    $next_to->modify('last day of this month');
+                } elseif ($last_to_day == $last_day_of_month) {
+                    // Last was 16th-last day period, next is 1st-15th of next month
+                    $next_from->modify('first day of next month');
+                    $next_to->modify('+14 days');
+                    $next_to->setDate($next_to->format('Y'), $next_to->format('m'), 15);
+                } else {
+                    // Fallback: default to 1st-15th of next month
+                    $next_from->modify('first day of next month');
+                    $next_to->modify('+14 days');
+                    $next_to->setDate($next_to->format('Y'), $next_to->format('m'), 15);
+                }
+            }
+            break;
+            
+        case 'DAILY':
+            // Next from = last to + 1 day, next to = last to + 1 day
+            $next_from->modify('+1 day');
+            $next_to->modify('+1 day');
+            break;
+            
+        default:
+            // Default: next from = last to + 1 day, next to = last to + 7 days
+            $next_from->modify('+1 day');
+            $next_to->modify('+7 days');
+            break;
+    }
+    
+    return [
+        'from_date' => $next_from->format('Y-m-d'),
+        'to_date' => $next_to->format('Y-m-d')
+    ];
+}
+
 // Handle AJAX requests
 if (isset($_GET['action'])) {
     header('Content-Type: application/json');
@@ -87,6 +180,7 @@ if (isset($_GET['action'])) {
             $abbreviation = trim($partner_data['abbreviation'] ?? '');
             
             // Generate control number based on existing reference numbers in soa_transaction
+            // Reference number is ALWAYS incremented regardless of status
             $control_number = '';
             $next_series = 1;
             
@@ -361,6 +455,7 @@ if (isset($_GET['action'])) {
             $abbreviation = trim($partner_data['abbreviation'] ?? '');
             
             // Generate control number based on existing records in soa_transaction
+            // Reference number is ALWAYS incremented regardless of status
             $control_number = '';
             $next_series = 1;
             
@@ -531,7 +626,8 @@ if (isset($_GET['action'])) {
         }
     }
     
-    // NEW: Check if SOA already exists for partner and date range
+    // Check if SOA already exists for partner and date range
+    // IMPORTANT: CANCELLED SOAs are ignored - they should not block re-creation
     if ($_GET['action'] == 'check_existing_soa') {
         try {
             $partner_id = mysqli_real_escape_string($conn, $_GET['partner_id'] ?? '');
@@ -604,11 +700,19 @@ if (isset($_GET['action'])) {
                 exit;
             }
             
+            // Check if status column exists (to exclude CANCELLED SOAs)
+            $check_status_column = "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'status'";
+            $check_status_result = mysqli_query($conn, $check_status_column);
+            $status_column_exists = mysqli_num_rows($check_status_result) > 0;
+            
+            $status_filter = $status_column_exists ? " AND UPPER(TRIM(status)) != 'CANCELLED' " : "";
+            
             // Build query to check for existing SOA with matching abbreviation and date range
-            // Check if there's any SOA with the same abbreviation and overlapping date range
+            // Check if there's any non-cancelled SOA with the same abbreviation and overlapping date range
             $check_query = "SELECT id, reference_number, from_date, to_date, partner_Name 
                             FROM mldb.soa_transaction 
                             WHERE reference_number LIKE '$abbreviation-%' 
+                            $status_filter
                             AND (
                                 (from_date <= '$to_date' AND to_date >= '$from_date')
                                 OR (from_date >= '$from_date' AND to_date <= '$to_date')
@@ -651,7 +755,7 @@ if (isset($_GET['action'])) {
         }
     }
     
-    // NEW: Get latest SOA dates for a partner - UPDATED to include last SOA info
+    // Get latest SOA dates for a partner - UPDATED to handle cancelled SOAs
     if ($_GET['action'] == 'get_latest_soa_dates') {
         try {
             $partner_id = mysqli_real_escape_string($conn, $_GET['partner_id'] ?? '');
@@ -703,8 +807,16 @@ if (isset($_GET['action'])) {
                 exit;
             }
             
-            // Get the latest SOA for this partner
-            $latest_query = "SELECT from_date, to_date, reference_number 
+            // Check if status column exists
+            $check_status_column = "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'status'";
+            $check_status_result = mysqli_query($conn, $check_status_column);
+            $status_column_exists = mysqli_num_rows($check_status_result) > 0;
+            
+            // Build the SELECT list based on available columns
+            $select_status = $status_column_exists ? ", status" : "";
+            
+            // Get the latest SOA for this partner (with status)
+            $latest_query = "SELECT from_date, to_date, reference_number $select_status 
                              FROM mldb.soa_transaction 
                              WHERE reference_number LIKE '$abbreviation-%' 
                              ORDER BY id DESC LIMIT 1";
@@ -729,6 +841,8 @@ if (isset($_GET['action'])) {
                 'last_from_date' => null,
                 'last_to_date' => null,
                 'last_reference_number' => null,
+                'last_status' => null,
+                'previous_cancelled' => false,
                 // Next SOA details
                 'next_from_date' => null,
                 'next_to_date' => null,
@@ -737,17 +851,29 @@ if (isset($_GET['action'])) {
             
             if (mysqli_num_rows($latest_result) > 0) {
                 $latest_data = mysqli_fetch_assoc($latest_result);
+                $last_status = $latest_data['status'] ?? '';
+                $previous_cancelled = (strtoupper(trim($last_status)) === 'CANCELLED');
+                
                 $response['has_previous'] = true;
                 $response['last_from_date'] = $latest_data['from_date'];
                 $response['last_to_date'] = $latest_data['to_date'];
                 $response['last_reference_number'] = $latest_data['reference_number'];
+                $response['last_status'] = $last_status;
+                $response['previous_cancelled'] = $previous_cancelled;
                 
                 // Calculate next dates based on service charge type
-                $next_dates = calculateNextDates($latest_data['to_date'], $service_charge, $partner_id);
+                // If previous was CANCELLED, reuse the same date range
+                $next_dates = calculateNextDates(
+                    $latest_data['to_date'],
+                    $service_charge,
+                    $partner_id,
+                    $latest_data['from_date'],
+                    $last_status
+                );
                 $response['next_from_date'] = $next_dates['from_date'];
                 $response['next_to_date'] = $next_dates['to_date'];
                 
-                // Generate next reference number
+                // Generate next reference number - ALWAYS increment, regardless of status
                 $series_part = 0;
                 $ref_parts = explode('-', $latest_data['reference_number']);
                 if (count($ref_parts) >= 2) {
@@ -757,6 +883,7 @@ if (isset($_GET['action'])) {
                 $response['next_reference_number'] = $abbreviation . '-' . $next_series;
                 
                 error_log("Latest SOA found: " . print_r($latest_data, true));
+                error_log("Previous cancelled: " . ($previous_cancelled ? 'YES' : 'NO'));
                 error_log("Next dates: " . print_r($next_dates, true));
                 error_log("Next reference: " . $response['next_reference_number']);
             } else {
@@ -796,10 +923,14 @@ if (isset($_GET['action'])) {
             exit;
         }
         
-        // Check for existing SOA
+        // Check for existing SOA - exclude CANCELLED ones
+        $status_column_exists = mysqli_num_rows(mysqli_query($conn, "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'status'")) > 0;
+        $status_filter = $status_column_exists ? " AND UPPER(TRIM(status)) != 'CANCELLED' " : "";
+        
         $check_query = "SELECT id, reference_number, from_date, to_date 
                         FROM mldb.soa_transaction 
                         WHERE reference_number LIKE '$abbreviation-%' 
+                        $status_filter
                         AND (
                             (from_date <= '$to_date' AND to_date >= '$from_date')
                             OR (from_date >= '$from_date' AND to_date <= '$to_date')
@@ -848,7 +979,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $to_date          = mysqli_real_escape_string($conn, $_POST['to_date'] ?? '');
         $po_number        = mysqli_real_escape_string($conn, $_POST['po_number'] ?? '');
         $transaction_count = intval($_POST['transaction_count'] ?? 0);
-        $amount           = floatval($_POST['amount'] ?? 0);
+        $amount           = floatval(str_replace(',', '', $_POST['amount'] ?? 0));
         // add_amount: computed total (500 * number of days), no decimals, no peso sign
         $add_amount       = mysqli_real_escape_string($conn, $_POST['add_amount'] ?? '');
         // amount_add: the flat 500 rate for partner 434, no decimals ('' when not applicable)
@@ -950,7 +1081,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         // Check if the partner_id is in 'no-id-' format (meaning no partner_id_kpx)
         if (str_starts_with($partner_id, 'no-id-')) {
             // For partners without ID, update by partner_name
-            // First, get the partner_name from the partner_acc_name field
             $partner_name_clean = mysqli_real_escape_string($conn, $partner_acc_name);
             $update_series_query = "UPDATE masterdata.partner_masterfile 
                                      SET series_number = $next_series_to_store 
@@ -962,7 +1092,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $series_error = mysqli_error($conn);
                 error_log("Save Invoice - Series Update Error (by name): " . $series_error);
                 // Don't rollback for name-based updates, just log the error
-                // The invoice is already saved
             }
         } else {
             // Normal update by ID
@@ -1001,87 +1130,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 }
-
-/**
- * Calculate the next date range based on service charge type
- * @param string $last_to_date The last TO date from previous SOA
- * @param string $service_charge The service charge type (WEEKLY, MONTHLY, SEMI-MONTHLY, DAILY)
- * @param string $partner_id The partner ID (for special cases)
- * @return array ['from_date' => 'YYYY-MM-DD', 'to_date' => 'YYYY-MM-DD']
- */
-function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
-    $last_to = new DateTime($last_to_date);
-    $next_from = clone $last_to;
-    $next_to = clone $last_to;
-    
-    $service_charge_upper = strtoupper(trim($service_charge));
-    
-    // Special partners that need 14-day rolling semi-monthly
-    $special_semi_monthly_partners = ['457', '458', '459', '460'];
-    $is_special_partner = in_array($partner_id, $special_semi_monthly_partners);
-    
-    switch ($service_charge_upper) {
-        case 'WEEKLY':
-            // Next from = last to + 1 day, next to = last to + 7 days
-            $next_from->modify('+1 day');
-            $next_to->modify('+7 days');
-            break;
-            
-        case 'MONTHLY':
-            // Next from = 1st of next month, next to = last day of next month
-            $next_from->modify('first day of next month');
-            $next_to->modify('last day of next month');
-            break;
-            
-        case 'SEMI-MONTHLY':
-            if ($is_special_partner) {
-                // Special 14-day rolling semi-monthly for partners 457, 458, 459, '460'
-                // Next from = last to + 1 day, next to = last to + 14 days
-                $next_from->modify('+1 day');
-                $next_to->modify('+14 days');
-            } else {
-                // Standard semi-monthly: 1st-15th and 16th-last day
-                $last_day = clone $last_to;
-                $last_day->modify('last day of this month');
-                $last_day_of_month = $last_day->format('d');
-                $last_to_day = $last_to->format('d');
-                
-                if ($last_to_day == 15) {
-                    // Last was 1st-15th period, next is 16th to last day
-                    $next_from->modify('+1 day');
-                    $next_to->modify('last day of this month');
-                } elseif ($last_to_day == $last_day_of_month) {
-                    // Last was 16th-last day period, next is 1st-15th of next month
-                    $next_from->modify('first day of next month');
-                    $next_to->modify('+14 days');
-                    $next_to->setDate($next_to->format('Y'), $next_to->format('m'), 15);
-                } else {
-                    // Fallback: default to 1st-15th of next month
-                    $next_from->modify('first day of next month');
-                    $next_to->modify('+14 days');
-                    $next_to->setDate($next_to->format('Y'), $next_to->format('m'), 15);
-                }
-            }
-            break;
-            
-        case 'DAILY':
-            // Next from = last to + 1 day, next to = last to + 1 day
-            $next_from->modify('+1 day');
-            $next_to->modify('+1 day');
-            break;
-            
-        default:
-            // Default: next from = last to + 1 day, next to = last to + 7 days
-            $next_from->modify('+1 day');
-            $next_to->modify('+7 days');
-            break;
-    }
-    
-    return [
-        'from_date' => $next_from->format('Y-m-d'),
-        'to_date' => $next_to->format('Y-m-d')
-    ];
-}
 ?>
 
 <!DOCTYPE html>
@@ -1102,7 +1150,42 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
     <!-- Select2 CSS -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/css/select2.min.css" rel="stylesheet" />
     
-  
+    <style>
+        /* Cancelled SOA indicator */
+        .cancelled-soa-info {
+            background: #fdecea;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 12px 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            display: none;
+        }
+        .cancelled-soa-info.active {
+            display: block;
+        }
+        .cancelled-soa-info i {
+            color: #e74c3c;
+            margin-right: 8px;
+        }
+        
+        /* Reused date range styling */
+        .date-display-input.reused-range {
+            border-color: #e67e22 !important;
+            background-color: #fef5e7 !important;
+        }
+        .reused-badge {
+            background: #fff3cd;
+            color: #856404;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            border: 1px solid #ffeeba;
+            display: inline-block;
+            margin-left: 8px;
+        }
+    </style>
 </head>
 <body>
     <div class="main-container">
@@ -1142,6 +1225,12 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             <div class="soa-exists-warning" id="soaExistsWarning">
                 <i class="fa-solid fa-triangle-exclamation"></i>
                 <span id="soaExistsMessage">SOA already exists for this partner and date range.</span>
+            </div>
+            
+            <!-- Cancelled SOA Info -->
+            <div class="cancelled-soa-info" id="cancelledSoaInfo">
+                <i class="fa-solid fa-rotate-left"></i>
+                <span id="cancelledSoaMessage">Previous SOA was cancelled. Re-using the same date range.</span>
             </div>
             
             <!-- Date Restriction Info -->
@@ -1233,7 +1322,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     <input type="text" id="partnerTin" readonly placeholder="Auto-fetched based on partner.">
                 </div>
 
-                <!-- Partner Abbreviation - NEW FIELD -->
+                <!-- Partner Abbreviation -->
                 <div class="form-group">
                     <label for="partnerAbbreviation"><i class="fa-solid fa-shortcode"></i><i class="fa-solid fa-receipt"></i> Abbreviation</label>
                     <input type="text" id="partnerAbbreviation" readonly placeholder="Auto-fetched based on partner.">
@@ -1409,6 +1498,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
         
         // Flag to track if dates were auto-populated
         let _datesAutoPopulated = false;
+        let _rangeReusedFromCancelled = false;
 
         // SOA Info Modal timer variables
         let soaInfoTimer = null;
@@ -1420,11 +1510,8 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             if (number === null || number === undefined || isNaN(number)) {
                 return '0';
             }
-            // Convert to string and split by decimal if exists
             const parts = String(number).split('.');
-            // Format the integer part with commas
             parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-            // Join back with decimal if it exists
             return parts.join('.');
         }
 
@@ -1438,22 +1525,24 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
         }
 
         // Function to set both the hidden input and display field
-        function setDateFields(fromDate, toDate) {
-            // Set hidden inputs
+        function setDateFields(fromDate, toDate, reusedFromCancelled) {
             $('#fromDate').val(fromDate || '');
             $('#toDate').val(toDate || '');
             
-            // Set display fields
             $('#fromDateDisplay').val(formatDateDisplay(fromDate));
             $('#toDateDisplay').val(formatDateDisplay(toDate));
             
-            // Update UI styling
             if (fromDate && toDate) {
-                $('#fromDateDisplay').addClass('has-value').css('border-color', '#27ae60');
-                $('#toDateDisplay').addClass('has-value').css('border-color', '#27ae60');
+                if (reusedFromCancelled) {
+                    $('#fromDateDisplay').addClass('has-value reused-range').css('border-color', '#e67e22');
+                    $('#toDateDisplay').addClass('has-value reused-range').css('border-color', '#e67e22');
+                } else {
+                    $('#fromDateDisplay').addClass('has-value').removeClass('reused-range').css('border-color', '#27ae60');
+                    $('#toDateDisplay').addClass('has-value').removeClass('reused-range').css('border-color', '#27ae60');
+                }
             } else {
-                $('#fromDateDisplay').removeClass('has-value').css('border-color', '#bdc3c7');
-                $('#toDateDisplay').removeClass('has-value').css('border-color', '#bdc3c7');
+                $('#fromDateDisplay').removeClass('has-value reused-range').css('border-color', '#bdc3c7');
+                $('#toDateDisplay').removeClass('has-value reused-range').css('border-color', '#bdc3c7');
             }
         }
 
@@ -1469,7 +1558,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 var searchTerm = params.term.toLowerCase();
                 var text = data.text.toLowerCase();
                 var id = data.id ? data.id.toLowerCase() : '';
-                // Also check the data attributes for partner_accName
                 var accName = data.element ? $(data.element).data('partner-accname') || '' : '';
                 accName = accName.toLowerCase();
                 
@@ -1484,8 +1572,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     var isDisabled = $element.prop('disabled');
                     var soaStatus = $element.data('soa-status') || '';
                     var hasId = $element.data('has-id') === true || $element.data('has-id') === 'true';
-                    var partnerAccName = $element.data('partner-accname') || '';
-                    var partnerName = $element.data('partner-name') || '';
                     
                     if (isDisabled) {
                         return $('<span style="color: #999; background-color: #f5f5f5; padding: 4px 8px; border-radius: 3px; display: block;">' + 
@@ -1494,7 +1580,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                             '</span>');
                     }
                     
-                    // Add badge to indicate if partner has ID or not
                     var badgeHtml = '';
                     if (hasId) {
                         badgeHtml = ' <span class="with-id-badge" style="color: #27ae60; font-size: 11px; background: #eafaf1; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #27ae60;">✓ With ID</span>';
@@ -1520,7 +1605,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     if (isDisabled) {
                         return $('<span style="color: #999;">' + data.text + ' (Disabled)</span>');
                     }
-                    // Return the full text (already in format: ID - Name - Account Name or Name - Account Name)
                     return data.text;
                 }
                 return data.text;
@@ -1545,7 +1629,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
         // =============================================
         
         function getServiceChargeType() {
-            // Get the service charge from the field
             const serviceCharge = $('#serviceCharge').val() || '';
             return serviceCharge.trim().toUpperCase();
         }
@@ -1580,37 +1663,27 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             const from = new Date(fromDate + 'T00:00:00');
             const to = new Date(toDate + 'T00:00:00');
             
-            // Get the month and year
             const month = from.getMonth();
             const year = from.getFullYear();
-            
-            // Get last day of month
             const lastDay = new Date(year, month + 1, 0).getDate();
             
-            // Get day of week (0=Sunday, 1=Monday, ..., 6=Saturday)
             const fromDayOfWeek = from.getDay();
             const toDayOfWeek = to.getDay();
-            
-            // Get day of month
             const fromDay = from.getDate();
             const toDay = to.getDate();
             
-            // Calculate date differences
             const diffTime = Math.abs(to - from);
             const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
             
-            // Check if this is a special partner (457, 458, 459, '460')
             const partnerId = $('#partnerSelect').val();
             const specialPartners = ['457', '458', '459', '460'];
             const isSpecialPartner = specialPartners.includes(partnerId);
             
-            // Calculate allowed ranges based on service charge type
             let isValid = false;
             let errorMessage = '';
             
             switch(serviceChargeType) {
                 case 'MONTHLY':
-                    // From must be 1st of month, To must be last day of month
                     if (fromDay === 1 && toDay === lastDay && diffDays === (lastDay - 1)) {
                         isValid = true;
                     } else {
@@ -1620,18 +1693,15 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     
                 case 'SEMI-MONTHLY':
                     if (isSpecialPartner) {
-                        // Special partners (457, 458, 459, '460'): Only check that the date range is exactly 14 days
                         if (diffDays === 13) {
                             isValid = true;
                         } else {
                             errorMessage = 'Semi-Monthly (LDS Special): Date range must be exactly 14 days (from date to to date).';
                         }
                     } else {
-                        // Standard semi-monthly: From must be 1st or 16th, To must be 15th or last day
                         const isFromValid = (fromDay === 1 || fromDay === 16);
                         const isToValid = (toDay === 15 || toDay === lastDay);
                         
-                        // Check if the range is correct
                         let isRangeValid = false;
                         if (fromDay === 1 && toDay === 15 && diffDays === 14) {
                             isRangeValid = true;
@@ -1648,7 +1718,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     break;
                     
                 case 'WEEKLY':
-                    // From must be Monday (1), To must be Sunday (0), diff = 6 days
                     if (fromDayOfWeek === 1 && toDayOfWeek === 0 && diffDays === 6) {
                         isValid = true;
                     } else {
@@ -1657,7 +1726,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     break;
                     
                 case 'DAILY':
-                    // From and To must be same day
                     if (diffDays === 0) {
                         isValid = true;
                     } else {
@@ -1666,7 +1734,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     break;
                     
                 default:
-                    // No restrictions - always valid
                     isValid = true;
                     errorMessage = '';
             }
@@ -1686,8 +1753,12 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             
             if (serviceChargeField && serviceChargeField.trim() !== '') {
                 const message = getDateRestrictionMessage(serviceChargeType);
+                let extraInfo = '';
+                if (_rangeReusedFromCancelled) {
+                    extraInfo = ' <span class="reused-badge"><i class="fa-solid fa-rotate-left"></i> Re-used from cancelled SOA</span>';
+                }
                 $('#dateRestrictionMessage').html(
-                    '<strong>' + serviceChargeType + ':</strong> ' + message
+                    '<strong>' + serviceChargeType + ':</strong> ' + message + extraInfo
                 );
                 $('#dateRestrictionInfo').addClass('active');
             } else {
@@ -1700,7 +1771,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             const toDate = $('#toDate').val();
             const serviceChargeField = $('#serviceCharge').val();
             
-            // If no dates or no partner selected, skip validation
             if (!fromDate || !toDate || !serviceChargeField || serviceChargeField.trim() === '') {
                 return true;
             }
@@ -1711,12 +1781,21 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             if (!result) return true;
             
             if (!result.isValid) {
+                // If the range was re-used from a cancelled SOA, warn but don't block
+                if (_rangeReusedFromCancelled) {
+                    showAlert('Notice: This date range was re-used from a cancelled SOA. ' + result.errorMessage + ' (Proceeding anyway.)', 'warning');
+                    $('#fromDateDisplay, #toDateDisplay').css('border-color', '#e67e22');
+                    return true;
+                }
                 showAlert(result.errorMessage, 'warning');
-                // Highlight invalid fields
                 $('#fromDateDisplay, #toDateDisplay').css('border-color', '#e74c3c');
                 return false;
             } else {
-                $('#fromDateDisplay, #toDateDisplay').css('border-color', '#27ae60');
+                if (_rangeReusedFromCancelled) {
+                    $('#fromDateDisplay, #toDateDisplay').css('border-color', '#e67e22');
+                } else {
+                    $('#fromDateDisplay, #toDateDisplay').css('border-color', '#27ae60');
+                }
                 return true;
             }
         }
@@ -1740,6 +1819,21 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             let html = '';
             
             if (data.has_previous) {
+                var reusedNotice = '';
+                if (data.previous_cancelled) {
+                    reusedNotice = `
+                        <div style="background: #fdecea; border-left: 4px solid #e74c3c; padding: 10px 12px; margin-top: 12px; border-radius: 4px;">
+                            <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                <i class="fa-solid fa-rotate-left" style="color: #e74c3c; margin-top: 2px;"></i>
+                                <div>
+                                    <strong style="color: #721c24; display: block; margin-bottom: 4px;">Previous SOA was Cancelled</strong>
+                                    <span style="color: #721c24; font-size: 13px;">The same date range will be re-used. Reference number still advances.</span>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
                 html = `
                     <div class="soa-info-item">
                         <span class="label"><i class="fa-solid fa-calendar-check" style="color: #b60000;"></i> Last SOA Date Range</span>
@@ -1747,7 +1841,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     </div>
                     <div class="soa-info-item">
                         <span class="label"><i class="fa-solid fa-hashtag" style="color: #c30000;"></i> Reference Number</span>
-                        <span class="value success">${data.last_reference_number || 'N/A'}</span>
+                        <span class="value success">${data.last_reference_number || 'N/A'}${data.last_status ? ' <span style="color: #7f8c8d; font-weight: 400;">(' + data.last_status + ')</span>' : ''}</span>
                     </div>
                     <div class="soa-info-divider"></div>
                     <div class="soa-info-item">
@@ -1760,6 +1854,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                         <span class="value" style="color: #890000;">${data.next_reference_number}</span>
                     </div>
                     ` : ''}
+                    ${reusedNotice}
                     <div class="soa-info-warning">
                         <i class="fa-solid fa-triangle-exclamation"></i>
                         <span>A new SOA will be generated for the <strong>Next</strong> date range above.</span>
@@ -1777,16 +1872,13 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             
             $body.html(html);
             
-            // Reset timer
             soaInfoCountdown = 15;
             $('#soaInfoTimerCount').text(soaInfoCountdown);
             
-            // Show modal
             $modal.addClass('active');
             soaInfoModalOpen = true;
             $('body').css('overflow', 'hidden');
             
-            // Start countdown timer
             if (soaInfoTimer) {
                 clearInterval(soaInfoTimer);
             }
@@ -1811,18 +1903,15 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             $('body').css('overflow', '');
         }
         
-        // SOA Info Modal event handlers
         $('#soaInfoModalClose').click(closeSOAInfoModal);
         $('#soaInfoCloseNow').click(closeSOAInfoModal);
         
-        // Close SOA Info modal on overlay click
         $('#soaInfoModal').click(function(e) {
             if (e.target === this) {
                 closeSOAInfoModal();
             }
         });
         
-        // Escape key to close SOA Info modal
         $(document).keydown(function(e) {
             if (e.key === 'Escape' && soaInfoModalOpen) {
                 closeSOAInfoModal();
@@ -1837,7 +1926,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
         // AUTO-POPULATE DATES FUNCTION - UPDATED
         // =============================================
         
-        // Auto-populate dates based on latest SOA
         function autoPopulateDates(partnerId, partnerName, hasId) {
             showLoadingModal('Loading Dates', 'Fetching latest SOA dates for this partner...');
             
@@ -1866,15 +1954,31 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                         showSOAInfoModal(response);
                         
                         if (response.success && response.has_previous && response.next_from_date && response.next_to_date) {
-                            // Set the date fields with NEXT dates
-                            setDateFields(response.next_from_date, response.next_to_date);
+                            // Detect if range was re-used because previous SOA was cancelled
+                            _rangeReusedFromCancelled = (response.previous_cancelled === true);
+                            
+                            setDateFields(response.next_from_date, response.next_to_date, _rangeReusedFromCancelled);
                             _datesAutoPopulated = true;
                             
-                            var message = 'Next dates auto-populated from previous SOA: ' + 
-                                          formatDateDisplay(response.next_from_date) + ' to ' + formatDateDisplay(response.next_to_date);
-                            showAlert(message, 'success');
+                            if (_rangeReusedFromCancelled) {
+                                $('#cancelledSoaMessage').html(
+                                    'Previous SOA <strong>' + (response.last_reference_number || '') + '</strong> was ' +
+                                    '<strong>Cancelled</strong>. Re-using the same date range: ' +
+                                    formatDateDisplay(response.next_from_date) + ' to ' + formatDateDisplay(response.next_to_date) +
+                                    '. New reference number will be <strong>' + (response.next_reference_number || '') + '</strong>.'
+                                );
+                                $('#cancelledSoaInfo').addClass('active');
+                                
+                                var message = 'Previous SOA was cancelled. Re-using date range: ' + 
+                                              formatDateDisplay(response.next_from_date) + ' to ' + formatDateDisplay(response.next_to_date);
+                                showAlert(message, 'warning');
+                            } else {
+                                $('#cancelledSoaInfo').removeClass('active');
+                                var message = 'Next dates auto-populated from previous SOA: ' + 
+                                              formatDateDisplay(response.next_from_date) + ' to ' + formatDateDisplay(response.next_to_date);
+                                showAlert(message, 'success');
+                            }
                             
-                            // Update restriction info and validate
                             updateDateRestrictionInfo();
                             validateDateRange();
                             
@@ -1885,15 +1989,17 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                                 fetchPartnerByName(partnerName);
                             }
                         } else if (response.success && !response.has_previous) {
-                            // No previous SOA found - leave dates empty
                             showAlert('No previous SOA found for this partner. Please contact administrator to set up initial dates.', 'info');
                             setDateFields('', '');
                             _datesAutoPopulated = false;
+                            _rangeReusedFromCancelled = false;
+                            $('#cancelledSoaInfo').removeClass('active');
                         } else {
-                            // Error or no data - leave dates empty
                             showAlert('Could not auto-populate dates. Please contact administrator.', 'warning');
                             setDateFields('', '');
                             _datesAutoPopulated = false;
+                            _rangeReusedFromCancelled = false;
+                            $('#cancelledSoaInfo').removeClass('active');
                         }
                     } catch (e) {
                         hideLoadingModal();
@@ -1901,6 +2007,8 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                         showAlert('Error auto-populating dates. Please contact administrator.', 'warning');
                         setDateFields('', '');
                         _datesAutoPopulated = false;
+                        _rangeReusedFromCancelled = false;
+                        $('#cancelledSoaInfo').removeClass('active');
                     }
                 },
                 error: function(xhr, status, error) {
@@ -1909,6 +2017,8 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     showAlert('Error auto-populating dates. Please contact administrator.', 'warning');
                     setDateFields('', '');
                     _datesAutoPopulated = false;
+                    _rangeReusedFromCancelled = false;
+                    $('#cancelledSoaInfo').removeClass('active');
                 }
             });
         }
@@ -1927,28 +2037,26 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     showAlert('Invalid selection. Please select a partner with "WITH SOA" status.', 'warning');
                     return;
                 }
-                // Check if this partner has an ID or not
                 var hasId = selectedOption.data('has-id') === true || selectedOption.data('has-id') === 'true';
                 var partnerName = selectedOption.data('partner-name') || '';
-                var partnerAccName = selectedOption.data('partner-accname') || '';
                 
-                // Store the partner name for later use
                 window._currentPartnerName = partnerName;
                 
-                // Auto-populate dates based on latest SOA
                 autoPopulateDates(partnerId, partnerName, hasId);
             } else {
                 clearForm();
                 $('#dateRestrictionInfo').removeClass('active');
                 $('#soaExistsWarning').hide();
+                $('#cancelledSoaInfo').removeClass('active');
                 window._currentPartnerName = '';
                 _datesAutoPopulated = false;
+                _rangeReusedFromCancelled = false;
                 setDateFields('', '');
                 updateCreateInvoiceButton(false);
             }
         });
         
-        // NEW: Fetch partner by name for partners without ID
+        // Fetch partner by name for partners without ID
         function fetchPartnerByName(partnerName) {
             const fromDate = $('#fromDate').val();
             const toDate = $('#toDate').val();
@@ -1980,12 +2088,9 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                             showAlert('Error: ' + response.error, 'error');
                             return;
                         }
-                        // Store the partner name for later use
                         window._currentPartnerName = partnerName;
                         populateForm(response);
-                        // Update date restriction info after populating form
                         updateDateRestrictionInfo();
-                        // Validate dates again
                         validateDateRange();
                     } catch (e) {
                         showAlert('Error parsing response. Please check the console for details.', 'error');
@@ -2008,13 +2113,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                         console.error('Full error response:', xhr.responseText);
                     }
                     showAlert(errorMsg, 'error');
-                    console.error('AJAX Error Details:', {
-                        status: xhr.status,
-                        statusText: xhr.statusText,
-                        responseText: xhr.responseText,
-                        error: error,
-                        partnerName: partnerName
-                    });
                 }
             });
         }
@@ -2025,9 +2123,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
         
         function checkExistingSOA(partnerId, fromDate, toDate) {
             return new Promise((resolve, reject) => {
-                // For partners without ID, use partner_name
                 if (partnerId && partnerId.startsWith('no-id-')) {
-                    // Get the partner name from the stored value or from the selected option
                     var partnerName = window._currentPartnerName || '';
                     
                     if (!partnerName) {
@@ -2064,7 +2160,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                         }
                     });
                 } else {
-                    // Original logic for partners with ID
                     $.ajax({
                         url: window.location.href,
                         method: 'GET',
@@ -2121,12 +2216,10 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 return;
             }
             
-            // Validate date range before fetching
             if (!validateDateRange()) {
                 return;
             }
             
-            // Check if this is a partner without ID
             if (partnerId.startsWith('no-id-')) {
                 var selectedOption = $('#partnerSelect').find('option:selected');
                 var partnerName = selectedOption.data('partner-name') || '';
@@ -2135,7 +2228,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 return;
             }
             
-            // Check for existing SOA before fetching data
             try {
                 showLoadingModal('Checking...', 'Verifying if SOA already exists for this partner and date range.');
                 
@@ -2143,7 +2235,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 hideLoadingModal();
                 
                 if (result.exists) {
-                    // SOA already exists - show SweetAlert with details
                     updateCreateInvoiceButton(true);
                     $('#soaExistsMessage').html(
                         'SOA <strong>' + result.reference_number + '</strong> already exists for this partner (' + 
@@ -2170,14 +2261,12 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     return;
                 }
                 
-                // No existing SOA - proceed with fetching data
                 updateCreateInvoiceButton(false);
                 fetchPartnerDetails(partnerId);
                 
             } catch (error) {
                 hideLoadingModal();
                 console.error('Error checking existing SOA:', error);
-                // Still allow fetching data if check fails
                 fetchPartnerDetails(partnerId);
             }
         });
@@ -2209,7 +2298,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
         
         // Show Invoice Modal
         $('#showInvoiceModalBtn').click(async function() {
-            // Check if button is disabled
             if ($(this).prop('disabled')) {
                 showAlert('Cannot create invoice. SOA already exists for this partner and date range.', 'warning');
                 return;
@@ -2227,27 +2315,21 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 return;
             }
             
-            // Validate date range before generating invoice
             if (!validateDateRange()) {
                 return;
             }
             
-            // Check if we have data
             const controlNumber = $('#controlNumber').val();
             if (!controlNumber) {
                 showAlert('Please fetch partner data first (click Fetch Data).', 'warning');
                 return;
             }
             
-            // Check if this is a partner without ID
             if (partnerId.startsWith('no-id-')) {
-                // For partners without ID, we can still generate an invoice preview
-                // using the data we have
                 generateInvoicePreview();
                 return;
             }
             
-            // CHECK FOR EXISTING SOA
             try {
                 showLoadingModal('Checking...', 'Verifying if SOA already exists for this partner and date range.');
                 
@@ -2255,7 +2337,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 hideLoadingModal();
                 
                 if (result.exists) {
-                    // SOA already exists - show SweetAlert with details
                     updateCreateInvoiceButton(true);
                     $('#soaExistsMessage').html(
                         'SOA <strong>' + result.reference_number + '</strong> already exists for this partner (' + 
@@ -2282,7 +2363,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     return;
                 }
                 
-                // No existing SOA - proceed with invoice generation
                 updateCreateInvoiceButton(false);
                 generateInvoicePreview();
                 
@@ -2307,14 +2387,12 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
         $('#closeInvoiceModal').click(closeInvoiceModal);
         $('#closeInvoiceModalBtn').click(closeInvoiceModal);
         
-        // Close Invoice modal on overlay click
         $('#invoiceModal').click(function(e) {
             if (e.target === this) {
                 closeInvoiceModal();
             }
         });
         
-        // Escape key to close Invoice modal
         $(document).keydown(function(e) {
             if (e.key === 'Escape' && $('#invoiceModal').hasClass('active')) {
                 closeInvoiceModal();
@@ -2324,7 +2402,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             }
         });
         
-        // Save Invoice Button - Persists the currently-previewed invoice
+        // Save Invoice Button
         $('#saveInvoiceBtn').click(async function() {
             if (!currentInvoiceData) {
                 showAlert('Please generate the invoice preview first.', 'warning');
@@ -2353,7 +2431,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 if (result.success) {
                     openSaveInfoModal(true, result);
                     closeInvoiceModal();
-                    updateCreateInvoiceButton(true); // this control number/date range is now taken
+                    updateCreateInvoiceButton(true);
                 } else {
                     openSaveInfoModal(false, result);
                 }
@@ -2367,7 +2445,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             }
         });
         
-        // Save Info Modal controls - now reused for success/failure feedback
+        // Save Info Modal controls
         function openSaveInfoModal(success, result) {
             result = result || {};
             const $modal = $('#saveInfoModal');
@@ -2402,7 +2480,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
         $('#closeSaveInfoModal').click(closeSaveInfoModal);
         $('#closeSaveInfoModalBtn').click(closeSaveInfoModal);
         
-        // Close Save Info modal on overlay click
         $('#saveInfoModal').click(function(e) {
             if (e.target === this) {
                 closeSaveInfoModal();
@@ -2468,9 +2545,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                             return;
                         }
                         populateForm(response);
-                        // Update date restriction info after populating form
                         updateDateRestrictionInfo();
-                        // Validate dates again
                         validateDateRange();
                     } catch (e) {
                         showAlert('Error parsing response. Please check the console for details.', 'error');
@@ -2493,13 +2568,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                         console.error('Full error response:', xhr.responseText);
                     }
                     showAlert(errorMsg, 'error');
-                    console.error('AJAX Error Details:', {
-                        status: xhr.status,
-                        statusText: xhr.statusText,
-                        responseText: xhr.responseText,
-                        error: error,
-                        partnerId: partnerId
-                    });
                 }
             });
         }
@@ -2517,22 +2585,16 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             
             const transData = data.transaction_data || {};
             
-            // Format Transaction Count with commas
             const transactionCount = transData.transaction_count || 0;
             $('#transactionCount').text(formatNumberWithCommas(transactionCount));
             
-            // Format Total Principal with commas
             const totalPrincipal = parseFloat(transData.total_amount_paid) || 0;
             $('#totalPrincipal').text('₱ ' + formatNumberWithCommas(totalPrincipal.toFixed(2)));
             
-            // Format Service Charge with commas
             let serviceChargeAmount = parseFloat(transData.total_charge) || 0;
             $('#serviceChargeAmount').text('₱ ' + formatNumberWithCommas(serviceChargeAmount.toFixed(2)));
             
-            // Check if this partner has an ID (from the response)
             if (data.has_partner_id === false) {
-                // This is a partner without ID, check if they should have additional fields
-                // Partner 434 is hardcoded with ID '434', so partners without ID won't be 434
                 $('#additionalFields').removeClass('active');
                 $('#numberOfDays').val('');
                 $('#addAmount').val('500');
@@ -2562,7 +2624,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 $('#poNumber').css('border-color', '');
             }
             
-            // Update date restriction info
             updateDateRestrictionInfo();
             
             showAlert('Data fetched successfully!', 'success');
@@ -2570,11 +2631,8 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
 
         // Helper function to format numbers with commas
         function formatNumberWithCommas(number) {
-            // Convert to string and split by decimal if exists
             const parts = String(number).split('.');
-            // Format the integer part with commas
             parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-            // Join back with decimal if it exists
             return parts.join('.');
         }
         
@@ -2601,12 +2659,13 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             $('#dateRestrictionInfo').removeClass('active');
             $('#fromDateDisplay, #toDateDisplay').css('border-color', '#bdc3c7');
             $('#soaExistsWarning').hide();
+            $('#cancelledSoaInfo').removeClass('active');
             currentInvoiceData = null;
             window._currentPartnerName = '';
             _datesAutoPopulated = false;
+            _rangeReusedFromCancelled = false;
             setDateFields('', '');
             updateCreateInvoiceButton(false);
-            // Close SOA info modal if open
             if (soaInfoModalOpen) {
                 closeSOAInfoModal();
             }
@@ -2633,15 +2692,22 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             }
         }
 
-        // Create Invoice Preview - Updated with proper calculations based on inc_exc and withheld
+        // Create Invoice Preview
         function generateInvoicePreview() {
-            // Get the Partner Account Name (this is what should display as "Partner Name" in the invoice)
             const partnerAccountName = $('#partnerAccName').val() || 'N/A';
             const tin = $('#partnerTin').val() || 'N/A';
             const address = $('#address').val() || 'N/A';
             const businessStyle = $('#businessStyle').val() || 'NONE';
             const serviceCharge = $('#serviceCharge').val() || '0';
-            const transactionCount = $('#transactionCount').text() || '0';
+
+            // -------------------------------------------------------------------
+            // FIX: Strip existing commas so isNaN() inside formatNumber() works
+            //      correctly. Before the fix, $('#transactionCount').text() returned
+            //      "5,066" and formatNumber("5,066") returned '0' because
+            //      isNaN("5,066") is true.
+            // -------------------------------------------------------------------
+            const transactionCount = ($('#transactionCount').text() || '0').replace(/,/g, '');
+
             const fromDate = $('#fromDate').val() || '';
             const toDate = $('#toDate').val() || '';
             const incExc = $('#incExc').val() || 'N/A';
@@ -2651,34 +2717,35 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             const partnerId = $('#partnerSelect').val() || '';
             const poNumber = $('#poNumber').val() || '';
             
-            // Get the Service Charge amount (this is the main amount, not Total Principal)
             const serviceChargeAmount = parseFloat($('#serviceChargeAmount').text().replace('₱ ', '').replace(/,/g, '')) || 0;
             
-            // Get add amount (for partner 434)
-            const numberOfDaysRaw = $('#numberOfDays').val(); // raw string - '' when nothing entered
+            const numberOfDaysRaw = $('#numberOfDays').val();
             const numberOfDays = parseInt(numberOfDaysRaw) || 0;
             const isPartner434 = $('#additionalFields').hasClass('active');
             
-            // Helper function to format numbers with commas
+            // -------------------------------------------------------------------
+            // FIX: Make formatNumber() comma-tolerant as a safety net.
+            //      Any string that already contains commas (e.g. "5,066") will
+            //      now be correctly reformatted instead of returning '0'.
+            // -------------------------------------------------------------------
             function formatNumber(num) {
-                if (num === null || num === undefined || isNaN(num) || num === '') {
+                if (num === null || num === undefined || num === '') {
                     return '0';
                 }
-                return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+                // Strip existing commas so isNaN works correctly
+                const cleaned = String(num).replace(/,/g, '');
+                if (isNaN(cleaned)) {
+                    return '0';
+                }
+                return cleaned.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
             }
             
-            // Helper function to round to 2 decimal places
             function roundTo2(num) {
                 return Math.round(num * 100) / 100;
             }
             
-            // Calculate add amount - only if number of days > 0
             let addAmountValue = 0;
             let addAmountDisplay = '';
-            // Storage-oriented values (used when saving, per the soa_transaction column spec):
-            //  - amountAddBase: the flat 500 rate, no decimals, only set for partner 434
-            //  - addAmountForStorage: 500 * number of days, no decimals, no peso sign
-            //  - numberOfDaysForStorage: the raw days entered, or '' if nothing was entered
             let amountAddBase = '';
             let addAmountForStorage = '';
             let numberOfDaysForStorage = '';
@@ -2691,12 +2758,10 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 numberOfDaysForStorage = String(numberOfDays);
             }
             
-            // Format dates
             const fromDateFormatted = fromDate ? formatDateDisplay(fromDate) : '';
             const toDateFormatted = toDate ? formatDateDisplay(toDate) : '';
             const invoiceDateFormatted = invoiceDate ? new Date(invoiceDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
             
-            // Initialize variables
             let vatAmount = '';
             let netOfVat = '';
             let withholdingTaxAmount = '';
@@ -2704,7 +2769,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             let lessWT = '';
             let netAmountDue = '';
             
-            // Normalize values for comparison
             const incExcUpper = incExc.toUpperCase().trim();
             const withheldUpper = withholdingTax.toUpperCase().trim();
             const isNonVat = incExcUpper === 'NON-VAT';
@@ -2713,76 +2777,64 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
             const isWithheld = withheldUpper === 'YES';
             const isNoWithheld = withheldUpper === 'NO' || withheldUpper === 'NO WITHHELD' || withheldUpper === '';
             
-            // Use serviceChargeAmount as the base amount for calculations
             const baseAmount = serviceChargeAmount;
             
-            // Calculate based on conditions, and build the human-readable formula
-            // text that goes into the `formula` column when the invoice is saved.
             let formulaText = '';
 
             if (isNonVat) {
-    // NON-VAT: All VAT fields should be empty, net_amount_due empty since it's in totalAmountDue
-    vatAmount = '';
-    netOfVat = '';
-    withholdingTaxAmount = '';
-    totalAmountDue = baseAmount;
-    lessWT = '';
-    netAmountDue = '';
-    formulaText = '';
-} else if (isInclusive && isWithheld) {
-    // INCLUSIVE, WITHHELD = YES
-    vatAmount = roundTo2((baseAmount * 0.12) / 1.12);
-    netOfVat = roundTo2(baseAmount - vatAmount);
-    withholdingTaxAmount = roundTo2(netOfVat * 0.02);
-    totalAmountDue = baseAmount;
-    lessWT = withholdingTaxAmount;
-    netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
-    formulaText = 'VAT Amount 12% = (Amount * 12%) / 1.12\n' +
-                  'Net of VAT = Amount - VAT Amount\n' +
-                  'WTax = Net of VAT * 2%';
-} else if (isInclusive && isNoWithheld) {
-    // INCLUSIVE, WITHHELD = NO
-    vatAmount = roundTo2((baseAmount * 0.12) / 1.12);
-    netOfVat = roundTo2(baseAmount - vatAmount);
-    withholdingTaxAmount = 0;
-    totalAmountDue = baseAmount;
-    lessWT = 0;
-    netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
-    formulaText = 'VAT Amount 12% = (Amount * 12%) / 1.12\n' +
-                  'Net of VAT = Amount - VAT Amount';
-} else if (isExclusive && isWithheld) {
-    // EXCLUSIVE, WITHHELD = YES
-    vatAmount = roundTo2(baseAmount * 0.12);
-    netOfVat = 0;
-    withholdingTaxAmount = roundTo2(baseAmount * 0.02);
-    totalAmountDue = roundTo2(baseAmount + vatAmount);
-    lessWT = withholdingTaxAmount;
-    netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
-    formulaText = 'VAT Amount 12% = Amount * 12%\n' +
-                  'WTax = Amount * 2%';
-} else if (isExclusive && isNoWithheld) {
-    // EXCLUSIVE, WITHHELD = NO
-    vatAmount = roundTo2(baseAmount * 0.12);
-    netOfVat = 0;
-    withholdingTaxAmount = 0;
-    totalAmountDue = roundTo2(baseAmount + vatAmount);
-    lessWT = 0;
-    netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
-    formulaText = 'VAT Amount 12% = Amount * 12%';
-} else {
-    // Default fallback
-    vatAmount = '';
-    netOfVat = '';
-    withholdingTaxAmount = '';
-    totalAmountDue = baseAmount;
-    lessWT = '';
-    netAmountDue = '';
-    formulaText = '';
-}
+                vatAmount = '';
+                netOfVat = '';
+                withholdingTaxAmount = '';
+                totalAmountDue = baseAmount;
+                lessWT = '';
+                netAmountDue = '';
+                formulaText = '';
+            } else if (isInclusive && isWithheld) {
+                vatAmount = roundTo2((baseAmount * 0.12) / 1.12);
+                netOfVat = roundTo2(baseAmount - vatAmount);
+                withholdingTaxAmount = roundTo2(netOfVat * 0.02);
+                totalAmountDue = baseAmount;
+                lessWT = withholdingTaxAmount;
+                netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
+                formulaText = 'VAT Amount 12% = (Amount * 12%) / 1.12\n' +
+                              'Net of VAT = Amount - VAT Amount\n' +
+                              'WTax = Net of VAT * 2%';
+            } else if (isInclusive && isNoWithheld) {
+                vatAmount = roundTo2((baseAmount * 0.12) / 1.12);
+                netOfVat = roundTo2(baseAmount - vatAmount);
+                withholdingTaxAmount = 0;
+                totalAmountDue = baseAmount;
+                lessWT = 0;
+                netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
+                formulaText = 'VAT Amount 12% = (Amount * 12%) / 1.12\n' +
+                              'Net of VAT = Amount - VAT Amount';
+            } else if (isExclusive && isWithheld) {
+                vatAmount = roundTo2(baseAmount * 0.12);
+                netOfVat = 0;
+                withholdingTaxAmount = roundTo2(baseAmount * 0.02);
+                totalAmountDue = roundTo2(baseAmount + vatAmount);
+                lessWT = withholdingTaxAmount;
+                netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
+                formulaText = 'VAT Amount 12% = Amount * 12%\n' +
+                              'WTax = Amount * 2%';
+            } else if (isExclusive && isNoWithheld) {
+                vatAmount = roundTo2(baseAmount * 0.12);
+                netOfVat = 0;
+                withholdingTaxAmount = 0;
+                totalAmountDue = roundTo2(baseAmount + vatAmount);
+                lessWT = 0;
+                netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
+                formulaText = 'VAT Amount 12% = Amount * 12%';
+            } else {
+                vatAmount = '';
+                netOfVat = '';
+                withholdingTaxAmount = '';
+                totalAmountDue = baseAmount;
+                lessWT = '';
+                netAmountDue = '';
+                formulaText = '';
+            }
 
-            // Stash the full payload so the Save Invoice button can post it later
-            // without re-reading/re-computing anything from the DOM.
-            // VARCHAR amount columns store formatted values WITH commas (e.g. "963,823.93")
             currentInvoiceData = {
                 partner_id: partnerId,
                 invoice_date: invoiceDate,
@@ -2800,9 +2852,9 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 add_amount: addAmountForStorage || '',
                 amount_add: amountAddBase || '',
                 number_of_days: numberOfDaysForStorage || '',
-                formula: incExc,                        // -> formula column
-                formula_withheld: withholdingTax,       // -> formula_withheld column
-                formula_calc_text: formulaText,         // -> formulaInc_Exc column
+                formula: incExc,
+                formula_withheld: withholdingTax,
+                formula_calc_text: formulaText,
                 vat_amount: vatAmount !== '' ? formatNumber(vatAmount.toFixed(2)) : '',
                 net_of_vat: netOfVat !== '' ? formatNumber(netOfVat.toFixed(2)) : '',
                 withholding_tax: withholdingTaxAmount !== '' ? formatNumber(withholdingTaxAmount.toFixed(2)) : '',
@@ -2810,52 +2862,52 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                 net_amount_due: netAmountDue !== '' ? formatNumber(netAmountDue.toFixed(2)) : ''
             };
             
-            // Build the left column particulars - JUST TEXT DISPLAY, NO CALCULATIONS
             let leftColumnParticulars = '';
             
-            // Service Charge
             leftColumnParticulars += `
                 <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                     <span>Service Charge:</span>
                     <span style="font-weight: bold;">${serviceCharge}</span>
                 </div>`;
             
-            // Number of Transactions
             leftColumnParticulars += `
                 <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                     <span>Number of Transactions:</span>
                     <span style="font-weight: bold;">${formatNumber(transactionCount)}</span>
                 </div>`;
             
-            // Transaction Date From
             leftColumnParticulars += `
                 <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                     <span>Transaction Date From:</span>
                     <span style="font-weight: bold;">${fromDateFormatted}</span>
                 </div>`;
             
-            // Transaction Date To
             leftColumnParticulars += `
                 <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                     <span>Transaction Date To:</span>
                     <span style="font-weight: bold;">${toDateFormatted}</span>
                 </div>`;
             
-            // VAT (Incl. or Excl.)
             leftColumnParticulars += `
                 <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                     <span>VAT (Incl. or Excl.):</span>
                     <span style="font-weight: bold;">${incExc}</span>
                 </div>`;
             
-            // With Holding Tax (Y / N)
             leftColumnParticulars += `
                 <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                     <span>With Holding Tax (Y / N):</span>
                     <span style="font-weight: bold;">${withholdingTax}</span>
                 </div>`;
             
-            // Add Amount for partner 434 (if applicable)
+            if (_rangeReusedFromCancelled) {
+                leftColumnParticulars += `
+                    <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                        <span style="color: #e67e22; font-weight: 600;"><i class="fa-solid fa-rotate-left"></i> Note:</span>
+                        <span style="font-weight: bold; color: #e67e22;">Re-used date range (previous SOA was cancelled)</span>
+                    </div>`;
+            }
+            
             if (isPartner434 && numberOfDays > 0) {
                 leftColumnParticulars += `
                     <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
@@ -2864,9 +2916,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     </div>`;
             }
 
-            // ADD VAT AND TAX TEXT DISPLAY IN LEFT COLUMN (just the text, no calculations)
             if (!isNonVat) {
-                // For INCLUSIVE with WITHHELD = YES
                 if (isInclusive && isWithheld) {
                     leftColumnParticulars += `
                         <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
@@ -2878,9 +2928,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                         <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                             <span style="color: #ff0000">WTax = Net of VAT * 2%</span>
                         </div>`;
-                }
-                // For INCLUSIVE with WITHHELD = NO
-                else if (isInclusive && isNoWithheld) {
+                } else if (isInclusive && isNoWithheld) {
                     leftColumnParticulars += `
                         <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                             <span style="color: #ff0000">VAT Amount 12% = (Amount * 12%) / 1.12</span>
@@ -2888,9 +2936,7 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                         <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                             <span style="color: #ff0000">Net of VAT = Amount - VAT Amount</span>
                         </div>`;
-                }
-                // For EXCLUSIVE with WITHHELD = YES
-                else if (isExclusive && isWithheld) {
+                } else if (isExclusive && isWithheld) {
                     leftColumnParticulars += `
                         <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                             <span style="color: #ff0000">VAT Amount 12% = Amount * 12%</span>
@@ -2898,16 +2944,13 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                         <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                             <span style="color: #ff0000">WTax = Amount * 2%</span>
                         </div>`;
-                }
-                // For EXCLUSIVE with WITHHELD = NO
-                else if (isExclusive && isNoWithheld) {
+                } else if (isExclusive && isNoWithheld) {
                     leftColumnParticulars += `
                         <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                             <span style="color: #ff0000">VAT Amount 12% = Amount * 12%</span>
                         </div>`;
                 }
             } else {
-                // NON-VAT: Just display text
                 leftColumnParticulars += `
                     <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                         <span style="color: #ff0000">NON-VAT</span>
@@ -2920,7 +2963,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     
                     <div class="divider"></div>
                     
-                    <!-- RIGHT SIDE: Invoice Date and Control No -->
                     <div class="right-side-header">
                         <div style="display: flex; justify-content: flex-end; align-items: center; gap: 20px; margin-bottom: 5px;">
                             <span style="font-weight: bold; min-width: 120px; text-align: left;">Invoice Date:</span>
@@ -2932,7 +2974,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                         </div>
                     </div>
                     
-                    <!-- LEFT SIDE: Partner Details - Using Partner Account Name as the display name -->
                     <div class="left-side-details">
                         <div class="row">
                             <span class="label">Partner Name: <span style="color: red;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${partnerAccountName}</span></span>
@@ -2950,7 +2991,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     
                     <div class="divider"></div>
                     
-                    <!-- LEFT SIDE / RIGHT SIDE Labels -->
                     <div class="side-labels">
                         <div class="left-label">PARTICULARS</div>
                         <div class="right-label">AMOUNT</div>
@@ -2958,14 +2998,11 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     
                     <div class="divider"></div>
                     
-                    <!-- Two-Column Layout: LEFT = Particulars, RIGHT = Summary -->
                     <div style="display: flex; justify-content: space-between; gap: 40px; padding: 5px 0;">
-                        <!-- LEFT COLUMN - Particulars (TEXT ONLY) -->
                         <div style="flex: 1;">
                             ${leftColumnParticulars}
                         </div>
                         
-                        <!-- RIGHT COLUMN - Summary (CALCULATIONS) -->
                         <div style="flex: 1;">
                             <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee; font-weight: bold; font-size: 15px;">
                                 <span>Service Charge Amount:</span>
@@ -3049,7 +3086,6 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '') {
                     
                     <div class="divider-double"></div>
                     
-                    <!-- Signature Fields -->
                     <div class="signature-fields">
                         <div class="signature-item">
                             <div class="signature-line"><?php echo htmlspecialchars($display_name); ?></div>

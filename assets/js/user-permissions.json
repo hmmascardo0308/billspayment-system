@@ -399,8 +399,12 @@
         "Tools KPX Generator"
     ],
     "20256187": [
+        "BI Create Automated",
+        "BI Create Manual",
+        "BI Report Billing Invoice",
         "CAD Loggings",
-        "CAD Loggings Report"
+        "CAD Loggings Report",
+        "Invoice Review"
     ],
     "20252025": [
         "CAD Loggings",
@@ -408,15 +412,7 @@
     ],
     "12345678": [
         "BI Report Billing Invoice",
-        "BP Report Balance Sheet",
-        "BP Report Billers",
-        "BP Report Cancellation",
-        "BP Report EDI",
-        "BP Report Transaction Details",
-        "BP Report Transaction Summary",
-        "BP Report Volume",
-        "CAD Loggings",
-        "CAD Loggings Report",
+        "Invoice Approval",
         "Invoice Review",
         "Masterfiles View Partner List",
         "Profile Signature",

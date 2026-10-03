@@ -1,4 +1,6 @@
-/* Select2 */
+/* ============================================================
+   SELECT2
+   ============================================================ */
 .select2-container--default .select2-selection--single {
     height: 38px;
     border: 1px solid #ccc;
@@ -12,13 +14,55 @@
     line-height: 28px;
 }
 
-/* Table base */
-.bp-table td,
+/* ============================================================
+   TABLE BASE
+   - Headers stay nowrap
+   - Body cells default to nowrap
+   - Only cells with .wrap-cell will wrap text
+   ============================================================ */
+.bp-table {
+    table-layout: auto;
+}
+
 .bp-table th {
     white-space: nowrap;
 }
 
-/* Sticky double-header */
+.bp-table td {
+    white-space: nowrap;         /* default: do NOT wrap */
+    vertical-align: top;
+    line-height: 1.35;
+}
+
+/* ============================================================
+   WRAP-CELL — opt-in wrapping
+   Applied ONLY to: Partner (BP), GL Desc (GLE), Partner/desc (GLE)
+   ============================================================ */
+.bp-table td.wrap-cell {
+    white-space: normal !important;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+/* Width limits so wrapping actually takes effect */
+.bp-table td.col-partner.wrap-cell {
+    min-width: 180px;
+    max-width: 260px;
+}
+
+.bp-table td.col-gldesc.wrap-cell {
+    min-width: 220px;
+    max-width: 320px;
+}
+
+.bp-table td.col-desc.wrap-cell {
+    min-width: 200px;
+    max-width: 300px;
+}
+
+/* ============================================================
+   STICKY DOUBLE-HEADER
+   ============================================================ */
 .bp-table thead tr.group-header th {
     position: sticky;
     top: 0;
@@ -53,7 +97,9 @@
     border-bottom: 1px solid #b8c8dc;
 }
 
-/* Divider */
+/* ============================================================
+   DIVIDER
+   ============================================================ */
 .bp-table tbody td.divider-right,
 .bp-table tfoot td.divider-right {
     border-right: 3px solid #c8d3e0 !important;
@@ -74,7 +120,7 @@
     font-size: 0.95rem;
 }
 .bp-table tfoot tr.total-row td {
-    padding: 0.4rem 1rem;
+    padding: 0.3rem 1rem;
     border-top: 2px solid #6b0000;
     white-space: nowrap;
     background: #910000;       /* opaque bg required for sticky */
@@ -89,7 +135,9 @@
     font-weight: 700;
 }
 
-/* Debug box */
+/* ============================================================
+   DEBUG BOX
+   ============================================================ */
 .debug-box {
     margin: 1rem 1.5rem;
     padding: 0.8rem 1rem;
@@ -102,7 +150,9 @@
     word-break: break-all;
 }
 
-/* Status badges */
+/* ============================================================
+   STATUS BADGES
+   ============================================================ */
 .status-matched {
     background: #e8f5e9;
     color: #7d2e2e;
@@ -111,6 +161,7 @@
     border-radius: 4px;
     font-size: 0.8rem;
     display: inline-block;
+    white-space: nowrap;
 }
 .status-matched.multi {
     background: #e6c8c8;
@@ -124,16 +175,12 @@
     border-radius: 4px;
     font-size: 0.8rem;
     display: inline-block;
+    white-space: nowrap;
 }
 
-.cell-wrap {
-    max-width: 220px;
-    white-space: normal;
-    word-break: break-word;
-    line-height: 1.3;
-}
-
-/* Expandable rows */
+/* ============================================================
+   EXPANDABLE ROWS
+   ============================================================ */
 tr.parent-row {
     background: #fff;
     border-top: 2px solid #dfe6ee;
@@ -167,13 +214,17 @@ tr.detail-row td.cell-local {
     color: #9aa7b5;
 }
 
-/* Reference input error */
+/* ============================================================
+   REFERENCE INPUT ERROR
+   ============================================================ */
 .input-required-error {
     border-color: #c62828 !important;
     box-shadow: 0 0 0 2px rgba(198, 40, 40, 0.15);
 }
 
-/* Responsive filter */
+/* ============================================================
+   RESPONSIVE FILTER
+   ============================================================ */
 @media (max-width: 768px) {
     .filter-row {
         flex-direction: column !important;
@@ -183,4 +234,57 @@ tr.detail-row td.cell-local {
         flex: 1 1 100% !important;
         width: 100%;
     }
+    /* Remove width caps so wrapped columns use available space */
+    .bp-table td.col-partner.wrap-cell,
+    .bp-table td.col-gldesc.wrap-cell,
+    .bp-table td.col-desc.wrap-cell {
+        min-width: 0;
+        max-width: none;
+    }
 }
+
+
+
+
+        /* Status badges */
+        .status-matched {
+            background: #e8f5e9;
+            color: #2e7d32;
+            border: 1px solid #a5d6a7;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            white-space: nowrap;
+            display: inline-block;
+        }
+        .status-matched.multi {
+            background: #e3f2fd;
+            color: #1565c0;
+            border-color: #90caf9;
+        }
+        .status-unmatched {
+            background: #ffebee;
+            color: #c62828;
+            border: 1px solid #ef9a9a;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            white-space: nowrap;
+            display: inline-block;
+        }
+        .status-unmatched-gle {
+            background: #fff3e0;
+            color: #e65100;
+            border: 1px solid #ffb74d;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            white-space: nowrap;
+            display: inline-block;
+        }
+        .gle-only-row {
+            background: #fffaf3 !important;
+        }

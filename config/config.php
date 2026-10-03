@@ -6,7 +6,11 @@
 // ------------------------------------------------------------
 // Production = running on the ExactDB server itself.
 // You can also override with APP_ENV env var if needed.
-$isProduction = (php_uname('n') === 'ho-cad-exactdb')
+// NOTE: hostname comparison is case-insensitive and uses a
+// substring match to survive variants like HO-CAD-EXACTDB,
+// ho-cad-exactdb.local, etc.
+$hostname     = strtolower(trim(php_uname('n')));
+$isProduction = (strpos($hostname, 'ho-cad-exactdb') !== false)
              || (getenv('APP_ENV') === 'production');
 
 // ------------------------------------------------------------
