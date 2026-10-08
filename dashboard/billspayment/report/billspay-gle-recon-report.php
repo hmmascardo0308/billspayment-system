@@ -175,10 +175,6 @@ if (isset($_GET['filter'])) {
 
         // ============================================================
         // EXACTDB (GLE) QUERY — TWO PASS
-        //   Pass 1: identify all references matching the filter
-        //   Pass 2: pull ALL GLE rows for those references
-        //           (ensures multi-GL entries are fully retrieved,
-        //            especially for GLE-only references)
         // ============================================================
         $gle_by_ref = [];
 
@@ -186,17 +182,6 @@ if (isset($_GET['filter'])) {
 
         if ($should_query_gle) {
 
-            // ------------------------------------------------------
-            // PASS 1 — Find candidate references
-            //
-            // Split into TWO separate queries so MySQL can pick the
-            // right index for each branch:
-            //   Query A: reference-based lookup  -> idx_gle_reference_only
-            //   Query B: commission 428101 lookup -> idx_gle_glcode_datetime_ref
-            //
-            // (Previously this was a single query with OR across columns,
-            //  which prevented index selection.)
-            // ------------------------------------------------------
             $candidate_refs = [];
 
             // Shared date-range fragments
@@ -216,8 +201,6 @@ if (isset($_GET['filter'])) {
 
             // ------------------------------------------------------
             // PASS 1A — Reference-based lookup
-            //   Covers: explicit reference from form + references
-            //           discovered from local BP rows
             // ------------------------------------------------------
             $refs_to_lookup = [];
             if ($reference_no !== '') {
@@ -262,43 +245,52 @@ if (isset($_GET['filter'])) {
 
             // ------------------------------------------------------
             // PASS 1B — Commission (428101) lookup by partner name
-            //   Finds GLE-only references (no BP row) via desc match.
-            //   Uses idx_gle_glcode_datetime_ref (gl_code, datetime, reference).
-            //
-            //   NOTE: SQL does a coarse LIKE '%name%' (non-sargable but
-            //   narrow because gl_code + datetime range prune the set).
-            //   PHP then applies a strict word-boundary regex to avoid
-            //   false positives like "ANECO" matching "ZANECO".
+            //   UPDATED: Uses Fuzzy Matching (95% similarity) instead of strict LIKE
             // ------------------------------------------------------
             if ($partner_id !== '' && $partner_name !== '') {
+                
+                // Clean up the partner name for better fuzzy matching
+                // Remove commas, extra spaces, and unescape apostrophes
+                $clean_partner_name = str_replace([',', "\\'"], ['', "'"], $partner_name);
+                $clean_partner_name = trim(preg_replace('/\s+/', ' ', $clean_partner_name));
+
+                // Broad SQL query: Just fetch all 428101 records for the date range.
+                // We will filter by similarity in PHP.
                 $sql1b = "SELECT DISTINCT reference, `desc` FROM gle
-                          WHERE gl_code = '428101'
-                            AND `desc` LIKE ?";
-                $p1b_params = ['%' . $partner_name . '%'];
-                $p1b_types  = 's';
+                          WHERE gl_code = '428101'";
+                $p1b_params = [];
+                $p1b_types  = '';
 
                 if ($date_where !== '') {
                     $sql1b      .= $date_where;
-                    $p1b_params  = array_merge($p1b_params, $date_params);
-                    $p1b_types  .= $date_types;
+                    $p1b_params  = $date_params;
+                    $p1b_types  = $date_types;
                 }
 
                 $stmt1b = $conn_exact->prepare($sql1b);
                 if ($stmt1b) {
-                    $stmt1b->bind_param($p1b_types, ...$p1b_params);
+                    if ($p1b_types !== '') {
+                        $stmt1b->bind_param($p1b_types, ...$p1b_params);
+                    }
                     $stmt1b->execute();
                     $res1b = $stmt1b->get_result();
-
-                    // Strict word-boundary match: partner name must be
-                    // bounded by start/end or non-alphanumeric chars.
-                    // Prevents "ANECO" from matching "ZANECO".
-                    $word_boundary_pattern =
-                        '/(^|[^A-Za-z0-9])' . preg_quote($partner_name, '/') . '([^A-Za-z0-9]|$)/i';
 
                     while ($r = $res1b->fetch_assoc()) {
                         $rref  = trim($r['reference'] ?? '');
                         $rdesc = (string)($r['desc'] ?? '');
-                        if ($rref !== '' && preg_match($word_boundary_pattern, $rdesc)) {
+                        
+                        if ($rref === '' || $rdesc === '') continue;
+
+                        // Clean the DB description
+                        $clean_rdesc = str_replace([',', "\\'"], ['', "'"], $rdesc);
+                        $clean_rdesc = trim(preg_replace('/\s+/', ' ', $clean_rdesc));
+
+                        // Calculate similarity percentage using similar_text()
+                        $percent_similar = 0.0;
+                        similar_text(strtoupper($clean_partner_name), strtoupper($clean_rdesc), $percent_similar);
+
+                        // If 95% or more similar, consider it a match
+                        if ($percent_similar >= 95.0) {
                             $candidate_refs[$rref] = true;
                         }
                     }
@@ -379,7 +371,6 @@ if (isset($_GET['filter'])) {
 
         // ============================================================
         // RECONCILIATION — driven by the UNION of references
-        // (BP side + GLE side)
         // ============================================================
 
         // Index local rows by reference
@@ -667,7 +658,7 @@ $export_qs = http_build_query([
                     </div>
                 </div>
                 <div style="flex: 1 1 180px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1.2rem; border-left: 5px solid #ef6c00;">
-                    <div style="font-size: 0.75rem; color: #666; text-transform: uppercase;">Matched / BP-only / GLE-only</div>
+                    <div style="font-size: 0.75rem; color: #666; text-transform: uppercase;">Matched / BP / GLE</div>
                     <div style="font-size: 1rem; font-weight: 700; color: #ef6c00; margin-top: 0.2rem;">
                         <?php echo $matched_count; ?> / <?php echo $unmatched_local; ?> / <?php echo $unmatched_gle; ?>
                     </div>
