@@ -29,8 +29,8 @@
     justify-content: center;
 }
 .bp-logo {
-    height: 300px;
-    max-width: 400px;
+    height: 200px;
+    max-width: 200px;
     object-fit: contain;
 }
 .bp-menu {
@@ -119,7 +119,7 @@
     </div>
 
     <div class="bp-center">
-        <img src="/BillsPayment/images/mlwhite.png" alt="Logo" class="bp-logo">
+        <img src="/BillsPayment/images/mlwhitepng.png" alt="Logo" class="bp-logo">
     </div>
 
     <div class="bp-right">

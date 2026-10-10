@@ -532,7 +532,7 @@ if (empty($transactions)) {
         if (!empty($row['partner_id_kpx']) || !empty($row['partner_name'])) {
             $partner_display = trim(($row['partner_id_kpx'] ?? '') . ' - ' . ($row['partner_name'] ?? ''), ' -');
         } elseif (!empty($row['gle_desc'])) {
-            $partner_display = '(GLE) ' . $row['gle_desc'];
+            $partner_display = $row['gle_desc'];
         } else {
             $partner_display = '—';
         }
@@ -563,12 +563,12 @@ if (empty($transactions)) {
             // Multiple GLE rows – show summary on parent
             $html .= '<td class="num">(' . count($child_rows) . ' rows)</td>';
             $html .= '<td>—</td>';
-            $html .= '<td>—</td>';
+            $html .= '<td>'. htmlspecialchars($g['desc'] ?? '—') . '</td>';
             $html .= '<td>' . htmlspecialchars($row['reference_no'] ?? '—') . '</td>';
-            $html .= '<td>—</td>';
+            $html .= '<td>' . htmlspecialchars($g['datetime'] ?? '—') . '</td>';
             $html .= '<td class="num">' . number_format((float)$row['gle_debit_total'], 2) . '</td>';
             $html .= '<td class="num">' . number_format((float)$row['gle_credit_total'], 2) . '</td>';
-            $html .= '<td>—</td>';
+            $html .= '<td>' . htmlspecialchars($g['entry_number'] ?? '—') . '</td>';
         } else {
             $html .= '<td class="center">—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>';
         }

@@ -410,7 +410,7 @@ if (isset($_GET['filter'])) {
                 $match_status = 'MATCHED';
                 $matched_count++;
             } elseif ($has_local && !$has_gle) {
-                $match_status = 'UNMATCHED (Bills Payment only)';
+                $match_status = 'UNMATCHED (BP only)';
                 $unmatched_local++;
             } else {
                 $match_status = 'UNMATCHED (GLE only)';
@@ -732,21 +732,21 @@ $export_qs = http_build_query([
                             </th>
                         </tr>
                         <tr class="col-header" style="color: #fff;">
-                            <th class="col-local col-status" style="padding: 0.65rem 0.5rem; text-align: center;">Status</th>
-                            <th class="col-local col-partner" style="padding: 0.65rem 0.5rem; text-align: center;">Partner</th>
-                            <th class="col-local col-reference" style="padding: 0.65rem 0.5rem; text-align: center;">Reference</th>
-                            <th class="col-local col-datetime" style="padding: 0.65rem 0.5rem; text-align: center;">Datetime</th>
-                            <th class="col-local col-amount" style="padding: 0.65rem 0.5rem; text-align: center;">Amt Paid</th>
-                            <th class="col-local col-charge" style="padding: 0.65rem 0.5rem; text-align: center;">Chg Cust</th>
-                            <th class="col-local col-charge divider-right" style="padding: 0.65rem 0.5rem; text-align: center;">Chg Partr</th>
-                            <th class="col-gle col-glcode" style="padding: 0.65rem 0.5rem; text-align: center;">GL Code</th>
-                            <th class="col-gle col-gldesc" style="padding: 0.65rem 0.5rem; text-align: center;">GL Desc</th>
-                            <th class="col-gle col-desc" style="padding: 0.65rem 0.5rem; text-align: center;">Partner</th>
-                            <th class="col-gle col-reference" style="padding: 0.65rem 0.5rem; text-align: center;">Reference</th>
-                            <th class="col-gle col-datetime" style="padding: 0.65rem 0.5rem; text-align: center;">Datetime</th>
-                            <th class="col-gle col-debit" style="padding: 0.65rem 0.5rem; text-align: center;">Debit</th>
-                            <th class="col-gle col-credit" style="padding: 0.65rem 0.5rem; text-align: center;">Credit</th>
-                            <th class="col-gle col-entry" style="padding: 0.65rem 0.5rem; text-align: center;">Entry No.</th>
+                            <th class="col-local col-status" style="padding: 0.35rem 0.5rem; text-align: center;">Status</th>
+                            <th class="col-local col-partner" style="padding: 0.35rem 0.5rem; text-align: center;">Partner</th>
+                            <th class="col-local col-reference" style="padding: 0.35rem 0.5rem; text-align: center;">Reference</th>
+                            <th class="col-local col-datetime" style="padding: 0.35rem 0.5rem; text-align: center;">Datetime</th>
+                            <th class="col-local col-amount" style="padding: 0.35rem 0.5rem; text-align: center;">Amt Paid</th>
+                            <th class="col-local col-charge" style="padding: 0.35rem 0.5rem; text-align: center;">Chg Cust</th>
+                            <th class="col-local col-charge divider-right" style="padding: 0.35rem 0.5rem; text-align: center;">Chg Partr</th>
+                            <th class="col-gle col-glcode" style="padding: 0.35rem 0.5rem; text-align: center;">GL Code</th>
+                            <th class="col-gle col-gldesc" style="padding: 0.35rem 0.5rem; text-align: center;">GL Desc</th>
+                            <th class="col-gle col-desc" style="padding: 0.35rem 0.5rem; text-align: center;">Partner</th>
+                            <th class="col-gle col-reference" style="padding: 0.35rem 0.5rem; text-align: center;">Reference</th>
+                            <th class="col-gle col-datetime" style="padding: 0.35rem 0.5rem; text-align: center;">Datetime</th>
+                            <th class="col-gle col-debit" style="padding: 0.35rem 0.5rem; text-align: center;">Debit</th>
+                            <th class="col-gle col-credit" style="padding: 0.35rem 0.5rem; text-align: center;">Credit</th>
+                            <th class="col-gle col-entry" style="padding: 0.35rem 0.5rem; text-align: center;">Entry No.</th>
                         </tr>
                     </thead>
                     <tbody id="results-body">
@@ -756,7 +756,7 @@ $export_qs = http_build_query([
                                     $child_rows  = $row['gle_rows'] ?? [];
                                     $can_expand  = !empty($child_rows);
                                     $has_match   = ($row['match_status'] === 'MATCHED');
-                                    $is_bp_only  = ($row['match_status'] === 'UNMATCHED (Bills Payment only)');
+                                    $is_bp_only  = ($row['match_status'] === 'UNMATCHED (BP only)');
                                     $is_gle_only = ($row['match_status'] === 'UNMATCHED (GLE only)');
                                     $is_multi    = (($row['gle_row_count'] ?? 0) > 1);
 
@@ -764,7 +764,7 @@ $export_qs = http_build_query([
                                     if (!empty($row['partner_id_kpx']) || !empty($row['partner_name'])) {
                                         $partner_display = trim(($row['partner_id_kpx'] ?? '') . ' - ' . ($row['partner_name'] ?? ''), ' -');
                                     } elseif (!empty($row['gle_desc'])) {
-                                        $partner_display = '(GLE) ' . $row['gle_desc'];
+                                        $partner_display = $row['gle_desc'];
                                     } else {
                                         $partner_display = '—';
                                     }
@@ -846,16 +846,19 @@ $export_qs = http_build_query([
                                     <?php elseif ($can_expand): ?>
                                         <td class="col-glcode" style="padding: 0.35rem 0.5rem; text-align: right; color:#999;">(<?php echo $row['gle_row_count']; ?> rows)</td>
                                         <td class="col-gldesc" style="padding: 0.35rem 0.5rem;">—</td>
-                                        <td class="col-desc" style="padding: 0.35rem 0.5rem;">—</td>
+                                        <td class="col-desc" style="padding: 0.35rem 0.5rem;">                                                <?php echo htmlspecialchars($g['desc'] ?? '—'); ?>
+</td>
                                         <td class="col-reference" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($row['reference_no'] ?? '—'); ?></td>
-                                        <td class="col-datetime" style="padding: 0.35rem 0.5rem;">—</td>
+                                        <td class="col-datetime" style="padding: 0.35rem 0.5rem;">                                                <?php echo htmlspecialchars($g['datetime'] ?? '—'); ?>
+</td>
                                         <td class="col-debit" style="padding: 0.35rem 0.5rem; text-align: right; font-weight:600; color:#1565c0;">
                                             <?php echo number_format((float)$row['gle_debit_total'], 2); ?>
                                         </td>
                                         <td class="col-credit" style="padding: 0.35rem 0.5rem; text-align: right; font-weight:600; color:#6a1b9a;">
                                             <?php echo number_format((float)$row['gle_credit_total'], 2); ?>
                                         </td>
-                                        <td class="col-entry" style="padding: 0.35rem 0.5rem;">—</td>
+                                        <td class="col-entry" style="padding: 0.35rem 0.5rem;">                                                <?php echo htmlspecialchars($g['entry_number'] ?? '—'); ?>
+</td>
                                     <?php else: ?>
                                         <td class="col-glcode" style="padding: 0.35rem 0.5rem; text-align: right;">—</td>
                                         <td class="col-gldesc" style="padding: 0.35rem 0.5rem;">—</td>
