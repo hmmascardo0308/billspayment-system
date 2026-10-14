@@ -80,7 +80,23 @@ if (empty($settled_by)) {
 }
 
 // Log the settlement request
-error_log("Settlement Request - RFP: $rfp_no, CAD: $cad_no, Partners: " . implode(',', $partner_ids));
+error_log("Settlement Request - RFP: $rfp_no, CAD: $cad_no, Partners: " . implode(',', $partner_ids) . ", DateFrom: $date_from, DateTo: $date_to");
+
+// ============================================================
+// LATE POSTING LOOKBACK (single-day settlement)
+// When date_from == date_to, also settle still-unsettled
+// transactions from the previous 7 days (late postings that
+// were uploaded after the previous day's settlement).
+// Already-settled volume from those prior days is never touched.
+// ============================================================
+$is_single_day = (!empty($date_from) && !empty($date_to) && $date_from === $date_to);
+$lookback_from = null;
+$lookback_to   = null;
+if ($is_single_day) {
+    $lookback_from = date('Y-m-d', strtotime($date_from . ' -7 days'));
+    $lookback_to   = date('Y-m-d', strtotime($date_from . ' -1 day'));
+    error_log("Settlement Lookback active: $lookback_from → $lookback_to (settlement day: $date_from)");
+}
 
 // Build WHERE clause for the update - ONLY unsettled records
 $where_conditions = [];
@@ -111,8 +127,25 @@ if (!empty($settlement_type_filter)) {
     $types .= "s";
 }
 
-// Date range filters
-if (!empty($date_from) && !empty($date_to)) {
+// Date range filters (with late-posting lookback when single day)
+if ($is_single_day && $lookback_from && $lookback_to) {
+    // Include:
+    //  1) All matching transactions on the selected settlement day
+    //  2) Only still-unsettled transactions from the 7-day lookback window
+    $where_conditions[] = "(
+        (bt.datetime BETWEEN ? AND ?)
+        OR
+        (
+            bt.datetime BETWEEN ? AND ?
+            AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
+        )
+    )";
+    $params[] = $date_from . ' 00:00:00';
+    $params[] = $date_to   . ' 23:59:59';
+    $params[] = $lookback_from . ' 00:00:00';
+    $params[] = $lookback_to   . ' 23:59:59';
+    $types .= "ssss";
+} elseif (!empty($date_from) && !empty($date_to)) {
     $where_conditions[] = "bt.datetime BETWEEN ? AND ?";
     $params[] = $date_from . ' 00:00:00';
     $params[] = $date_to . ' 23:59:59';
@@ -164,7 +197,8 @@ try {
         $conn->rollback();
         echo json_encode([
             'success' => false,
-            'message' => 'No unsettled transactions found for the selected criteria.'
+            'message' => 'No unsettled transactions found for the selected criteria' .
+                         ($is_single_day ? ' (including late postings from previous 7 days).' : '.')
         ]);
         exit;
     }
@@ -200,15 +234,23 @@ try {
     }
     
     // Log the settlement action with RFP and CAD numbers
-    error_log("Settlement completed - RFP: $rfp_no, CAD: $cad_no, By: $settled_by, Date: $settlement_date, Affected rows: $affected_rows");
+    $lookback_note = $is_single_day
+        ? " | Lookback: $lookback_from → $lookback_to"
+        : '';
+    error_log("Settlement completed - RFP: $rfp_no, CAD: $cad_no, By: $settled_by, Date: $settlement_date, Affected rows: $affected_rows$lookback_note");
     
     // Commit transaction
     $conn->commit();
     
     // Return success response
+    $message = "Successfully settled $affected_rows transaction(s) with RFP: $rfp_no and CAD: $cad_no.";
+    if ($is_single_day) {
+        $message .= " (Late postings from previous 7 days that were still unsettled were also included.)";
+    }
+
     echo json_encode([
         'success' => true,
-        'message' => "Successfully settled $affected_rows transaction(s) with RFP: $rfp_no and CAD: $cad_no.",
+        'message' => $message,
         'data' => [
             'total_transactions' => (int)($count_data['total_transactions'] ?? 0),
             'total_amount' => (float)($count_data['total_amount'] ?? 0),
@@ -217,7 +259,10 @@ try {
             'settlement_date' => $settlement_date_display,
             'affected_rows' => $affected_rows,
             'rfp_no' => $rfp_no,
-            'cad_no' => $cad_no
+            'cad_no' => $cad_no,
+            'lookback_applied' => $is_single_day,
+            'lookback_from' => $lookback_from,
+            'lookback_to' => $lookback_to
         ]
     ]);
     

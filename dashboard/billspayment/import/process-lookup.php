@@ -9,6 +9,9 @@ ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 ini_set('error_log', __DIR__ . '/import_errors.log');
 
+// Set timezone to Asia/Manila
+date_default_timezone_set('Asia/Manila');
+
 // Check authentication configuration safely
 session_start();
 if (!isset($_SESSION['user_type'])) {
@@ -49,7 +52,6 @@ function lookupBranchByName($conn, $name) {
         $normalized_name = strtoupper(trim($name));
         $normalized_name = preg_replace('/\s+/', ' ', $normalized_name);
         
-        // First try exact match
         $stmt = $conn->prepare("SELECT branch_id, code, ml_matic_branch_name, zone, region_code, gl_region 
                                FROM masterdata.branch_profile 
                                WHERE REPLACE(UPPER(ml_matic_branch_name), '  ', ' ') = ? 
@@ -65,7 +67,6 @@ function lookupBranchByName($conn, $name) {
             $stmt->close();
         }
         
-        // Try partial match
         $search_name = '%' . $normalized_name . '%';
         $stmt = $conn->prepare("SELECT branch_id, code, ml_matic_branch_name, zone, region_code, gl_region 
                                FROM masterdata.branch_profile 
@@ -158,7 +159,6 @@ function resolveBranch($conn, $row, $isKP7) {
     $defaultNotFound = getNotFoundBranchData();
     $branchData = $defaultNotFound;
     
-    // First check if region_code_tg is '32' - this overrides everything
     $regionCodeTg = isset($row['region_code_tg']) ? trim($row['region_code_tg']) : '';
     if ($regionCodeTg === '32') {
         $branchData = getBranch581($conn);
@@ -172,7 +172,6 @@ function resolveBranch($conn, $row, $isKP7) {
                 'region' => $branchData['gl_region']
             ];
         }
-        // If branch 581 not found, use Not Found
         return [
             'branch_id' => 'Not Found',
             'branch_code' => 'Not Found',
@@ -184,7 +183,6 @@ function resolveBranch($conn, $row, $isKP7) {
     }
     
     if ($isKP7) {
-        // KP7: Use ml_matic_branch_name and region_value
         $ml_matic_branch_name = isset($row['ml_matic_branch_name']) ? trim($row['ml_matic_branch_name']) : '';
         $region_value = isset($row['region_value']) ? trim($row['region_value']) : '';
         
@@ -195,7 +193,6 @@ function resolveBranch($conn, $row, $isKP7) {
             }
         }
         
-        // If not found by name, try by region
         if ($branchData === $defaultNotFound && !empty($region_value)) {
             $data = lookupBranchByRegion($conn, $region_value);
             if ($data) {
@@ -203,7 +200,6 @@ function resolveBranch($conn, $row, $isKP7) {
             }
         }
     } else {
-        // KPX: Use branch_id directly
         $branch_id = isset($row['branch_id']) ? trim($row['branch_id']) : '';
         if (!empty($branch_id) && $branch_id !== 'Not Found' && $branch_id !== '') {
             $data = lookupBranchById($conn, $branch_id);
@@ -224,168 +220,90 @@ function resolveBranch($conn, $row, $isKP7) {
 }
 
 /**
- * Resolve partner using (in order):
- *   1) partner_id_kpx (exact)
- *   2) partner_name (case-insensitive exact, then LIKE) - skipped if "ALL PARTNERS"
- *   3) partner_id (fallback)
- * Returns the resolved partner row or null.
+ * Resolve partner for a row using the new logic.
  */
-function resolvePartnerBySource($conn, $row) {
-    $partnerIdKpx = isset($row['partner_id_kpx']) ? trim((string)$row['partner_id_kpx']) : '';
-    $partnerName  = isset($row['partner_name'])     ? trim((string)$row['partner_name'])     : '';
-    $partnerId    = isset($row['partner_id'])       ? trim((string)$row['partner_id'])       : '';
-
-    // 1) partner_id_kpx exact match
-    if ($partnerIdKpx !== '' && $partnerIdKpx !== 'Not Found') {
+function resolvePartner($conn, $row) {
+    $excelPartnerId = '';
+    if (isset($row['partner_id_fallback_original']) && trim((string)$row['partner_id_fallback_original']) !== '') {
+        $excelPartnerId = trim((string)$row['partner_id_fallback_original']);
+    } elseif (isset($row['partner_id']) && trim((string)$row['partner_id']) !== '' && $row['partner_id'] !== 'Not Found') {
+        $excelPartnerId = trim((string)$row['partner_id']);
+    }
+    
+    $excelPartnerName = isset($row['partner_name']) ? trim((string)$row['partner_name']) : '';
+    
+    if (strtoupper($excelPartnerName) === 'ALL PARTNERS') {
+        $excelPartnerName = '';
+    }
+    
+    if ($excelPartnerName === '' && isset($row['partner_name_from_file'])) {
+        $candidate = trim((string)$row['partner_name_from_file']);
+        if (strtoupper($candidate) !== 'ALL PARTNERS') {
+            $excelPartnerName = $candidate;
+        }
+    }
+    
+    if ($excelPartnerId !== '' && $excelPartnerId !== 'Not Found') {
         $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
                                 FROM masterdata.partner_masterfile 
                                 WHERE partner_id_kpx = ? LIMIT 1");
         if ($stmt) {
-            $stmt->bind_param("s", $partnerIdKpx);
+            $stmt->bind_param("s", $excelPartnerId);
             $stmt->execute();
             $res = $stmt->get_result();
             if ($pData = $res->fetch_assoc()) {
                 $stmt->close();
-                return $pData;
+                return [
+                    'partner_id'          => $pData['partner_id'],
+                    'partner_id_kpx'      => $pData['partner_id_kpx'],
+                    'partner_name'        => $pData['partner_name'],
+                    'mpm_gl_code'         => $pData['gl_code'],
+                    'lookup_status'       => 'found',
+                    'original_partner_id' => $excelPartnerId
+                ];
             }
             $stmt->close();
         }
-    }
-
-    // 2) partner_name exact / case-insensitive match (new KPX variants)
-    //    Skip if the name is a wildcard placeholder.
-    $partnerNameUpper = strtoupper($partnerName);
-    if (
-        $partnerName !== '' &&
-        $partnerName !== 'Not Found' &&
-        $partnerNameUpper !== 'ALL PARTNERS'
-    ) {
-        $normalized = strtoupper(preg_replace('/\s+/', ' ', trim($partnerName)));
-
-        $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
-                                FROM masterdata.partner_masterfile 
-                                WHERE UPPER(REPLACE(partner_name, '  ', ' ')) = ? 
-                                LIMIT 1");
-        if ($stmt) {
-            $stmt->bind_param("s", $normalized);
-            $stmt->execute();
-            $res = $stmt->get_result();
-            if ($pData = $res->fetch_assoc()) {
-                $stmt->close();
-                return $pData;
-            }
-            $stmt->close();
-        }
-
-        // 2b) partial / LIKE match as a last resort
-        $like = '%' . $normalized . '%';
-        $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
-                                FROM masterdata.partner_masterfile 
-                                WHERE UPPER(partner_name) LIKE ? 
-                                LIMIT 1");
-        if ($stmt) {
-            $stmt->bind_param("s", $like);
-            $stmt->execute();
-            $res = $stmt->get_result();
-            if ($pData = $res->fetch_assoc()) {
-                $stmt->close();
-                return $pData;
-            }
-            $stmt->close();
-        }
-    }
-
-    // 3) partner_id fallback
-    if ($partnerId !== '' && $partnerId !== 'Not Found') {
+        
         $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
                                 FROM masterdata.partner_masterfile 
                                 WHERE partner_id = ? LIMIT 1");
         if ($stmt) {
-            $stmt->bind_param("s", $partnerId);
+            $stmt->bind_param("s", $excelPartnerId);
             $stmt->execute();
             $res = $stmt->get_result();
             if ($pData = $res->fetch_assoc()) {
                 $stmt->close();
-                return $pData;
+                return [
+                    'partner_id'          => $pData['partner_id'],
+                    'partner_id_kpx'      => $pData['partner_id_kpx'],
+                    'partner_name'        => $pData['partner_name'],
+                    'mpm_gl_code'         => $pData['gl_code'],
+                    'lookup_status'       => 'found',
+                    'original_partner_id' => $excelPartnerId
+                ];
             }
             $stmt->close();
         }
+        
+        return [
+            'partner_id'          => null,
+            'partner_id_kpx'      => $excelPartnerId,
+            'partner_name'        => $excelPartnerName !== '' ? $excelPartnerName : null,
+            'mpm_gl_code'         => null,
+            'lookup_status'       => 'not_found',
+            'original_partner_id' => $excelPartnerId
+        ];
     }
-
-    return null;
-}
-
-// Helper function to resolve partner for a row
-function resolvePartner($conn, $row, $isKP7) {
-    $result = [
-        'partner_id'      => 'Not Found',
-        'partner_id_kpx'  => 'Not Found',
-        'partner_name'    => 'Not Found',
-        'mpm_gl_code'     => 'Not Found'
+    
+    return [
+        'partner_id'          => null,
+        'partner_id_kpx'      => null,
+        'partner_name'        => $excelPartnerName !== '' ? $excelPartnerName : null,
+        'mpm_gl_code'         => null,
+        'lookup_status'       => 'no_partner_id',
+        'original_partner_id' => null
     ];
-
-    try {
-        // For BAYADCENTER, short-circuit
-        $isBayadCenter = !empty($row['is_bayadcenter']);
-        $fallback     = isset($row['partner_id_fallback_original']) ? trim((string)$row['partner_id_fallback_original']) : '';
-        if ($isBayadCenter || strtoupper($fallback) === 'BAYADCENTER') {
-            return [
-                'partner_id'      => null,
-                'partner_id_kpx'  => '9999',
-                'partner_name'    => 'BAYADCENTER',
-                'mpm_gl_code'     => null
-            ];
-        }
-
-        // For GSIS, short-circuit (only when no KPX is set)
-        if (strtoupper($fallback) === 'GSIS' && empty($row['partner_id_kpx'])) {
-            // Try to find GSIS in masterfile to fill in real name/gl_code
-            $pData = resolvePartnerBySource($conn, [
-                'partner_id_kpx' => '2898',
-                'partner_name'   => '',
-                'partner_id'     => ''
-            ]);
-            if ($pData) {
-                return [
-                    'partner_id'     => $pData['partner_id'],
-                    'partner_id_kpx' => $pData['partner_id_kpx'],
-                    'partner_name'   => $pData['partner_name'],
-                    'mpm_gl_code'    => $pData['gl_code']
-                ];
-            }
-            return [
-                'partner_id'     => '2898',
-                'partner_id_kpx' => '2898',
-                'partner_name'   => 'GSIS',
-                'mpm_gl_code'    => null
-            ];
-        }
-
-        // Normal resolution path for both KP7 and KPX
-        $pData = resolvePartnerBySource($conn, $row);
-        if ($pData) {
-            return [
-                'partner_id'     => $pData['partner_id'],
-                'partner_id_kpx' => $pData['partner_id_kpx'],
-                'partner_name'   => $pData['partner_name'],
-                'mpm_gl_code'    => $pData['gl_code']
-            ];
-        }
-
-        // Not found: preserve whatever identifiers came in so UI can display them
-        if (!empty($row['partner_id_kpx'])) {
-            $result['partner_id_kpx'] = trim((string)$row['partner_id_kpx']);
-        } elseif (!empty($row['partner_id'])) {
-            $result['partner_id_kpx'] = trim((string)$row['partner_id']);
-        }
-        if (!empty($row['partner_name'])) {
-            $result['partner_name'] = trim((string)$row['partner_name']);
-        }
-    } catch (Exception $e) {
-        error_log("Partner lookup error: " . $e->getMessage());
-    }
-
-    return $result;
 }
 
 // Helper function to normalize values for database
@@ -448,14 +366,15 @@ function bp_normalize_decimal($value) {
 
 // Main processing
 if (isset($_POST['rows'])) {
-    // Decode incoming rows
     $rows = json_decode($_POST['rows'], true);
     if (!is_array($rows)) {
         echo json_encode(['status' => 'error', 'message' => 'Invalid transaction items format']);
         exit;
     }
 
-    // Handle import action
+    // ============================================
+    // HANDLE IMPORT ACTION
+    // ============================================
     if (($_POST['action'] ?? '') === 'import') {
         error_log("=== STARTING IMPORT ===");
         error_log("Total rows to import: " . count($rows));
@@ -468,15 +387,52 @@ if (isset($_POST['rows'])) {
             'region_tg', 'operator', 'remote_branch', 'remote_operator', '2nd_approver', 'sub_billers_id',
             'sub_billers_name', 'partner_name', 'partner_id', 'partner_id_kpx', 'mpm_gl_code',
             'settle_unsettle', 'claim_unclaim',
-            'imported_by', 'imported_date', 'rfp_no', 'cad_no', 'hold_status', 'post_transaction'
+            'imported_by', 'imported_date', 'rfp_no', 'cad_no', 'hold_status', 'post_transaction',
+            'import_status'
         ];
+
+        // ============================================
+        // LATE POSTING DETECTION (NEW)
+        // Rule: If any existing transaction already exists in the DB with the same
+        // report_date, then any NEW row (that is not a duplicate) is flagged as
+        // "Late Posting" — it belongs to a report batch that was already partially imported.
+        // ============================================
+        $batchReportDates = [];
+        foreach ($rows as $row) {
+            $rd = bp_normalize_date($row['report_date'] ?? null);
+            if ($rd !== null && !isset($batchReportDates[$rd])) {
+                $batchReportDates[$rd] = true;
+            }
+        }
+
+        $existingReportDates = [];
+        if (!empty($batchReportDates)) {
+            $dateList = array_keys($batchReportDates);
+            $placeholders = implode(',', array_fill(0, count($dateList), '?'));
+            $checkStmt = $conn->prepare("
+                SELECT DISTINCT report_date 
+                FROM mldb.billspayment_transaction 
+                WHERE report_date IN ($placeholders)
+            ");
+            if ($checkStmt) {
+                $types = str_repeat('s', count($dateList));
+                $checkStmt->bind_param($types, ...$dateList);
+                $checkStmt->execute();
+                $res = $checkStmt->get_result();
+                while ($r = $res->fetch_assoc()) {
+                    $existingReportDates[$r['report_date']] = true;
+                }
+                $checkStmt->close();
+            } else {
+                error_log("Failed to prepare late-posting report_date check: " . $conn->error);
+            }
+        }
+
+        error_log("Late-posting check: " . count($existingReportDates) . " report_date(s) already exist in DB.");
 
         // ============================================
         // DUPLICATE CHECK
         // Rule: same reference_no + same status + same cancellation_date state
-        // run_date, report_date, datetime are IGNORED so that re-uploads of the
-        // same reference (even with different run_date / report_date) are caught.
-        // A normal and its cancellation still coexist (different status + cancellation_date).
         // ============================================
         $duplicateSql = "SELECT id FROM mldb.billspayment_transaction 
             WHERE reference_no = ? 
@@ -505,6 +461,7 @@ if (isset($_POST['rows'])) {
         }
 
         $inserted = 0;
+        $latePostedCount = 0;
         $duplicates = [];
         $errors = [];
         $seen = [];
@@ -519,7 +476,6 @@ if (isset($_POST['rows'])) {
             $runDateValue = bp_normalize_datetime($row['run_date'] ?? null);
 
             // Create duplicate key for file-level checking
-            // Matches the DB duplicate rule: reference_no + status + cancellation_date
             $duplicateKey = implode('|', [
                 $referenceNo ?? 'NULL',
                 $statusValue ?? 'NULL',
@@ -561,15 +517,31 @@ if (isset($_POST['rows'])) {
                 continue;
             }
 
+            // ============================================
+            // LATE POSTING FLAG (NEW)
+            // If the row's report_date already has records in the DB, mark as Late Posting.
+            // This runs ONLY after duplicate check has passed (i.e. it's a genuinely new row).
+            // ============================================
+            $importStatus = null;
+            if ($reportDate !== null && isset($existingReportDates[$reportDate])) {
+                $importStatus = 'Late Posting';
+                $latePostedCount++;
+            }
+
             // Build values for insert
             $values = [];
             foreach ($columns as $column) {
+                if ($column === 'import_status') {
+                    $values[] = $importStatus;
+                    continue;
+                }
+
                 $key = $column === '2nd_approver' ? 'second_approver' : $column;
                 $value = $row[$key] ?? null;
 
                 if (in_array($column, ['report_date', 'settlement_date'], true)) {
                     $value = bp_normalize_date($value);
-                } elseif (in_array($column, ['datetime', 'cancellation_date', 'run_date'], true)) {
+                } elseif (in_array($column, ['datetime', 'cancellation_date', 'run_date', 'imported_date'], true)) {
                     $value = bp_normalize_datetime($value);
                 } elseif (in_array($column, ['amount_paid', 'charge_to_customer', 'charge_to_partner'], true)) {
                     $value = bp_normalize_decimal($value);
@@ -606,11 +578,12 @@ if (isset($_POST['rows'])) {
         $duplicateStmt->close();
         $insertStmt->close();
 
-        error_log("Import completed. Inserted: $inserted, Duplicates: " . count($duplicates) . ", Errors: " . count($errors));
+        error_log("Import completed. Inserted: $inserted (Late Posting: $latePostedCount), Duplicates: " . count($duplicates) . ", Errors: " . count($errors));
 
         echo json_encode([
             'status' => empty($errors) ? 'success' : 'partial',
             'inserted' => $inserted,
+            'late_posting_count' => $latePostedCount,
             'duplicates' => $duplicates,
             'duplicate_count' => count($duplicates),
             'errors' => $errors,
@@ -619,7 +592,9 @@ if (isset($_POST['rows'])) {
         exit;
     }
     
-    // Handle lookup action (preview)
+    // ============================================
+    // HANDLE LOOKUP ACTION (PREVIEW)
+    // ============================================
     error_log("=== STARTING LOOKUP ===");
     error_log("Total rows to lookup: " . count($rows));
     
@@ -628,24 +603,17 @@ if (isset($_POST['rows'])) {
     foreach ($rows as $index => $row) {
         $isKP7 = strtoupper(trim((string)($row['source_file'] ?? ''))) === 'KP7';
         
-        // Preserve original Excel branch identifiers before resolution overwrites them
         $branchIdFromFile = isset($row['branch_id']) ? trim((string)$row['branch_id']) : '';
         $mlOutletFromFile = isset($row['ml_outlet_from_file']) ? trim((string)$row['ml_outlet_from_file']) : '';
-        // Also accept ml_matic_branch_name as a possible source for KP7 / older payloads
         if ($mlOutletFromFile === '' && isset($row['ml_matic_branch_name'])) {
             $mlOutletFromFile = trim((string)$row['ml_matic_branch_name']);
         }
         
-        // Resolve branch
-        $branchData = resolveBranch($conn, $row, $isKP7);
-        
-        // Resolve partner
-        $partnerData = resolvePartner($conn, $row, $isKP7);
-        
-        // Keep original partner_name from file if the DB returns Not Found
         $originalPartnerName = $row['partner_name'] ?? null;
         
-        // Apply resolved data to row
+        $branchData = resolveBranch($conn, $row, $isKP7);
+        $partnerData = resolvePartner($conn, $row);
+        
         $row['branch_id'] = $branchData['branch_id'];
         $row['branch_code'] = $branchData['branch_code'];
         $row['outlet'] = $branchData['outlet'];
@@ -653,24 +621,23 @@ if (isset($_POST['rows'])) {
         $row['region_code'] = $branchData['region_code'];
         $row['region'] = $branchData['region'];
         
-        // Preserve original Excel values for the remarks UI (fallback display)
         $row['branch_id_from_file'] = $branchIdFromFile !== '' ? $branchIdFromFile : null;
         $row['ml_outlet_from_file'] = $mlOutletFromFile !== '' ? $mlOutletFromFile : null;
         
-        $row['partner_id'] = $partnerData['partner_id'];
+        $row['partner_id']     = $partnerData['partner_id'];
         $row['partner_id_kpx'] = $partnerData['partner_id_kpx'];
-        $row['partner_name'] = $partnerData['partner_name'];
-        $row['mpm_gl_code'] = $partnerData['mpm_gl_code'];
+        $row['partner_name']   = $partnerData['partner_name'];
+        $row['mpm_gl_code']    = $partnerData['mpm_gl_code'];
         
-        // Preserve the original file-supplied partner_name for reference
-        if (($row['partner_name'] === 'Not Found' || empty($row['partner_name'])) && !empty($originalPartnerName)) {
+        $row['partner_lookup_status'] = $partnerData['lookup_status'];
+        $row['original_partner_id']   = $partnerData['original_partner_id'];
+        
+        if (!empty($originalPartnerName) && strtoupper($originalPartnerName) !== 'ALL PARTNERS') {
             $row['partner_name_from_file'] = $originalPartnerName;
         }
         
-        // Preserve run_date if it exists
         $row['run_date'] = $row['run_date'] ?? null;
         
-        // For KP7, clear the lookup-only fields
         if ($isKP7) {
             unset($row['ml_matic_branch_name']);
             unset($row['region_value']);

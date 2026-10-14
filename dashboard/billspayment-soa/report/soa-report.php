@@ -17,7 +17,7 @@ $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
     $status_options = 'SELECT status FROM mldb.soa_transaction group by status';
     $status_result = mysqli_query($conn, $status_options);
 
-    $report_data = 'SELECT * FROM mldb.soa_transaction order by date desc';
+    $report_data = 'SELECT * FROM mldb.soa_transaction order by id desc';
     $report_result = mysqli_query($conn, $report_data);
 
 ?>

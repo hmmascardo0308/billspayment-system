@@ -121,8 +121,6 @@ function getSettlementAbbreviation(string $settlement_type): string {
 
 // ============================================
 // FUNCTION: Normalize charge_sched value
-// DAILY and PER TRANSACTION are treated the same (DAILY)
-// Empty / NOT APPLICABLE / NO-BANK-SETTLEMENT => '' (uncategorized)
 // ============================================
 function normalizeChargeSched(?string $charge_sched): string {
     $value = strtoupper(trim((string)$charge_sched));
@@ -133,7 +131,7 @@ function normalizeChargeSched(?string $charge_sched): string {
     if ($value === 'PER TRANSACTION') {
         return 'DAILY';
     }
-    return $value; // DAILY, WEEKLY, MONTHLY, SEMI-MONTHLY
+    return $value;
 }
 
 // ============================================
@@ -154,24 +152,14 @@ function formatCADDate(?string $date_from, ?string $date_to): string {
 
 // ============================================
 // FUNCTION: Calculate settlement amount based on charge type
-// NOTE: The 2nd parameter is now $charge_sched (previously $service_charge).
-// Uses normalizeChargeSched() so DAILY and PER TRANSACTION behave identically.
-// ============================================
-// ============================================
-// FUNCTION: Calculate settlement amount based on charge type
-// NOTE: The 2nd parameter is now $charge_sched (previously $service_charge).
-// Uses normalizeChargeSched() so DAILY and PER TRANSACTION behave identically.
 // ============================================
 function calculateSettlementAmount($charge_to, $charge_sched, $principal, $charge_to_customer, $charge_to_partner, $adjustment, $partner_id = '', $txn_count = 0) {
-    // Special case for partner_id_kpx = 34: Amount for Settlement = Volume Count + Principal
+    // Special case for partner_id_kpx = 34
     if ((string)$partner_id === '34') {
         return (float)$txn_count + (float)$principal;
     }
 
     // Special case for partner_id_kpx = 107
-    // Amount for Settlement = (Principal - Charge Amount) + Adjustment
-    // VAT Amount = (Charge to Partner / 1.12) * 0.02
-    // Charge Amount = Charge to Partner - VAT Amount
     if ((string)$partner_id === '107') {
         $vat_amount = ($charge_to_partner / 1.12) * 0.02;
         $charge_amount = $charge_to_partner - $vat_amount;
@@ -179,9 +167,6 @@ function calculateSettlementAmount($charge_to, $charge_sched, $principal, $charg
     }
 
     // Special case for partner_id_kpx = 811
-    // VAT Amount = ((Volume Count * 10) / 1.12) * 0.02
-    // Transaction Amount = (Volume Count * 10) - VAT Amount
-    // Amount for Settlement = Principal - Transaction Amount + Adjustment
     if ((string)$partner_id === '811') {
         $vat_amount = (($txn_count * 10) / 1.12) * 0.02;
         $transaction_amount = ($txn_count * 10) - $vat_amount;
@@ -191,31 +176,28 @@ function calculateSettlementAmount($charge_to, $charge_sched, $principal, $charg
     $charge_to_upper = strtoupper(trim($charge_to));
     $charge_sched_upper = normalizeChargeSched($charge_sched);
 
-    // UNCATEGORIZED: If charge_to is empty, use Principal + Adjustment (without any charges)
+    // UNCATEGORIZED
     if (empty($charge_to_upper)) {
         return (float)$principal + (float)$adjustment;
     }
 
-    // For WEEKLY, MONTHLY, SEMI-MONTHLY: Amount = Principal + Adjustment (no charge deduction)
-    // This applies to both PARTNER and CUSTOMER charge types
+    // WEEKLY, MONTHLY, SEMI-MONTHLY
     if (($charge_to_upper === 'PARTNER' || $charge_to_upper === 'CUSTOMER') &&
         in_array($charge_sched_upper, ['WEEKLY', 'MONTHLY', 'SEMI-MONTHLY'])) {
         return $principal + $adjustment;
     }
 
-    // For DAILY (CUSTOMER, PARTNER, or BOTH): Amount = Principal - Charge to Partner + Adjustment
-    // (PER TRANSACTION is normalized to DAILY above)
+    // DAILY
     if (($charge_to_upper === 'CUSTOMER' || $charge_to_upper === 'PARTNER' || $charge_to_upper === 'BOTH')
         && $charge_sched_upper === 'DAILY') {
         return $principal - $charge_to_partner + $adjustment;
     }
 
-    // For BOTH charge types (WEEKLY/MONTHLY): Use the original calculation (Principal + both charges + adjustment)
+    // BOTH
     if ($charge_to_upper === 'BOTH') {
         return $principal + $charge_to_customer + $charge_to_partner + $adjustment;
     }
 
-    // Default fallback for any other case: Principal + Adjustment only (no charges)
     return (float)$principal + (float)$adjustment;
 }
 
@@ -226,12 +208,21 @@ function isTuesday(?string $date): bool {
     if (empty($date)) return false;
     $timestamp = strtotime($date);
     if ($timestamp === false) return false;
-    return date('N', $timestamp) == 2; // 2 = Tuesday
+    return date('N', $timestamp) == 2;
+}
+
+// ============================================
+// FUNCTION: Check if a date is Monday
+// ============================================
+function isMonday(?string $date): bool {
+    if (empty($date)) return false;
+    $timestamp = strtotime($date);
+    if ($timestamp === false) return false;
+    return date('N', $timestamp) == 1; // 1 = Monday
 }
 
 // ============================================
 // FUNCTION: Get Wednesday-to-Tuesday range
-// Given a Tuesday date, returns [wednesday_last_week, tuesday]
 // ============================================
 function getWednesdayToTuesdayRange(string $tuesday_date): array {
     $timestamp = strtotime($tuesday_date);
@@ -245,7 +236,6 @@ function getWednesdayToTuesdayRange(string $tuesday_date): array {
 
 // ============================================
 // FUNCTION: Get Monday-to-Sunday range (week BEFORE a given Tuesday)
-// Given a Tuesday date, returns [monday, sunday] of the week before it
 // ============================================
 function getMondayToSundayRange(string $tuesday_date): array {
     $timestamp = strtotime($tuesday_date);
@@ -255,6 +245,63 @@ function getMondayToSundayRange(string $tuesday_date): array {
     $sunday = date('Y-m-d', strtotime('-2 days', $timestamp));
     $monday = date('Y-m-d', strtotime('-6 days', strtotime($sunday)));
     return [$monday, $sunday];
+}
+
+// ============================================
+// FUNCTION: Get Saturday-to-Friday range
+// Given a Monday date, returns [saturday_previous_week, friday_before_monday]
+// Example: Monday 2026-08-10 => [2026-08-01 (Sat), 2026-08-07 (Fri)]
+// ============================================
+function getSaturdayToFridayRange(string $monday_date): array {
+    $timestamp = strtotime($monday_date);
+    if ($timestamp === false) {
+        return [$monday_date, $monday_date];
+    }
+    $saturday = date('Y-m-d', strtotime('-9 days', $timestamp));
+    $friday = date('Y-m-d', strtotime('-3 days', $timestamp));
+    return [$saturday, $friday];
+}
+
+// ============================================
+// FUNCTION: Get Monday-to-Sunday range (week BEFORE a given Monday)
+// Given a Monday date, returns [monday, sunday] of the previous week
+// Example: Monday 2026-10-12 => [2026-10-05 (Mon), 2026-10-11 (Sun)]
+// ============================================
+function getPreviousMondayToSundayRange(string $monday_date): array {
+    $timestamp = strtotime($monday_date);
+    if ($timestamp === false) {
+        return [$monday_date, $monday_date];
+    }
+    $prev_monday = date('Y-m-d', strtotime('-7 days', $timestamp));
+    $prev_sunday = date('Y-m-d', strtotime('+6 days', strtotime($prev_monday)));
+    return [$prev_monday, $prev_sunday];
+}
+
+// ============================================
+// FUNCTION: Check if date range is Friday-to-Sunday (or subset within)
+// ============================================
+function isFridayToSundayRange(?string $date_from, ?string $date_to): bool {
+    if (empty($date_from) || empty($date_to)) return false;
+
+    $from_ts = strtotime($date_from);
+    $to_ts = strtotime($date_to);
+    if ($from_ts === false || $to_ts === false) return false;
+
+    $from_day = (int)date('N', $from_ts);
+    $to_day   = (int)date('N', $to_ts);
+
+    if ($from_day === 5 && $to_day === 7) return true;
+    if ($from_day === 6 && $to_day === 7) return true;
+    if ($from_day === 5 && $to_day === 6) return true;
+
+    return false;
+}
+
+// ============================================
+// FUNCTION: Get partners that require per-day breakdown (Fri-Sun)
+// ============================================
+function getWeekendBreakdownPartners(): array {
+    return ['291', '811', '819', '1050', '297', '99', '927', '348', '494'];
 }
 
 // ============================================
@@ -309,6 +356,34 @@ function isSpecialWeekBeforePartner(string $partner_id, string $bank, string $se
         return true;
     }
     return false;
+}
+
+// ============================================
+// FUNCTION: Get special Monday partners list
+// ============================================
+function getSpecialMondayPartners(): array {
+    return ['119'];
+}
+
+// ============================================
+// FUNCTION: Check if partner is a special Monday partner
+// ============================================
+function isSpecialMondayPartner(string $partner_id): bool {
+    return trim($partner_id) === '119';
+}
+
+// ============================================
+// FUNCTION: Get special Monday-to-Sunday partners list
+// ============================================
+function getSpecialMondayToSundayPartners(): array {
+    return ['1101', '1228', '1230', '1094'];
+}
+
+// ============================================
+// FUNCTION: Check if partner is a special Monday-to-Sunday partner
+// ============================================
+function isSpecialMondayToSundayPartner(string $partner_id): bool {
+    return in_array(trim($partner_id), getSpecialMondayToSundayPartners(), true);
 }
 
 // ============================================
@@ -453,6 +528,212 @@ function getPcsoLandbankSets(): array {
             'region_label' => 'PCSO MINDANAO',
         ],
     ];
+}
+
+/**
+ * Fetch partner data for LANDBANK (PCSO) by region - returns individual partner entries
+ */
+function getPcsoLandbankPartners(
+    mysqli $conn,
+    array $partner_ids,
+    string $bank,
+    string $settlement_type,
+    string $date_from,
+    string $date_to,
+    string $region_label
+): array {
+    if (empty($partner_ids)) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($partner_ids), '?'));
+    
+    $where_regular = ["bt.partner_id_kpx IN ($placeholders)"];
+    $params_regular = $partner_ids;
+    $types_regular = str_repeat('s', count($partner_ids));
+
+    $where_adjustment = ["bt.partner_id_kpx IN ($placeholders)"];
+    $params_adjustment = $partner_ids;
+    $types_adjustment = str_repeat('s', count($partner_ids));
+
+    if (!empty($bank)) {
+        $where_regular[] = "pm.bank = ?";
+        $params_regular[] = $bank;
+        $types_regular .= "s";
+        $where_adjustment[] = "pm.bank = ?";
+        $params_adjustment[] = $bank;
+        $types_adjustment .= "s";
+    }
+
+    if (!empty($settlement_type)) {
+        $where_regular[] = "pm.settled_online_check = ?";
+        $params_regular[] = $settlement_type;
+        $types_regular .= "s";
+        $where_adjustment[] = "pm.settled_online_check = ?";
+        $params_adjustment[] = $settlement_type;
+        $types_adjustment .= "s";
+    }
+
+    if (!empty($date_from) && !empty($date_to)) {
+        $where_regular[] = "bt.datetime BETWEEN ? AND ?";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $params_regular[] = $date_to . ' 23:59:59';
+        $types_regular .= "ss";
+    } elseif (!empty($date_from)) {
+        $where_regular[] = "bt.datetime >= ?";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $types_regular .= "s";
+    } elseif (!empty($date_to)) {
+        $where_regular[] = "bt.datetime <= ?";
+        $params_regular[] = $date_to . ' 23:59:59';
+        $types_regular .= "s";
+    }
+    $where_regular[] = "(bt.status IS NULL OR bt.status = '')";
+
+    if (!empty($date_from) && !empty($date_to)) {
+        $where_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
+        $params_adjustment[] = $date_from . ' 00:00:00';
+        $params_adjustment[] = $date_to . ' 23:59:59';
+        $types_adjustment .= "ss";
+    } elseif (!empty($date_from)) {
+        $where_adjustment[] = "bt.cancellation_date >= ?";
+        $params_adjustment[] = $date_from . ' 00:00:00';
+        $types_adjustment .= "s";
+    } elseif (!empty($date_to)) {
+        $where_adjustment[] = "bt.cancellation_date <= ?";
+        $params_adjustment[] = $date_to . ' 23:59:59';
+        $types_adjustment .= "s";
+    }
+    $where_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
+
+    $regular_sql = "SELECT 
+            bt.partner_id_kpx,
+            pm.partner_name,
+            pm.partner_accName,
+            pm.bank_accNumber,
+            pm.bank,
+            pm.settled_online_check as settlement_type,
+            COALESCE(pm.charge_to, '') as charge_to,
+            COALESCE(pm.charge_sched, '') as charge_sched,
+            COUNT(*) as txn_count,
+            SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
+            SUM(bt.charge_to_customer) as charge_to_customer,
+            SUM(bt.charge_to_partner) as charge_to_partner,
+            SUM(CASE WHEN bt.settle_unsettle = 'Settled' THEN 1 ELSE 0 END) as settled_count,
+            SUM(CASE WHEN bt.settle_unsettle IS NULL 
+                      OR bt.settle_unsettle = '' 
+                      OR bt.settle_unsettle != 'Settled' 
+                 THEN 1 ELSE 0 END) as unsettled_count,
+            MAX(bt.datetime) as last_transaction_date,
+            MIN(bt.datetime) as first_transaction_date
+        FROM mldb.billspayment_transaction bt
+        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+        WHERE " . implode(" AND ", $where_regular) . "
+        GROUP BY bt.partner_id_kpx, pm.partner_name, pm.partner_accName, pm.bank_accNumber, 
+                 pm.bank, pm.settled_online_check, pm.charge_to, pm.charge_sched";
+
+    $adjustment_sql = "SELECT 
+            bt.partner_id_kpx,
+            SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment
+        FROM mldb.billspayment_transaction bt
+        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+        WHERE " . implode(" AND ", $where_adjustment) . "
+        GROUP BY bt.partner_id_kpx";
+
+    $entries = [];
+    $adjustments = [];
+
+    // Get adjustments first
+    $stmt = $conn->prepare($adjustment_sql);
+    if ($stmt) {
+        $stmt->bind_param($types_adjustment, ...$params_adjustment);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        while ($row = $result->fetch_assoc()) {
+            $adjustments[$row['partner_id_kpx']] = (float)($row['total_adjustment'] ?? 0);
+        }
+        $stmt->close();
+    }
+
+    // Get regular data
+    $stmt = $conn->prepare($regular_sql);
+    if ($stmt) {
+        $stmt->bind_param($types_regular, ...$params_regular);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        while ($row = $result->fetch_assoc()) {
+            $partner_id = $row['partner_id_kpx'];
+            $entry = [
+                'partner_id_kpx' => $partner_id,
+                'partner_name' => $row['partner_name'] ?? $partner_id,
+                'partner_accName' => $row['partner_accName'] ?? 'N/A',
+                'bank_accNumber' => $row['bank_accNumber'] ?? 'N/A',
+                'bank' => $row['bank'] ?? '',
+                'settlement_type' => $row['settlement_type'] ?? '',
+                'charge_to' => $row['charge_to'] ?? '',
+                'charge_sched' => $row['charge_sched'] ?? '',
+                'settle_unsettle' => '',
+                'txn_count' => (int)($row['txn_count'] ?? 0),
+                'total_principal' => (float)($row['total_principal'] ?? 0),
+                'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
+                'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
+                'total_adjustment' => $adjustments[$partner_id] ?? 0,
+                'settled_count' => (int)($row['settled_count'] ?? 0),
+                'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
+                'last_transaction_date' => $row['last_transaction_date'] ?? null,
+                'first_transaction_date' => $row['first_transaction_date'] ?? null,
+                'pcso_region' => $region_label,
+                'is_pcso_landbank' => true
+            ];
+            $entries[] = $entry;
+        }
+        $stmt->close();
+    }
+
+    // Check for partners that only have adjustments
+    foreach ($partner_ids as $pid) {
+        if (!isset($entries[$pid]) && isset($adjustments[$pid]) && $adjustments[$pid] != 0) {
+            $details_sql = "SELECT partner_name, partner_accName, bank_accNumber, bank,
+                                   settled_online_check as settlement_type,
+                                   COALESCE(charge_to, '') as charge_to,
+                                   COALESCE(charge_sched, '') as charge_sched
+                            FROM masterdata.partner_masterfile WHERE partner_id_kpx = ?";
+            $dstmt = $conn->prepare($details_sql);
+            if ($dstmt) {
+                $dstmt->bind_param("s", $pid);
+                $dstmt->execute();
+                $dres = $dstmt->get_result();
+                if ($details = $dres->fetch_assoc()) {
+                    $entries[] = [
+                        'partner_id_kpx' => $pid,
+                        'partner_name' => $details['partner_name'] ?? $pid,
+                        'partner_accName' => $details['partner_accName'] ?? 'N/A',
+                        'bank_accNumber' => $details['bank_accNumber'] ?? 'N/A',
+                        'bank' => $details['bank'] ?? '',
+                        'settlement_type' => $details['settlement_type'] ?? '',
+                        'charge_to' => $details['charge_to'] ?? '',
+                        'charge_sched' => $details['charge_sched'] ?? '',
+                        'settle_unsettle' => '',
+                        'txn_count' => 0,
+                        'total_principal' => 0,
+                        'charge_to_customer' => 0,
+                        'charge_to_partner' => 0,
+                        'total_adjustment' => $adjustments[$pid],
+                        'settled_count' => 0,
+                        'unsettled_count' => 0,
+                        'last_transaction_date' => null,
+                        'first_transaction_date' => null,
+                        'pcso_region' => $region_label,
+                        'is_pcso_landbank' => true
+                    ];
+                }
+                $dstmt->close();
+            }
+        }
+    }
+
+    return $entries;
 }
 
 /**
@@ -666,212 +947,6 @@ function getPartnerTotalsByRegions(
     return $entry;
 }
 
-/**
- * Fetch partner data for LANDBANK (PCSO) by region - returns individual partner entries
- */
-function getPcsoLandbankPartners(
-    mysqli $conn,
-    array $partner_ids,
-    string $bank,
-    string $settlement_type,
-    string $date_from,
-    string $date_to,
-    string $region_label
-): array {
-    if (empty($partner_ids)) {
-        return [];
-    }
-
-    $placeholders = implode(',', array_fill(0, count($partner_ids), '?'));
-    
-    $where_regular = ["bt.partner_id_kpx IN ($placeholders)"];
-    $params_regular = $partner_ids;
-    $types_regular = str_repeat('s', count($partner_ids));
-
-    $where_adjustment = ["bt.partner_id_kpx IN ($placeholders)"];
-    $params_adjustment = $partner_ids;
-    $types_adjustment = str_repeat('s', count($partner_ids));
-
-    if (!empty($bank)) {
-        $where_regular[] = "pm.bank = ?";
-        $params_regular[] = $bank;
-        $types_regular .= "s";
-        $where_adjustment[] = "pm.bank = ?";
-        $params_adjustment[] = $bank;
-        $types_adjustment .= "s";
-    }
-
-    if (!empty($settlement_type)) {
-        $where_regular[] = "pm.settled_online_check = ?";
-        $params_regular[] = $settlement_type;
-        $types_regular .= "s";
-        $where_adjustment[] = "pm.settled_online_check = ?";
-        $params_adjustment[] = $settlement_type;
-        $types_adjustment .= "s";
-    }
-
-    if (!empty($date_from) && !empty($date_to)) {
-        $where_regular[] = "bt.datetime BETWEEN ? AND ?";
-        $params_regular[] = $date_from . ' 00:00:00';
-        $params_regular[] = $date_to . ' 23:59:59';
-        $types_regular .= "ss";
-    } elseif (!empty($date_from)) {
-        $where_regular[] = "bt.datetime >= ?";
-        $params_regular[] = $date_from . ' 00:00:00';
-        $types_regular .= "s";
-    } elseif (!empty($date_to)) {
-        $where_regular[] = "bt.datetime <= ?";
-        $params_regular[] = $date_to . ' 23:59:59';
-        $types_regular .= "s";
-    }
-    $where_regular[] = "(bt.status IS NULL OR bt.status = '')";
-
-    if (!empty($date_from) && !empty($date_to)) {
-        $where_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
-        $params_adjustment[] = $date_from . ' 00:00:00';
-        $params_adjustment[] = $date_to . ' 23:59:59';
-        $types_adjustment .= "ss";
-    } elseif (!empty($date_from)) {
-        $where_adjustment[] = "bt.cancellation_date >= ?";
-        $params_adjustment[] = $date_from . ' 00:00:00';
-        $types_adjustment .= "s";
-    } elseif (!empty($date_to)) {
-        $where_adjustment[] = "bt.cancellation_date <= ?";
-        $params_adjustment[] = $date_to . ' 23:59:59';
-        $types_adjustment .= "s";
-    }
-    $where_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
-
-    $regular_sql = "SELECT 
-            bt.partner_id_kpx,
-            pm.partner_name,
-            pm.partner_accName,
-            pm.bank_accNumber,
-            pm.bank,
-            pm.settled_online_check as settlement_type,
-            COALESCE(pm.charge_to, '') as charge_to,
-            COALESCE(pm.charge_sched, '') as charge_sched,
-            COUNT(*) as txn_count,
-            SUM(CASE WHEN bt.amount_paid > 0 THEN bt.amount_paid ELSE 0 END) as total_principal,
-            SUM(bt.charge_to_customer) as charge_to_customer,
-            SUM(bt.charge_to_partner) as charge_to_partner,
-            SUM(CASE WHEN bt.settle_unsettle = 'Settled' THEN 1 ELSE 0 END) as settled_count,
-            SUM(CASE WHEN bt.settle_unsettle IS NULL 
-                      OR bt.settle_unsettle = '' 
-                      OR bt.settle_unsettle != 'Settled' 
-                 THEN 1 ELSE 0 END) as unsettled_count,
-            MAX(bt.datetime) as last_transaction_date,
-            MIN(bt.datetime) as first_transaction_date
-        FROM mldb.billspayment_transaction bt
-        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
-        WHERE " . implode(" AND ", $where_regular) . "
-        GROUP BY bt.partner_id_kpx, pm.partner_name, pm.partner_accName, pm.bank_accNumber, 
-                 pm.bank, pm.settled_online_check, pm.charge_to, pm.charge_sched";
-
-    $adjustment_sql = "SELECT 
-            bt.partner_id_kpx,
-            SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment
-        FROM mldb.billspayment_transaction bt
-        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
-        WHERE " . implode(" AND ", $where_adjustment) . "
-        GROUP BY bt.partner_id_kpx";
-
-    $entries = [];
-    $adjustments = [];
-
-    // Get adjustments first
-    $stmt = $conn->prepare($adjustment_sql);
-    if ($stmt) {
-        $stmt->bind_param($types_adjustment, ...$params_adjustment);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        while ($row = $result->fetch_assoc()) {
-            $adjustments[$row['partner_id_kpx']] = (float)($row['total_adjustment'] ?? 0);
-        }
-        $stmt->close();
-    }
-
-    // Get regular data
-    $stmt = $conn->prepare($regular_sql);
-    if ($stmt) {
-        $stmt->bind_param($types_regular, ...$params_regular);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        
-        while ($row = $result->fetch_assoc()) {
-            $partner_id = $row['partner_id_kpx'];
-            $entry = [
-                'partner_id_kpx' => $partner_id,
-                'partner_name' => $row['partner_name'] ?? $partner_id,
-                'partner_accName' => $row['partner_accName'] ?? 'N/A',
-                'bank_accNumber' => $row['bank_accNumber'] ?? 'N/A',
-                'bank' => $row['bank'] ?? '',
-                'settlement_type' => $row['settlement_type'] ?? '',
-                'charge_to' => $row['charge_to'] ?? '',
-                'charge_sched' => $row['charge_sched'] ?? '',
-                'settle_unsettle' => '',
-                'txn_count' => (int)($row['txn_count'] ?? 0),
-                'total_principal' => (float)($row['total_principal'] ?? 0),
-                'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
-                'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
-                'total_adjustment' => $adjustments[$partner_id] ?? 0,
-                'settled_count' => (int)($row['settled_count'] ?? 0),
-                'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
-                'last_transaction_date' => $row['last_transaction_date'] ?? null,
-                'first_transaction_date' => $row['first_transaction_date'] ?? null,
-                'pcso_region' => $region_label,
-                'is_pcso_landbank' => true
-            ];
-            $entries[] = $entry;
-        }
-        $stmt->close();
-    }
-
-    // Check for partners that only have adjustments
-    foreach ($partner_ids as $pid) {
-        if (!isset($entries[$pid]) && isset($adjustments[$pid]) && $adjustments[$pid] != 0) {
-            $details_sql = "SELECT partner_name, partner_accName, bank_accNumber, bank,
-                                   settled_online_check as settlement_type,
-                                   COALESCE(charge_to, '') as charge_to,
-                                   COALESCE(charge_sched, '') as charge_sched
-                            FROM masterdata.partner_masterfile WHERE partner_id_kpx = ?";
-            $dstmt = $conn->prepare($details_sql);
-            if ($dstmt) {
-                $dstmt->bind_param("s", $pid);
-                $dstmt->execute();
-                $dres = $dstmt->get_result();
-                if ($details = $dres->fetch_assoc()) {
-                    $entries[] = [
-                        'partner_id_kpx' => $pid,
-                        'partner_name' => $details['partner_name'] ?? $pid,
-                        'partner_accName' => $details['partner_accName'] ?? 'N/A',
-                        'bank_accNumber' => $details['bank_accNumber'] ?? 'N/A',
-                        'bank' => $details['bank'] ?? '',
-                        'settlement_type' => $details['settlement_type'] ?? '',
-                        'charge_to' => $details['charge_to'] ?? '',
-                        'charge_sched' => $details['charge_sched'] ?? '',
-                        'settle_unsettle' => '',
-                        'txn_count' => 0,
-                        'total_principal' => 0,
-                        'charge_to_customer' => 0,
-                        'charge_to_partner' => 0,
-                        'total_adjustment' => $adjustments[$pid],
-                        'settled_count' => 0,
-                        'unsettled_count' => 0,
-                        'last_transaction_date' => null,
-                        'first_transaction_date' => null,
-                        'pcso_region' => $region_label,
-                        'is_pcso_landbank' => true
-                    ];
-                }
-                $dstmt->close();
-            }
-        }
-    }
-
-    return $entries;
-}
-
 // Get filter values from GET parameters
 $selected_partner = isset($_GET['partner']) ? trim($_GET['partner']) : '';
 $selected_bank = isset($_GET['bank']) ? trim($_GET['bank']) : '';
@@ -885,17 +960,55 @@ if (empty($selected_rfp_no)) {
     die("RFP No. is required for Excel export.");
 }
 
+// ============================================
+// AUTO-POPULATE DATE RANGE FROM RFP NO.
+// When dates are empty, look up min/max datetime for this RFP
+// so the export query stays selective and does not time out.
+// ============================================
+if (empty($selected_date_from) && empty($selected_date_to)) {
+    $rfp_date_query = "SELECT 
+                           DATE(MIN(bt.datetime)) AS min_date,
+                           DATE(MAX(bt.datetime)) AS max_date
+                       FROM mldb.billspayment_transaction bt
+                       WHERE bt.rfp_no = ?
+                         AND bt.datetime IS NOT NULL
+                       LIMIT 1";
+    $rfp_date_stmt = $conn->prepare($rfp_date_query);
+    if ($rfp_date_stmt) {
+        $rfp_date_stmt->bind_param("s", $selected_rfp_no);
+        $rfp_date_stmt->execute();
+        $rfp_date_result = $rfp_date_stmt->get_result();
+        if ($rfp_date_row = $rfp_date_result->fetch_assoc()) {
+            $min_date = $rfp_date_row['min_date'] ?? '';
+            $max_date = $rfp_date_row['max_date'] ?? '';
+            if (!empty($min_date) && !empty($max_date)) {
+                $selected_date_from = $min_date;
+                $selected_date_to   = $max_date;
+                error_log("Excel Export - Auto-filled dates from RFP '$selected_rfp_no': $min_date → $max_date");
+            }
+        }
+        $rfp_date_stmt->close();
+    }
+}
+
 // Get excluded rows from GET parameters
 $excluded_rows = isset($_GET['excluded_rows']) ? explode(',', trim($_GET['excluded_rows'])) : [];
 $excluded_rows = array_filter($excluded_rows, 'is_numeric');
 
-// Get current user name for Prepared By
-$display_name = 'GUEST';
-if (isset($_SESSION['user_type'])) {
-    if ($_SESSION['user_type'] === 'admin') {
-        $display_name = $_SESSION['admin_name'] ?? 'ADMIN';
-    } elseif ($_SESSION['user_type'] === 'user') {
-        $display_name = $_SESSION['user_name'] ?? 'USER';
+// Get settled_by from DB for Prepared By (label stays "Prepared by :")
+$settled_by = '';
+if (!empty($selected_rfp_no)) {
+    $sb_query = "SELECT settled_by FROM mldb.billspayment_transaction 
+                 WHERE rfp_no = ? AND settled_by IS NOT NULL AND settled_by != '' LIMIT 1";
+    $sb_stmt = $conn->prepare($sb_query);
+    if ($sb_stmt) {
+        $sb_stmt->bind_param("s", $selected_rfp_no);
+        $sb_stmt->execute();
+        $sb_result = $sb_stmt->get_result();
+        if ($sb_row = $sb_result->fetch_assoc()) {
+            $settled_by = trim($sb_row['settled_by'] ?? '');
+        }
+        $sb_stmt->close();
     }
 }
 
@@ -968,6 +1081,34 @@ if (!empty($selected_date_to) && isTuesday($selected_date_to)) {
     list($special_wb_date_from, $special_wb_date_to) = getMondayToSundayRange($selected_date_to);
 }
 
+// ============================================
+// SPECIAL MONDAY PARTNER LOGIC (Partner 119)
+// ============================================
+$special_monday_partners = getSpecialMondayPartners();
+$include_special_monday_partners = false;
+$special_monday_date_from = $selected_date_from;
+$special_monday_date_to = $selected_date_to;
+$selected_is_special_monday = in_array($selected_partner, $special_monday_partners, true);
+
+if (!empty($selected_date_to) && isMonday($selected_date_to)) {
+    $include_special_monday_partners = true;
+    list($special_monday_date_from, $special_monday_date_to) = getSaturdayToFridayRange($selected_date_to);
+}
+
+// ============================================
+// SPECIAL MONDAY-TO-SUNDAY PARTNER LOGIC
+// ============================================
+$special_m2s_partners = getSpecialMondayToSundayPartners();
+$include_special_m2s_partners = false;
+$special_m2s_date_from = $selected_date_from;
+$special_m2s_date_to = $selected_date_to;
+$selected_is_special_m2s = in_array($selected_partner, $special_m2s_partners, true);
+
+if (!empty($selected_date_to) && isMonday($selected_date_to)) {
+    $include_special_m2s_partners = true;
+    list($special_m2s_date_from, $special_m2s_date_to) = getPreviousMondayToSundayRange($selected_date_to);
+}
+
 // Build the queries
 try {
     $where_conditions_regular = [];
@@ -1004,6 +1145,17 @@ try {
         
         $where_conditions_adjustment[] = "pm.settled_online_check = ?";
         $params_adjustment[] = $selected_settlement_type;
+        $types_adjustment .= "s";
+    }
+
+    // Filter by RFP No. – critical so export does not scan the entire table
+    if (!empty($selected_rfp_no)) {
+        $where_conditions_regular[] = "bt.rfp_no = ?";
+        $params_regular[] = $selected_rfp_no;
+        $types_regular .= "s";
+
+        $where_conditions_adjustment[] = "bt.rfp_no = ?";
+        $params_adjustment[] = $selected_rfp_no;
         $types_adjustment .= "s";
     }
     
@@ -1048,6 +1200,46 @@ try {
     }
     
     // ============================================
+    // SPECIAL MONDAY PARTNER (119)
+    // ============================================
+    if ($selected_is_special_monday && !$include_special_monday_partners) {
+        $where_conditions_regular[] = "1=0";
+        $where_conditions_adjustment[] = "1=0";
+    }
+    
+    if (empty($selected_partner) && !$include_special_monday_partners) {
+        $sm_placeholders = implode(',', array_fill(0, count($special_monday_partners), '?'));
+        $where_conditions_regular[] = "bt.partner_id_kpx NOT IN ($sm_placeholders)";
+        $where_conditions_adjustment[] = "bt.partner_id_kpx NOT IN ($sm_placeholders)";
+        foreach ($special_monday_partners as $sm) {
+            $params_regular[] = $sm;
+            $types_regular .= "s";
+            $params_adjustment[] = $sm;
+            $types_adjustment .= "s";
+        }
+    }
+    
+    // ============================================
+    // SPECIAL MONDAY-TO-SUNDAY PARTNERS (1101, 1228, 1230, 1094)
+    // ============================================
+    if ($selected_is_special_m2s && !$include_special_m2s_partners) {
+        $where_conditions_regular[] = "1=0";
+        $where_conditions_adjustment[] = "1=0";
+    }
+    
+    if (empty($selected_partner) && !$include_special_m2s_partners) {
+        $m2s_placeholders = implode(',', array_fill(0, count($special_m2s_partners), '?'));
+        $where_conditions_regular[] = "bt.partner_id_kpx NOT IN ($m2s_placeholders)";
+        $where_conditions_adjustment[] = "bt.partner_id_kpx NOT IN ($m2s_placeholders)";
+        foreach ($special_m2s_partners as $m2s) {
+            $params_regular[] = $m2s;
+            $types_regular .= "s";
+            $params_adjustment[] = $m2s;
+            $types_adjustment .= "s";
+        }
+    }
+    
+    // ============================================
     // DATE FILTERS
     // ============================================
     $use_special_dates = false;
@@ -1060,12 +1252,28 @@ try {
         $use_special_wb_dates = true;
     }
     
+    $use_special_monday_dates = false;
+    if ($selected_is_special_monday && $include_special_monday_partners) {
+        $use_special_monday_dates = true;
+    }
+    
+    $use_special_m2s_dates = false;
+    if ($selected_is_special_m2s && $include_special_m2s_partners) {
+        $use_special_m2s_dates = true;
+    }
+    
     if ($use_special_dates) {
         $effective_date_from = $special_date_from;
         $effective_date_to = $special_date_to;
     } elseif ($use_special_wb_dates) {
         $effective_date_from = $special_wb_date_from;
         $effective_date_to = $special_wb_date_to;
+    } elseif ($use_special_monday_dates) {
+        $effective_date_from = $special_monday_date_from;
+        $effective_date_to = $special_monday_date_to;
+    } elseif ($use_special_m2s_dates) {
+        $effective_date_from = $special_m2s_date_from;
+        $effective_date_to = $special_m2s_date_to;
     } else {
         $effective_date_from = $selected_date_from;
         $effective_date_to = $selected_date_to;
@@ -1105,6 +1313,15 @@ try {
     
     $where_conditions_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
     
+    // Detect if weekend per-day breakdown should apply
+    $apply_weekend_daily_breakdown = false;
+    $weekend_partner_list = getWeekendBreakdownPartners();
+
+    if (!empty($selected_partner) && in_array($selected_partner, $weekend_partner_list, true)
+        && isFridayToSundayRange($effective_date_from, $effective_date_to)) {
+        $apply_weekend_daily_breakdown = true;
+    }
+    
     $regular_sql = "SELECT 
                     bt.partner_id_kpx,
                     pm.partner_name,
@@ -1124,7 +1341,8 @@ try {
                               OR bt.settle_unsettle != 'Settled' 
                          THEN 1 ELSE 0 END) as unsettled_count,
                     MAX(bt.datetime) as last_transaction_date,
-                    MIN(bt.datetime) as first_transaction_date
+                    MIN(bt.datetime) as first_transaction_date,
+                    DATE(bt.datetime) as transaction_date_group
                 FROM mldb.billspayment_transaction bt
                 LEFT JOIN masterdata.partner_masterfile pm 
                     ON bt.partner_id_kpx = pm.partner_id_kpx
@@ -1136,15 +1354,18 @@ try {
                          pm.bank, 
                          pm.settled_online_check, 
                          pm.charge_to, 
-                         pm.charge_sched";
+                         pm.charge_sched,
+                         DATE(bt.datetime)
+                ORDER BY bt.partner_id_kpx, DATE(bt.datetime) ASC";
     
     $adjustment_sql = "SELECT 
                             bt.partner_id_kpx,
+                            DATE(bt.cancellation_date) as cancellation_date_group,
                             SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment
                         FROM mldb.billspayment_transaction bt
                         LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
                         WHERE " . implode(" AND ", $where_conditions_adjustment) . "
-                        GROUP BY bt.partner_id_kpx";
+                        GROUP BY bt.partner_id_kpx, DATE(bt.cancellation_date)";
     
     $regular_result = null;
     if (!empty($params_regular)) {
@@ -1177,39 +1398,121 @@ try {
     }
     
     $combined_data = [];
+    $adjustments_by_partner = [];
+    $adjustments_by_partner_date = [];
     
-    if ($regular_result && $regular_result->num_rows > 0) {
-        while ($row = $regular_result->fetch_assoc()) {
-            $partner_id = $row['partner_id_kpx'];
-            $combined_data[$partner_id] = [
-                'partner_id_kpx' => $partner_id,
-                'partner_name' => $row['partner_name'] ?? $partner_id,
-                'partner_accName' => $row['partner_accName'] ?? 'N/A',
-                'bank_accNumber' => $row['bank_accNumber'] ?? 'N/A',
-                'bank' => $row['bank'] ?? '',
-                'settlement_type' => $row['settlement_type'] ?? '',
-                'charge_to' => $row['charge_to'] ?? '',
-                'charge_sched' => $row['charge_sched'] ?? '',
-                'settle_unsettle' => $row['settle_unsettle'] ?? '',
-                'txn_count' => (int)($row['txn_count'] ?? 0),
-                'total_principal' => (float)($row['total_principal'] ?? 0),
-                'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
-                'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
-                'total_adjustment' => 0,
-                'settled_count' => (int)($row['settled_count'] ?? 0),
-                'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
-                'last_transaction_date' => $row['last_transaction_date'] ?? null,
-                'first_transaction_date' => $row['first_transaction_date'] ?? null
-            ];
-        }
-    }
-    
+    // Collect adjustments first
     if ($adjustment_result && $adjustment_result->num_rows > 0) {
         while ($row = $adjustment_result->fetch_assoc()) {
             $partner_id = $row['partner_id_kpx'];
-            if (isset($combined_data[$partner_id])) {
-                $combined_data[$partner_id]['total_adjustment'] = (float)($row['total_adjustment'] ?? 0);
+            $date_group = $row['cancellation_date_group'] ?? null;
+            $adj_val = (float)($row['total_adjustment'] ?? 0);
+
+            if (!isset($adjustments_by_partner[$partner_id])) {
+                $adjustments_by_partner[$partner_id] = 0;
+            }
+            $adjustments_by_partner[$partner_id] += $adj_val;
+
+            if (!empty($date_group)) {
+                $key = $partner_id . '|' . $date_group;
+                if (!isset($adjustments_by_partner_date[$key])) {
+                    $adjustments_by_partner_date[$key] = 0;
+                }
+                $adjustments_by_partner_date[$key] += $adj_val;
+            }
+        }
+    }
+    
+    // Build regular rows
+    if ($regular_result && $regular_result->num_rows > 0) {
+        while ($row = $regular_result->fetch_assoc()) {
+            $partner_id = $row['partner_id_kpx'];
+            $transaction_date = $row['transaction_date_group'] ?? null;
+
+            // Determine if this partner should be split per day for a weekend range
+            $needs_daily_breakdown = false;
+            if (!empty($transaction_date)
+                && isFridayToSundayRange($effective_date_from, $effective_date_to)
+                && in_array($partner_id, $weekend_partner_list, true)) {
+                $needs_daily_breakdown = true;
+            }
+
+            if ($needs_daily_breakdown) {
+                $key = $partner_id . '_' . $transaction_date;
+                $date_key = $partner_id . '|' . $transaction_date;
+                $adj_for_date = $adjustments_by_partner_date[$date_key] ?? 0;
+
+                $combined_data[$key] = [
+                    'partner_id_kpx' => $partner_id,
+                    'partner_name' => $row['partner_name'] ?? $partner_id,
+                    'partner_accName' => $row['partner_accName'] ?? 'N/A',
+                    'bank_accNumber' => $row['bank_accNumber'] ?? 'N/A',
+                    'bank' => $row['bank'] ?? '',
+                    'settlement_type' => $row['settlement_type'] ?? '',
+                    'charge_to' => $row['charge_to'] ?? '',
+                    'charge_sched' => $row['charge_sched'] ?? '',
+                    'settle_unsettle' => $row['settle_unsettle'] ?? '',
+                    'txn_count' => (int)($row['txn_count'] ?? 0),
+                    'total_principal' => (float)($row['total_principal'] ?? 0),
+                    'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
+                    'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
+                    'total_adjustment' => $adj_for_date,
+                    'settled_count' => (int)($row['settled_count'] ?? 0),
+                    'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
+                    'last_transaction_date' => $row['last_transaction_date'] ?? null,
+                    'first_transaction_date' => $row['first_transaction_date'] ?? null,
+                    'is_daily_breakdown' => true,
+                    'transaction_date' => $transaction_date
+                ];
             } else {
+                $key = $partner_id;
+                if (isset($combined_data[$key]) && empty($combined_data[$key]['is_daily_breakdown'])) {
+                    $combined_data[$key]['txn_count'] += (int)($row['txn_count'] ?? 0);
+                    $combined_data[$key]['total_principal'] += (float)($row['total_principal'] ?? 0);
+                    $combined_data[$key]['charge_to_customer'] += (float)($row['charge_to_customer'] ?? 0);
+                    $combined_data[$key]['charge_to_partner'] += (float)($row['charge_to_partner'] ?? 0);
+                    $combined_data[$key]['settled_count'] += (int)($row['settled_count'] ?? 0);
+                    $combined_data[$key]['unsettled_count'] += (int)($row['unsettled_count'] ?? 0);
+                } else {
+                    $combined_data[$key] = [
+                        'partner_id_kpx' => $partner_id,
+                        'partner_name' => $row['partner_name'] ?? $partner_id,
+                        'partner_accName' => $row['partner_accName'] ?? 'N/A',
+                        'bank_accNumber' => $row['bank_accNumber'] ?? 'N/A',
+                        'bank' => $row['bank'] ?? '',
+                        'settlement_type' => $row['settlement_type'] ?? '',
+                        'charge_to' => $row['charge_to'] ?? '',
+                        'charge_sched' => $row['charge_sched'] ?? '',
+                        'settle_unsettle' => $row['settle_unsettle'] ?? '',
+                        'txn_count' => (int)($row['txn_count'] ?? 0),
+                        'total_principal' => (float)($row['total_principal'] ?? 0),
+                        'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
+                        'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
+                        'total_adjustment' => 0,
+                        'settled_count' => (int)($row['settled_count'] ?? 0),
+                        'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
+                        'last_transaction_date' => $row['last_transaction_date'] ?? null,
+                        'first_transaction_date' => $row['first_transaction_date'] ?? null
+                    ];
+                }
+            }
+        }
+    }
+    
+    // Apply lump-sum adjustments for partners that don't have daily breakdown entries
+    foreach ($adjustments_by_partner as $partner_id => $adj_total) {
+        if (isset($combined_data[$partner_id]) && empty($combined_data[$partner_id]['is_daily_breakdown'])) {
+            $combined_data[$partner_id]['total_adjustment'] = $adj_total;
+        } else {
+            $has_any_daily = false;
+            foreach ($combined_data as $k => $v) {
+                if (($v['partner_id_kpx'] ?? '') === $partner_id && !empty($v['is_daily_breakdown'])) {
+                    $has_any_daily = true;
+                    break;
+                }
+            }
+
+            if (!$has_any_daily && !isset($combined_data[$partner_id])) {
                 $partner_details_sql = "SELECT 
                                             partner_name,
                                             partner_accName,
@@ -1241,13 +1544,14 @@ try {
                             'total_principal' => 0,
                             'charge_to_customer' => 0,
                             'charge_to_partner' => 0,
-                            'total_adjustment' => (float)($row['total_adjustment'] ?? 0),
+                            'total_adjustment' => $adj_total,
                             'settled_count' => 0,
                             'unsettled_count' => 0,
                             'last_transaction_date' => null,
                             'first_transaction_date' => null
                         ];
                     }
+                    $stmt->close();
                 }
             }
         }
@@ -1365,6 +1669,92 @@ try {
                 $wb_entry['special_wb_date_from'] = $special_wb_date_from;
                 $wb_entry['special_wb_date_to'] = $special_wb_date_to;
                 $combined_data[$wb_id] = $wb_entry;
+            }
+        }
+    }
+
+    // ------------------------------------------------
+    // SPECIAL: Handle partner 119 (Monday settlement, Sat->Fri of prev week)
+    // ------------------------------------------------
+    if (!$include_special_monday_partners) {
+        foreach ($special_monday_partners as $sm_id) {
+            if (isset($combined_data[$sm_id])) {
+                unset($combined_data[$sm_id]);
+            }
+        }
+    } else {
+        foreach ($special_monday_partners as $sm_id) {
+            $should_process = isset($combined_data[$sm_id]) || $selected_partner === $sm_id;
+
+            if (!$should_process) {
+                continue;
+            }
+
+            if (!isSpecialMondayPartner($sm_id)) {
+                continue;
+            }
+
+            unset($combined_data[$sm_id]);
+
+            $sm_entry = getPartnerTotalsByRegions(
+                $conn,
+                $sm_id,
+                $selected_bank,
+                $selected_settlement_type,
+                $special_monday_date_from,
+                $special_monday_date_to,
+                [],
+                null
+            );
+
+            if ($sm_entry !== null) {
+                $sm_entry['special_monday'] = true;
+                $sm_entry['special_monday_date_from'] = $special_monday_date_from;
+                $sm_entry['special_monday_date_to'] = $special_monday_date_to;
+                $combined_data[$sm_id] = $sm_entry;
+            }
+        }
+    }
+
+    // ------------------------------------------------
+    // SPECIAL: Handle partners 1101, 1228, 1230, 1094
+    // ------------------------------------------------
+    if (!$include_special_m2s_partners) {
+        foreach ($special_m2s_partners as $m2s_id) {
+            if (isset($combined_data[$m2s_id])) {
+                unset($combined_data[$m2s_id]);
+            }
+        }
+    } else {
+        foreach ($special_m2s_partners as $m2s_id) {
+            $should_process = isset($combined_data[$m2s_id]) || $selected_partner === $m2s_id;
+
+            if (!$should_process) {
+                continue;
+            }
+
+            if (!isSpecialMondayToSundayPartner($m2s_id)) {
+                continue;
+            }
+
+            unset($combined_data[$m2s_id]);
+
+            $m2s_entry = getPartnerTotalsByRegions(
+                $conn,
+                $m2s_id,
+                $selected_bank,
+                $selected_settlement_type,
+                $special_m2s_date_from,
+                $special_m2s_date_to,
+                [],
+                null
+            );
+
+            if ($m2s_entry !== null) {
+                $m2s_entry['special_monday_to_sunday'] = true;
+                $m2s_entry['special_m2s_date_from'] = $special_m2s_date_from;
+                $m2s_entry['special_m2s_date_to'] = $special_m2s_date_to;
+                $combined_data[$m2s_id] = $m2s_entry;
             }
         }
     }
@@ -1605,7 +1995,13 @@ try {
             $order_b = $order[$key_b] ?? 12;
             
             if ($order_a == $order_b) {
-                return strcmp($a['partner_name'] ?? '', $b['partner_name'] ?? '');
+                $pid_compare = strcmp($a['partner_id_kpx'] ?? '', $b['partner_id_kpx'] ?? '');
+                if ($pid_compare !== 0) {
+                    return $pid_compare;
+                }
+                $date_a = $a['transaction_date'] ?? '';
+                $date_b = $b['transaction_date'] ?? '';
+                return strcmp($date_a, $date_b);
             }
             return $order_a - $order_b;
         });
@@ -1702,9 +2098,16 @@ try {
             $display_partner_name = $row['pcso_region'] . ' - ' . $display_partner_name;
         }
         
+        $is_daily_breakdown_row = !empty($row['is_daily_breakdown']);
+        if ($is_daily_breakdown_row && !empty($row['transaction_date'])) {
+            $display_partner_name .= ' (' . date('M d, Y', strtotime($row['transaction_date'])) . ')';
+        }
+        
         $row_data = [
             'row_index' => $row_index,
             'partner_name' => $display_partner_name,
+            'is_daily_breakdown_row' => $is_daily_breakdown_row,
+            'transaction_date' => $row['transaction_date'] ?? null,
             'account_name' => $row['partner_accName'] ?? 'N/A',
             'account_number' => $row['bank_accNumber'] ?? 'N/A',
             'txn_count' => $txn_count,
@@ -1789,7 +2192,7 @@ try {
     }
     
     // ============================================
-    // CAD NUMBER GENERATION - FIXED
+    // CAD NUMBER GENERATION
     // ============================================
     
     $existing_cad = '';
@@ -1965,6 +2368,13 @@ foreach ($groups as $group_key => $group_data) {
         $sheet->setCellValue('D' . $row, $row_data['settlement_amount']);
         $sheet->getStyle('D' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
         $sheet->getStyle('A' . $row . ':D' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
+        
+        // Highlight daily breakdown rows for weekend partners
+        if (!empty($row_data['is_daily_breakdown_row'])) {
+            $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FEF9E7');
+            $sheet->getStyle('A' . $row)->getFont()->getColor()->setARGB('856404');
+        }
+        
         $row++;
     }
     
@@ -2006,7 +2416,7 @@ $sheet->setCellValue('C' . $row, 'Checked by :');
 $sheet->getStyle('C' . $row)->getFont()->setBold(true)->setSize(10);
 $row++;
 
-$sheet->setCellValue('A' . $row, $display_name);
+$sheet->setCellValue('A' . $row, $settled_by);
 $sheet->getStyle('A' . $row)->getFont()->setBold(true)->setSize(10);
 $sheet->setCellValue('C' . $row, '{Accounting Staff}');
 $sheet->getStyle('C' . $row)->getFont()->setBold(true)->setSize(10);

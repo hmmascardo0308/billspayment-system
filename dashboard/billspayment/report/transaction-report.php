@@ -1,5 +1,6 @@
 <?php
-// Connect to the database
+// Connect to the database transaction-report.php
+
 require_once __DIR__ . '/../../../config/config.php';
 require_once __DIR__ . '/../../../vendor/autoload.php';
 
@@ -9,248 +10,303 @@ session_start();
 $id = resolve_user_identifier();
 if (empty($id)) { header('Location: ../../../login_form.php'); exit; }
 if (!function_exists('has_any_permission') || !has_any_permission(['Transaction Report','Bills Payment'])) { header('Location: ../../home.php'); exit; }
-// prefer explicit session values for current user email; avoid role-based gating
 $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
 
-// Fetch distinct partners for the dropdown filter
+// ============================================
+// Fetch distinct partners (cached in session for 5 minutes)
+// ============================================
 $partners = [];
-try {
-    $result = $conn->query("SELECT DISTINCT partner_id_kpx, partner_name FROM masterdata.partner_masterfile WHERE partner_id_kpx IS NOT NULL AND partner_name != '' ORDER BY partner_name ASC");
-    if ($result) {
-        while ($row = $result->fetch_assoc()) {
-            $partners[] = $row;
+$cache_key = 'partners_cache_' . session_id();
+$cache_ttl = 300; // 5 minutes
+
+if (isset($_SESSION[$cache_key]) && (time() - $_SESSION[$cache_key]['ts']) < $cache_ttl) {
+    $partners = $_SESSION[$cache_key]['data'];
+} else {
+    try {
+        $result = $conn->query("SELECT DISTINCT partner_id_kpx, partner_name FROM masterdata.partner_masterfile WHERE partner_id_kpx IS NOT NULL AND partner_name != '' ORDER BY partner_name ASC");
+        if ($result) {
+            while ($row = $result->fetch_assoc()) {
+                $partners[] = $row;
+            }
         }
+        $_SESSION[$cache_key] = ['ts' => time(), 'data' => $partners];
+    } catch (Exception $e) {
+        // silent
     }
-} catch (Exception $e) {
-    // Handle error quietly or log it
 }
 
-// Capture submitted filter values to keep them selected/filled after submission
+// Build partner lookup for display (avoids LEFT JOIN later)
+$partner_lookup = [];
+foreach ($partners as $p) {
+    $partner_lookup[$p['partner_id_kpx']] = $p['partner_name'];
+}
+
+// ============================================
+// Capture filter values
+// ============================================
 $selected_partner = $_GET['partner_id'] ?? '';
 $date_from        = $_GET['date_from'] ?? '';
 $date_to          = $_GET['date_to'] ?? '';
 $selected_status  = $_GET['status'] ?? '';
-$search_keyword   = $_GET['search'] ?? '';
+$search_keyword   = trim($_GET['search'] ?? '');
 
-// Fetch transaction data based on filters
-$transactions = [];
-$has_filters = !empty($selected_partner) || !empty($date_from) || !empty($date_to) || !empty($selected_status) || !empty($search_keyword);
+// Pagination
+$page     = max(1, (int)($_GET['page'] ?? 1));
+$per_page = 100;
+$offset   = ($page - 1) * $per_page;
 
-// Summary variables
+// ============================================
+// Summary accumulators
+// ============================================
 $normal = [
-    'volume' => 0,
-    'principal' => 0,
-    'charge_to_partner' => 0,
-    'charge_to_customer' => 0,
-    'total_charge' => 0
+    'volume' => 0, 'principal' => 0, 'charge_to_partner' => 0,
+    'charge_to_customer' => 0, 'total_charge' => 0
+];
+$adjustment = [
+    'volume' => 0, 'principal' => 0, 'charge_to_partner' => 0,
+    'charge_to_customer' => 0, 'total_charge' => 0
 ];
 
-$adjustment = [
-    'volume' => 0,
-    'principal' => 0,
-    'charge_to_partner' => 0,
-    'charge_to_customer' => 0,
-    'total_charge' => 0
-];
+$transactions = [];
+$total_records = 0;
+$total_pages = 1;
+$error_message = null;
+
+$has_filters = !empty($selected_partner) || !empty($date_from) || !empty($date_to) || !empty($selected_status) || !empty($search_keyword);
 
 if ($has_filters) {
     try {
         // ============================================
-        // FIX: Build separate queries for normal and cancelled
+        // Prepare date boundaries (avoid DATE() function)
         // ============================================
-        
-        // Base conditions
-        $base_conditions = "1=1";
-        $params = [];
-        $types = "";
-        
-        // Partner filter
+        $dt_from = null; $dt_to_excl = null;
+        if (!empty($date_from)) {
+            $dt_from = $date_from . ' 00:00:00';
+        }
+        if (!empty($date_to)) {
+            $dt_to_excl = date('Y-m-d', strtotime($date_to . ' +1 day')) . ' 00:00:00';
+        }
+
+        // ============================================
+        // Build common WHERE fragments (partner + search)
+        // ============================================
+        $common_where  = "";
+        $common_params = [];
+        $common_types  = "";
+
         if (!empty($selected_partner)) {
-            $base_conditions .= " AND bt.partner_id_kpx = ?";
-            $params[] = $selected_partner;
-            $types .= "s";
+            $common_where .= " AND bt.partner_id_kpx = ?";
+            $common_params[] = $selected_partner;
+            $common_types .= "s";
         }
-        
-        // Search filter - reference_no and outlet (branch name)
+
         if (!empty($search_keyword)) {
-            $base_conditions .= " AND (bt.reference_no LIKE ? OR bt.outlet LIKE ?)";
-            $search_param = "%" . $search_keyword . "%";
-            $params[] = $search_param;
-            $params[] = $search_param;
-            $types .= "ss";
+            $common_where .= " AND (bt.reference_no LIKE ? OR bt.outlet LIKE ?)";
+            $search_param = $search_keyword . "%";
+            $common_params[] = $search_param;
+            $common_params[] = $search_param;
+            $common_types .= "ss";
         }
-        
+
         // ============================================
-        // QUERY 1: NORMAL TRANSACTIONS (datetime BETWEEN range AND cancellation_date IS NULL)
+        // Determine status flags
         // ============================================
-        $normal_sql = "SELECT 
-                        bt.*,
-                        pm.partner_name
-                    FROM mldb.billspayment_transaction bt
-                    LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
-                    WHERE $base_conditions";
-        
-        $normal_params = $params;
-        $normal_types = $types;
-        
-        // Date filter for NORMAL transactions - only datetime
-        if (!empty($date_from) && !empty($date_to)) {
-            $normal_sql .= " AND DATE(bt.datetime) BETWEEN ? AND ?";
-            $normal_params[] = $date_from;
-            $normal_params[] = $date_to;
-            $normal_types .= "ss";
-        } elseif (!empty($date_from)) {
-            $normal_sql .= " AND DATE(bt.datetime) >= ?";
-            $normal_params[] = $date_from;
-            $normal_types .= "s";
-        } elseif (!empty($date_to)) {
-            $normal_sql .= " AND DATE(bt.datetime) <= ?";
-            $normal_params[] = $date_to;
-            $normal_types .= "s";
+        $include_normal    = true;
+        $include_cancelled = true;
+
+        if ($selected_status === 'active') {
+            $include_cancelled = false;
+        } elseif ($selected_status === 'cancelled') {
+            $include_normal = false;
         }
-        
-        // FIX: Normal transactions MUST have cancellation_date IS NULL
-        $normal_sql .= " AND bt.cancellation_date IS NULL";
-        
-        // Status filter for NORMAL - only 'active' or all (excluding cancelled)
-        if (!empty($selected_status)) {
-            if ($selected_status === 'active') {
-                $normal_sql .= " AND (bt.status IS NULL OR bt.status = '')";
-            } elseif ($selected_status === 'cancelled') {
-                // If status is cancelled, don't return any normal transactions
-                $normal_sql .= " AND 1=0";
+
+        // ============================================
+        // Build UNION ALL query
+        // ============================================
+        $union_parts  = [];
+        $union_params = [];
+        $union_types  = "";
+
+        // ---- Normal branch ----
+        if ($include_normal) {
+            $normal_where  = "bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '')";
+            $normal_params = [];
+            $normal_types  = "";
+
+            if ($dt_from !== null && $dt_to_excl !== null) {
+                $normal_where .= " AND bt.datetime >= ? AND bt.datetime < ?";
+                $normal_params[] = $dt_from;
+                $normal_params[] = $dt_to_excl;
+                $normal_types .= "ss";
+            } elseif ($dt_from !== null) {
+                $normal_where .= " AND bt.datetime >= ?";
+                $normal_params[] = $dt_from;
+                $normal_types .= "s";
+            } elseif ($dt_to_excl !== null) {
+                $normal_where .= " AND bt.datetime < ?";
+                $normal_params[] = $dt_to_excl;
+                $normal_types .= "s";
             }
-        } else {
-            // If no status filter, exclude cancelled from normal
-            $normal_sql .= " AND (bt.status IS NULL OR bt.status = '')";
+
+            $normal_params = array_merge($normal_params, $common_params);
+            $normal_types .= $common_types;
+
+            $union_parts[] = "(
+                SELECT bt.id, bt.status, bt.datetime, bt.cancellation_date, bt.reference_no,
+                       bt.branch_id, bt.outlet, bt.partner_id_kpx, bt.amount_paid,
+                       bt.charge_to_partner, bt.charge_to_customer, bt.billing_invoice,
+                       bt.settle_unsettle, bt.post_transaction, bt.import_status,
+                       'normal' AS row_type
+                FROM mldb.billspayment_transaction bt
+                WHERE " . ltrim($normal_where, " AND ") . $common_where . "
+            )";
+            $union_params = array_merge($union_params, $normal_params);
+            $union_types .= $normal_types;
         }
-        
-        $normal_sql .= " ORDER BY bt.datetime ASC";
-        
-        // Execute NORMAL query
-        $normal_stmt = $conn->prepare($normal_sql);
-        if (!empty($normal_params)) {
-            $normal_stmt->bind_param($normal_types, ...$normal_params);
-        }
-        $normal_stmt->execute();
-        $normal_result = $normal_stmt->get_result();
-        
-        // Process normal transactions
-        while ($row = $normal_result->fetch_assoc()) {
-            $transactions[] = $row;
-            
-            // Normal transaction (positive amounts)
-            $amount_paid = floatval($row['amount_paid'] ?? 0);
-            $charge_to_partner = floatval($row['charge_to_partner'] ?? 0);
-            $charge_to_customer = floatval($row['charge_to_customer'] ?? 0);
-            $total_charge = $charge_to_partner + $charge_to_customer;
-            
-            $normal['volume']++;
-            $normal['principal'] += $amount_paid;
-            $normal['charge_to_partner'] += $charge_to_partner;
-            $normal['charge_to_customer'] += $charge_to_customer;
-            $normal['total_charge'] += $total_charge;
-        }
-        $normal_stmt->close();
-        
-        // ============================================
-        // QUERY 2: CANCELLED TRANSACTIONS (cancellation_date BETWEEN range)
-        // ============================================
-        $cancelled_sql = "SELECT 
-                            bt.*,
-                            pm.partner_name
-                        FROM mldb.billspayment_transaction bt
-                        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
-                        WHERE $base_conditions";
-        
-        $cancelled_params = $params;
-        $cancelled_types = $types;
-        
-        // Date filter for CANCELLED transactions - only cancellation_date
-        if (!empty($date_from) && !empty($date_to)) {
-            $cancelled_sql .= " AND DATE(bt.cancellation_date) BETWEEN ? AND ?";
-            $cancelled_params[] = $date_from;
-            $cancelled_params[] = $date_to;
-            $cancelled_types .= "ss";
-        } elseif (!empty($date_from)) {
-            $cancelled_sql .= " AND DATE(bt.cancellation_date) >= ?";
-            $cancelled_params[] = $date_from;
-            $cancelled_types .= "s";
-        } elseif (!empty($date_to)) {
-            $cancelled_sql .= " AND DATE(bt.cancellation_date) <= ?";
-            $cancelled_params[] = $date_to;
-            $cancelled_types .= "s";
-        }
-        
-        // FIX: Cancelled transactions MUST have cancellation_date IS NOT NULL
-        $cancelled_sql .= " AND bt.cancellation_date IS NOT NULL";
-        
-        // Status filter for CANCELLED - only 'cancelled'
-        if (!empty($selected_status)) {
-            if ($selected_status === 'cancelled') {
-                $cancelled_sql .= " AND bt.status = '*'";
-            } elseif ($selected_status === 'active') {
-                // If status is active, don't return any cancelled transactions
-                $cancelled_sql .= " AND 1=0";
+
+        // ---- Cancelled branch ----
+        if ($include_cancelled) {
+            $cancelled_where  = "bt.cancellation_date IS NOT NULL AND bt.status = '*'";
+            $cancelled_params = [];
+            $cancelled_types  = "";
+
+            if ($dt_from !== null && $dt_to_excl !== null) {
+                $cancelled_where .= " AND bt.cancellation_date >= ? AND bt.cancellation_date < ?";
+                $cancelled_params[] = $dt_from;
+                $cancelled_params[] = $dt_to_excl;
+                $cancelled_types .= "ss";
+            } elseif ($dt_from !== null) {
+                $cancelled_where .= " AND bt.cancellation_date >= ?";
+                $cancelled_params[] = $dt_from;
+                $cancelled_types .= "s";
+            } elseif ($dt_to_excl !== null) {
+                $cancelled_where .= " AND bt.cancellation_date < ?";
+                $cancelled_params[] = $dt_to_excl;
+                $cancelled_types .= "s";
             }
+
+            $cancelled_params = array_merge($cancelled_params, $common_params);
+            $cancelled_types .= $common_types;
+
+            $union_parts[] = "(
+                SELECT bt.id, bt.status, bt.datetime, bt.cancellation_date, bt.reference_no,
+                       bt.branch_id, bt.outlet, bt.partner_id_kpx, bt.amount_paid,
+                       bt.charge_to_partner, bt.charge_to_customer, bt.billing_invoice,
+                       bt.settle_unsettle, bt.post_transaction, bt.import_status,
+                       'cancelled' AS row_type
+                FROM mldb.billspayment_transaction bt
+                WHERE " . ltrim($cancelled_where, " AND ") . $common_where . "
+            )";
+            $union_params = array_merge($union_params, $cancelled_params);
+            $union_types .= $cancelled_types;
+        }
+
+        if (empty($union_parts)) {
+            $transactions = [];
         } else {
-            // If no status filter, include all cancelled
-            $cancelled_sql .= " AND bt.status = '*'";
+            $union_sql = implode(" UNION ALL ", $union_parts);
+
+            // ============================================
+            // SUMMARY QUERY (aggregate, no LIMIT)
+            // ============================================
+            $summary_sql = "
+                SELECT
+                    SUM(CASE WHEN row_type='normal' THEN 1 ELSE 0 END) AS normal_vol,
+                    SUM(CASE WHEN row_type='normal' THEN amount_paid ELSE 0 END) AS normal_principal,
+                    SUM(CASE WHEN row_type='normal' THEN charge_to_partner ELSE 0 END) AS normal_ctp,
+                    SUM(CASE WHEN row_type='normal' THEN charge_to_customer ELSE 0 END) AS normal_ctc,
+                    SUM(CASE WHEN row_type='cancelled' THEN 1 ELSE 0 END) AS adj_vol,
+                    SUM(CASE WHEN row_type='cancelled' THEN ABS(amount_paid) ELSE 0 END) AS adj_principal,
+                    SUM(CASE WHEN row_type='cancelled' THEN ABS(charge_to_partner) ELSE 0 END) AS adj_ctp,
+                    SUM(CASE WHEN row_type='cancelled' THEN ABS(charge_to_customer) ELSE 0 END) AS adj_ctc
+                FROM ( $union_sql ) AS combined
+            ";
+
+            $summary_stmt = $conn->prepare($summary_sql);
+            if (!empty($union_params)) {
+                $summary_stmt->bind_param($union_types, ...$union_params);
+            }
+            $summary_stmt->execute();
+            $summary_row = $summary_stmt->get_result()->fetch_assoc();
+            $summary_stmt->close();
+
+            if ($summary_row) {
+                $normal['volume']             = (int)($summary_row['normal_vol'] ?? 0);
+                $normal['principal']          = (float)($summary_row['normal_principal'] ?? 0);
+                $normal['charge_to_partner']  = (float)($summary_row['normal_ctp'] ?? 0);
+                $normal['charge_to_customer'] = (float)($summary_row['normal_ctc'] ?? 0);
+                $normal['total_charge']       = $normal['charge_to_partner'] + $normal['charge_to_customer'];
+
+                $adjustment['volume']             = (int)($summary_row['adj_vol'] ?? 0);
+                $adjustment['principal']          = (float)($summary_row['adj_principal'] ?? 0);
+                $adjustment['charge_to_partner']  = (float)($summary_row['adj_ctp'] ?? 0);
+                $adjustment['charge_to_customer'] = (float)($summary_row['adj_ctc'] ?? 0);
+                $adjustment['total_charge']       = $adjustment['charge_to_partner'] + $adjustment['charge_to_customer'];
+            }
+
+            // ============================================
+            // COUNT QUERY (for pagination)
+            // ============================================
+            $count_sql = "SELECT COUNT(*) AS total FROM ( $union_sql ) AS combined";
+            $count_stmt = $conn->prepare($count_sql);
+            if (!empty($union_params)) {
+                $count_stmt->bind_param($union_types, ...$union_params);
+            }
+            $count_stmt->execute();
+            $total_records = (int)($count_stmt->get_result()->fetch_assoc()['total'] ?? 0);
+            $count_stmt->close();
+            $total_pages = max(1, (int)ceil($total_records / $per_page));
+
+            if ($page > $total_pages) {
+                $page = $total_pages;
+                $offset = ($page - 1) * $per_page;
+            }
+
+            // ============================================
+            // DATA QUERY (paginated)
+            // ============================================
+            $data_sql = $union_sql . " ORDER BY datetime ASC LIMIT ? OFFSET ?";
+            $data_stmt = $conn->prepare($data_sql);
+            $data_params = $union_params;
+            $data_types  = $union_types . "ii";
+            $data_params[] = $per_page;
+            $data_params[] = $offset;
+
+            if (!empty($data_params)) {
+                $data_stmt->bind_param($data_types, ...$data_params);
+            }
+            $data_stmt->execute();
+            $data_result = $data_stmt->get_result();
+            while ($row = $data_result->fetch_assoc()) {
+                $transactions[] = $row;
+            }
+            $data_stmt->close();
         }
-        
-        $cancelled_sql .= " ORDER BY bt.datetime ASC";
-        
-        // Execute CANCELLED query
-        $cancelled_stmt = $conn->prepare($cancelled_sql);
-        if (!empty($cancelled_params)) {
-            $cancelled_stmt->bind_param($cancelled_types, ...$cancelled_params);
-        }
-        $cancelled_stmt->execute();
-        $cancelled_result = $cancelled_stmt->get_result();
-        
-        // Process cancelled transactions
-        while ($row = $cancelled_result->fetch_assoc()) {
-            $transactions[] = $row;
-            
-            // Adjustment/Cancellation - stored as negative in DB,
-            // but we accumulate/display as positive so net subtraction works correctly
-            $amount_paid = floatval($row['amount_paid'] ?? 0);
-            $charge_to_partner = floatval($row['charge_to_partner'] ?? 0);
-            $charge_to_customer = floatval($row['charge_to_customer'] ?? 0);
-            $total_charge = $charge_to_partner + $charge_to_customer;
-            
-            $adjustment['volume']++;
-            $adjustment['principal'] += abs($amount_paid);
-            $adjustment['charge_to_partner'] += abs($charge_to_partner);
-            $adjustment['charge_to_customer'] += abs($charge_to_customer);
-            $adjustment['total_charge'] += abs($total_charge);
-        }
-        $cancelled_stmt->close();
-        
-        // Sort combined transactions by datetime
-        usort($transactions, function($a, $b) {
-            return strtotime($a['datetime'] ?? '') - strtotime($b['datetime'] ?? '');
-        });
-        
+
     } catch (Exception $e) {
-        // Handle error quietly or log it
         $error_message = $e->getMessage();
     }
 }
 
-// Calculate Net values
+// ============================================
+// Net values
+// ============================================
 $net = [
-    'volume' => $normal['volume'] - $adjustment['volume'],
-    'principal' => $normal['principal'] - $adjustment['principal'],
-    'charge_to_partner' => $normal['charge_to_partner'] - $adjustment['charge_to_partner'],
+    'volume'             => $normal['volume'] - $adjustment['volume'],
+    'principal'          => $normal['principal'] - $adjustment['principal'],
+    'charge_to_partner'  => $normal['charge_to_partner'] - $adjustment['charge_to_partner'],
     'charge_to_customer' => $normal['charge_to_customer'] - $adjustment['charge_to_customer'],
-    'total_charge' => $normal['total_charge'] - $adjustment['total_charge']
+    'total_charge'       => $normal['total_charge'] - $adjustment['total_charge']
 ];
-
-// Calculate Settlement Amount (Net Principal - Net Total Charge)
 $settlement_amount = $net['principal'] - $net['total_charge'];
-?>
 
+// Helper to build pagination URLs preserving filters
+function build_page_url($page_num) {
+    $params = $_GET;
+    $params['page'] = $page_num;
+    return '?' . http_build_query($params);
+}
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -270,12 +326,31 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="css/t-report.css?v=<?= time(); ?>">
 
+    <style>
+        /* Late Posting badge (inline fallback if t-report.css is not updated yet) */
+        .badge-late-posting {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 10px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            background-color: #fd7e14;
+            color: #fff;
+            white-space: nowrap;
+        }
+        .badge-late-posting i {
+            margin-right: 3px;
+        }
+        .import-status-dash {
+            color: #adb5bd;
+        }
+    </style>
 </head>
 <body>
     <div class="main-container">
         <?php include '../../../templates/header_ui.php'; ?>
         <?php include '../../../templates/sidebar.php'; ?>
-        
+
         <div class="bp-section-header" role="region" aria-label="Page title">
             <div class="bp-section-title">
                 <i class="fa-solid fa-file-invoice-dollar" aria-hidden="true"></i>
@@ -287,63 +362,59 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
         </div>
 
         <div class="filter-container">
-    <div class="filter-header">
-        <i class="fa-solid fa-filter"></i> Filter Transactions
-    </div>
-    <div class="filter-body">
-        <form method="GET" action="" id="filterForm">
-            <div class="filter-row">
-                <div class="filter-group">
-                    <label for="partner_id">Partner Name</label>
-                    <select class="select2-field" id="partner_id" name="partner_id">
-                        <option value="">All Partners</option>
-                        <?php foreach ($partners as $partner): ?>
-                            <option value="<?php echo htmlspecialchars($partner['partner_id_kpx']); ?>" <?php echo ($selected_partner === $partner['partner_id_kpx']) ? 'selected' : ''; ?>>
-                                <?php echo htmlspecialchars($partner['partner_name']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
+         
+            <div class="filter-body">
+                <form method="GET" action="" id="filterForm">
+                    <div class="filter-row">
+                        <div class="filter-group">
+                            <label for="partner_id">Partner Name</label>
+                            <select class="select2-field" id="partner_id" name="partner_id">
+                                <option value="">All Partners</option>
+                                <?php foreach ($partners as $partner): ?>
+                                    <option value="<?php echo htmlspecialchars($partner['partner_id_kpx']); ?>" <?php echo ($selected_partner === $partner['partner_id_kpx']) ? 'selected' : ''; ?>>
+                                        <?php echo htmlspecialchars($partner['partner_name']); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
 
-                <div class="filter-group">
-                    <label for="date_from">Transaction Date From</label>
-                    <input type="date" id="date_from" name="date_from" value="<?php echo htmlspecialchars($date_from); ?>">
-                </div>
+                        <div class="filter-group">
+                            <label for="date_from">Transaction Date From</label>
+                            <input type="date" id="date_from" name="date_from" value="<?php echo htmlspecialchars($date_from); ?>">
+                        </div>
 
-                <div class="filter-group">
-                    <label for="date_to">Transaction Date To</label>
-                    <input type="date" id="date_to" name="date_to" value="<?php echo htmlspecialchars($date_to); ?>">
-                </div>
+                        <div class="filter-group">
+                            <label for="date_to">Transaction Date To</label>
+                            <input type="date" id="date_to" name="date_to" value="<?php echo htmlspecialchars($date_to); ?>">
+                        </div>
 
-                <div class="filter-group">
-                    <label for="status">Transaction Status</label>
-                    <select id="status" name="status">
-                        <option value="">All Status</option>
-                        <option value="active" <?php echo ($selected_status === 'active') ? 'selected' : ''; ?>>Active</option>
-                        <option value="cancelled" <?php echo ($selected_status === 'cancelled') ? 'selected' : ''; ?>>Cancelled</option>
-                    </select>
-                </div>
+                        <div class="filter-group">
+                            <label for="status">Transaction Status</label>
+                            <select id="status" name="status">
+                                <option value="">All Status</option>
+                                <option value="active" <?php echo ($selected_status === 'active') ? 'selected' : ''; ?>>Active</option>
+                                <option value="cancelled" <?php echo ($selected_status === 'cancelled') ? 'selected' : ''; ?>>Cancelled</option>
+                            </select>
+                        </div>
 
-                <div class="filter-group search-group">
-                    <label for="search">Search</label>
-                    <div class="search-icon">
-                        <input type="text" id="search" name="search" placeholder="Reference # or Branch name..." value="<?php echo htmlspecialchars($search_keyword); ?>">
-                        <i class="fa-solid fa-search"></i>
+                        <div class="filter-group search-group">
+                            <label for="search">Search</label>
+                            <div class="search-icon">
+                                <input type="text" id="search" name="search" placeholder="Reference # or Branch name..." value="<?php echo htmlspecialchars($search_keyword); ?>">
+                                <i class="fa-solid fa-search"></i>
+                            </div>
+                        </div>
+
+                        <div class="filter-actions">
+                            <button type="submit">
+                                <i class="fa-solid fa-magnifying-glass"></i> Filter
+                            </button>
+                            <a href="<?php echo $_SERVER['PHP_SELF']; ?>">Reset</a>
+                        </div>
                     </div>
-                </div>
-
-                <div class="filter-actions">
-                    <button type="submit">
-                        <i class="fa-solid fa-magnifying-glass"></i> Filter
-                    </button>
-                    <a href="<?php echo $_SERVER['PHP_SELF']; ?>">
-                        Reset
-                    </a>
-                </div>
+                </form>
             </div>
-        </form>
-    </div>
-</div>
+        </div>
 
         <!-- Results Table -->
         <div class="container-fluid mt-4">
@@ -351,21 +422,19 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
                 <div class="card-header bg-light fw-bold text-secondary d-flex justify-content-between align-items-center">
                     <span><i class="fa-solid fa-table me-2"></i> Transaction Results</span>
                     <?php if ($has_filters): ?>
-                        <span class="badge bg-danger rounded-pill"><?php echo count($transactions); ?> records found</span>
+                        <span class="badge bg-danger rounded-pill"><?php echo number_format($total_records); ?> records found</span>
                     <?php endif; ?>
                 </div>
                 <div class="card-body">
                     <?php if ($has_filters): ?>
                         <?php if (!empty($transactions)): ?>
-                            <!-- Left-Right Layout: Summary on Left, Table on Right -->
                             <div class="summary-wrapper">
-                                <!-- Left: Summary Section -->
                                 <div class="summary-left">
                                     <div class="summary-card">
                                         <div class="summary-title">
                                             <i class="fa-solid fa-chart-bar me-2"></i> Summary Results
                                         </div>
-                                        
+
                                         <!-- Normal Transaction Summary -->
                                         <div class="summary-section">
                                             <div class="section-header">
@@ -390,7 +459,7 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
                                             </div>
                                         </div>
 
-                                        <!-- Adjustment/Cancellation Summary -->
+                                        <!-- Adjustment Summary -->
                                         <div class="summary-section">
                                             <div class="section-header">
                                                 <span><i class="fa-solid fa-circle-xmark text-danger me-1"></i> Adjustment</span>
@@ -438,13 +507,13 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
                                             </div>
                                             <div class="settlement-amount">
                                                 <div class="label">
-                                                    <i class="fa-solid fa-hand-holding-dollar me-1"></i> Settlement Amount: ₱ <?php echo number_format($settlement_amount, 2); ?></div>
+                                                    <i class="fa-solid fa-hand-holding-dollar me-1"></i> Settlement Amount: ₱ <?php echo number_format($settlement_amount, 2); ?>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
 
-                                <!-- Right: Table -->
                                 <div class="summary-right">
                                     <div class="table-responsive">
                                         <table class="table table-hover table-striped table-bordered">
@@ -452,7 +521,7 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
                                                 <tr>
                                                     <th colspan="10"></th>
                                                     <th colspan="2">Charge to</th>
-                                                    <th colspan="3"></th>
+                                                    <th colspan="4"></th>
                                                 </tr>
                                                 <tr>
                                                     <th class="counter-column">#</th>
@@ -470,33 +539,27 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
                                                     <th>Billing Invoice</th>
                                                     <th>Settlement Status</th>
                                                     <th>CAD Status</th>
+                                                    <th>Import Status</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                <?php 
-                                                $counter = 1;
-                                                foreach ($transactions as $transaction): 
-                                                    // Determine status
+                                                <?php
+                                                $counter = $offset + 1;
+                                                foreach ($transactions as $transaction):
                                                     $status = (empty($transaction['status']) || $transaction['status'] === null) ? 'Active' : 'Cancelled';
                                                     $statusClass = ($status === 'Active') ? 'badge-active' : 'badge-cancelled';
-                                                    
-                                                    // Determine settlement status
-                                                    $settlementStatus = isset($transaction['settle_unsettle']) ? $transaction['settle_unsettle'] : '-';
-                                                    $settlementClass = '';
-                                                    if (strtolower($settlementStatus) === 'settled' || strtolower($settlementStatus) === 'yes') {
-                                                        $settlementClass = 'badge-settled';
-                                                    } else {
-                                                        $settlementClass = 'badge-unsettled';
-                                                    }
-                                                    
-                                                    // Determine CAD status
-                                                    $cadStatus = isset($transaction['post_transaction']) ? $transaction['post_transaction'] : '-';
-                                                    $cadClass = '';
-                                                    if (strtolower($cadStatus) === 'posted' || strtolower($cadStatus) === 'yes') {
-                                                        $cadClass = 'badge-posted';
-                                                    } else {
-                                                        $cadClass = 'badge-unposted';
-                                                    }
+
+                                                    $settlementStatus = $transaction['settle_unsettle'] ?? '-';
+                                                    $settlementClass = (strtolower($settlementStatus) === 'settled' || strtolower($settlementStatus) === 'yes') ? 'badge-settled' : 'badge-unsettled';
+
+                                                    $cadStatus = $transaction['post_transaction'] ?? '-';
+                                                    $cadClass = (strtolower($cadStatus) === 'posted' || strtolower($cadStatus) === 'yes') ? 'badge-posted' : 'badge-unposted';
+
+                                                    // Resolve partner name from lookup (no JOIN needed)
+                                                    $partner_name = $partner_lookup[$transaction['partner_id_kpx'] ?? ''] ?? '-';
+
+                                                    // Import Status (Late Posting flag)
+                                                    $importStatus = trim((string)($transaction['import_status'] ?? ''));
                                                 ?>
                                                 <tr>
                                                     <td class="counter-column"><?php echo $counter++; ?></td>
@@ -511,7 +574,7 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
                                                     <td><?php echo htmlspecialchars($transaction['branch_id'] ?? '-'); ?></td>
                                                     <td><?php echo htmlspecialchars($transaction['outlet'] ?? '-'); ?></td>
                                                     <td><?php echo htmlspecialchars($transaction['partner_id_kpx'] ?? '-'); ?></td>
-                                                    <td><?php echo htmlspecialchars($transaction['partner_name'] ?? '-'); ?></td>
+                                                    <td><?php echo htmlspecialchars($partner_name); ?></td>
                                                     <td class="text-end"><?php echo !empty($transaction['amount_paid']) ? number_format($transaction['amount_paid'], 2) : '0.00'; ?></td>
                                                     <td class="text-end"><?php echo !empty($transaction['charge_to_partner']) ? number_format($transaction['charge_to_partner'], 2) : '0.00'; ?></td>
                                                     <td class="text-end"><?php echo !empty($transaction['charge_to_customer']) ? number_format($transaction['charge_to_customer'], 2) : '0.00'; ?></td>
@@ -526,11 +589,54 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
                                                             <?php echo htmlspecialchars($cadStatus); ?>
                                                         </span>
                                                     </td>
+                                                    <td>
+                                                        <?php if ($importStatus === ''): ?>
+                                                            <span class="import-status-dash">-</span>
+                                                        <?php elseif (strcasecmp($importStatus, 'Late Posting') === 0): ?>
+                                                            <span class="badge-late-posting">
+                                                                <i class="fa-solid fa-clock"></i> Late Posting
+                                                            </span>
+                                                        <?php else: ?>
+                                                            <?php echo htmlspecialchars($importStatus); ?>
+                                                        <?php endif; ?>
+                                                    </td>
                                                 </tr>
                                                 <?php endforeach; ?>
                                             </tbody>
                                         </table>
                                     </div>
+
+                                    <!-- Pagination -->
+                                    <?php if ($total_pages > 1): ?>
+                                        <nav aria-label="Transaction pagination" class="mt-3">
+                                            <ul class="pagination justify-content-center flex-wrap">
+                                                <li class="page-item <?php echo ($page <= 1) ? 'disabled' : ''; ?>">
+                                                    <a class="page-link" href="<?php echo ($page <= 1) ? '#' : htmlspecialchars(build_page_url(1)); ?>">First</a>
+                                                </li>
+                                                <li class="page-item <?php echo ($page <= 1) ? 'disabled' : ''; ?>">
+                                                    <a class="page-link" href="<?php echo ($page <= 1) ? '#' : htmlspecialchars(build_page_url($page - 1)); ?>">Prev</a>
+                                                </li>
+                                                <?php
+                                                $start = max(1, $page - 2);
+                                                $end   = min($total_pages, $page + 2);
+                                                for ($i = $start; $i <= $end; $i++):
+                                                ?>
+                                                    <li class="page-item <?php echo ($i === $page) ? 'active' : ''; ?>">
+                                                        <a class="page-link" href="<?php echo htmlspecialchars(build_page_url($i)); ?>"><?php echo $i; ?></a>
+                                                    </li>
+                                                <?php endfor; ?>
+                                                <li class="page-item <?php echo ($page >= $total_pages) ? 'disabled' : ''; ?>">
+                                                    <a class="page-link" href="<?php echo ($page >= $total_pages) ? '#' : htmlspecialchars(build_page_url($page + 1)); ?>">Next</a>
+                                                </li>
+                                                <li class="page-item <?php echo ($page >= $total_pages) ? 'disabled' : ''; ?>">
+                                                    <a class="page-link" href="<?php echo ($page >= $total_pages) ? '#' : htmlspecialchars(build_page_url($total_pages)); ?>">Last</a>
+                                                </li>
+                                            </ul>
+                                            <p class="text-center text-muted small">
+                                                Page <?php echo $page; ?> of <?php echo $total_pages; ?> — showing <?php echo count($transactions); ?> of <?php echo number_format($total_records); ?> records
+                                            </p>
+                                        </nav>
+                                    <?php endif; ?>
                                 </div>
                             </div>
                         <?php else: ?>
@@ -550,7 +656,7 @@ $settlement_amount = $net['principal'] - $net['total_charge'];
                 </div>
             </div>
         </div>
-        </div>
+    </div>
 
     <script>
         $(document).ready(function() {

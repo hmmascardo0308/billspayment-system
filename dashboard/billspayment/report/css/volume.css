@@ -290,7 +290,7 @@
         
         .stat-card {
             background: white;
-            padding: 10px 20px;
+            padding: 1px 5px;
             text-align: center;
         }
         
@@ -309,7 +309,7 @@
         /* Table Wrapper with Scroll - MODIFIED FOR STICKY HEADER */
         .table-wrapper {
             overflow: auto;
-            max-height: 500px;
+            max-height: 400px;
             position: relative;
             flex: 1;
         }
@@ -359,13 +359,13 @@
 
         .results-table thead tr:nth-child(2) {
             position: sticky;
-            top: 38px;
+            top: 35px;
             z-index: 10;
         }
 
         .results-table thead tr:nth-child(3) {
             position: sticky;
-            top: 76px;
+            top: 70px;
             z-index: 9;
         }
         

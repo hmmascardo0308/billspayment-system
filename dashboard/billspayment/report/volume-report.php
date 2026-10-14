@@ -29,228 +29,35 @@ if ($time_frame === 'daily') {
 
 $month_from = $_POST['month_from'] ?? date('Y-m');
 $month_to = $_POST['month_to'] ?? date('Y-m');
-// Always use full range — day/month filter buttons removed; breakdown is shown via expandable rows
-$selected_day = 'all';
-$selected_month = 'all';
+
+// Selected day/month for date buttons
+$selected_day = $_POST['selected_day'] ?? 'all';
+$selected_month = $_POST['selected_month'] ?? 'all';
+
 $results = [];
 $daily_summary = [];
 $monthly_summary = [];
-$partner_period_details = []; // [partner_key][period_key] => metrics row for expandable breakdown
 
-// FIX: Function to build the WHERE clause with proper connection handling
-function buildWhereClause(
+// ============================================
+// Calculate start/end datetime ONCE for reuse
+// ============================================
+function calculateDateRange(
     string $time_frame,
-    string|int $partner_id,
     ?string $date_from,
     ?string $date_to,
     ?string $month_from,
     ?string $month_to,
     ?string $selected_day = null,
     ?string $selected_month = null
-) {
-    global $conn; // FIX: Use global keyword to access $conn
-    
-    $conditions = [];
-    
-    // Add partner condition if selected
-    if (!empty($partner_id)) {
-        $conditions[] = "bt.partner_id_kpx = '" . mysqli_real_escape_string($conn, $partner_id) . "'";
-    }
-    
-    // FIX: Add date conditions based on time frame
-    switch ($time_frame) {
-        case 'daily':
-            // FIX: Use the date from daily field
-            if (!empty($date_from)) {
-                $start_datetime = $date_from . ' 00:00:00';
-                $end_datetime = $date_from . ' 23:59:59';
-                $conditions[] = "((bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '')) OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
-            }
-            break;
-            
-        case 'date_range':
-            if (!empty($date_from) && !empty($date_to)) {
-                // If a specific day is selected, filter for that day only
-                if ($selected_day && $selected_day !== 'all') {
-                    $selected_date = date('Y-m-d', strtotime($date_from . ' + ' . ($selected_day - 1) . ' days'));
-                    $start_datetime = $selected_date . ' 00:00:00';
-                    $end_datetime = $selected_date . ' 23:59:59';
-                    $conditions[] = "((bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '')) OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
-                } else {
-                    $start_datetime = $date_from . ' 00:00:00';
-                    $end_datetime = $date_to . ' 23:59:59';
-                    $conditions[] = "((bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '')) OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
-                }
-            }
-            break;
-            
-        case 'monthly':
-            if (!empty($month_from) && !empty($month_to)) {
-                // If a specific month is selected
-                if ($selected_month && $selected_month !== 'all') {
-                    $selected_month_date = date('Y-m', strtotime($month_from . ' + ' . ($selected_month - 1) . ' months'));
-                    $start_datetime = $selected_month_date . '-01 00:00:00';
-                    $end_datetime = date('Y-m-t 23:59:59', strtotime($selected_month_date . '-01'));
-                    $conditions[] = "((bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '')) OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
-                } else {
-                    $start_datetime = $month_from . '-01 00:00:00';
-                    $end_datetime = date('Y-m-t 23:59:59', strtotime($month_to . '-01'));
-                    $conditions[] = "((bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '')) OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
-                }
-            }
-            break;
-    }
-    
-    return !empty($conditions) ? 'WHERE ' . implode(' AND ', $conditions) : '';
-}
-
-/**
- * Run the partner-level aggregate query for a given datetime window.
- * Returns array of associative rows (same shape as main report query).
- */
-function getPartnerPeriodResults(string $start_datetime, string $end_datetime, string|int $partner_id = ''): array {
-    global $conn;
-    
-    $partner_condition = '';
-    if (!empty($partner_id)) {
-        $partner_condition = " AND bt.partner_id_kpx = '" . mysqli_real_escape_string($conn, $partner_id) . "'";
-    }
-    
-    $where = "WHERE ((bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '')) OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')" . $partner_condition;
-    
-    $query = "SELECT 
-            COALESCE(NULLIF(bt.partner_id_kpx, ''), CONCAT('UNKNOWN_', bt.sub_billers_name, '_', bt.id)) as partner_id_kpx,
-            CASE 
-                WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
-                ELSE bt.sub_billers_name
-            END as sub_billers_name,
-            pm.partner_name,
-            pm.charge_sched,
-            pm.charge_to,
-            COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as datetime_volume,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as datetime_amount_paid,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_partner ELSE 0 END) as datetime_charge_partner,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_customer ELSE 0 END) as datetime_charge_customer,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as datetime_charge_total,
-            COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancellation_volume,
-            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancellation_amount_paid,
-            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_partner ELSE 0 END) as cancellation_charge_partner,
-            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_customer ELSE 0 END) as cancellation_charge_customer,
-            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancellation_charge_total,
-            (COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) - 
-             COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as total_volume,
-            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) + 
-             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
-            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_partner ELSE 0 END) - 
-             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_partner ELSE 0 END)) as total_charge_partner,
-            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_customer ELSE 0 END) - 
-             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_customer ELSE 0 END)) as total_charge_customer,
-            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) - 
-             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge,
-            COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN 1 END) as settlement_volume,
-            SUM(CASE 
-                WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' 
-                     AND (bt.status IS NULL OR bt.status = '') 
-                     AND bt.settle_unsettle = 'Settled' 
-                THEN 
-                    CASE 
-                        -- CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): deduct partner charge
-                        WHEN UPPER(COALESCE(pm.charge_to, '')) = 'CUSTOMER' 
-                             AND UPPER(COALESCE(pm.charge_sched, '')) IN ('DAILY', 'PER TRANSACTION')
-                        THEN bt.amount_paid - IFNULL(bt.charge_to_partner, 0)
-                        -- BOTH: deduct partner charge
-                        WHEN UPPER(COALESCE(pm.charge_to, '')) = 'BOTH'
-                        THEN bt.amount_paid - IFNULL(bt.charge_to_partner, 0)
-                        -- CHARGE BY PARTNER (any frequency): full amount_paid
-                        WHEN UPPER(COALESCE(pm.charge_to, '')) = 'PARTNER'
-                        THEN bt.amount_paid
-                        -- CHARGE BY CUSTOMER (Monthly/Semi-monthly/Weekly/other): full amount_paid
-                        ELSE bt.amount_paid
-                    END
-                ELSE 0 
-            END) as settlement_amount_paid,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN bt.charge_to_partner ELSE 0 END) as settlement_charge_partner,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN bt.charge_to_customer ELSE 0 END) as settlement_charge_customer,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
-          FROM mldb.billspayment_transaction bt
-          LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
-          $where
-          GROUP BY 
-            COALESCE(NULLIF(bt.partner_id_kpx, ''), CONCAT('UNKNOWN_', bt.sub_billers_name, '_', bt.id)),
-            CASE 
-                WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
-                ELSE bt.sub_billers_name
-            END,
-            pm.partner_name,
-            pm.charge_sched,
-            pm.charge_to
-          ORDER BY 
-            CASE WHEN pm.partner_name IS NULL THEN 1 ELSE 0 END,
-            pm.partner_name ASC,
-            total_volume DESC";
-    
-    $res = mysqli_query($conn, $query);
-    $rows = [];
-    if ($res) {
-        while ($r = mysqli_fetch_assoc($res)) {
-            $r['variance_volume'] = ($r['total_volume'] ?? 0) - ($r['settlement_volume'] ?? 0);
-            
-            // Check charge type for variance calculation
-            $charge_to = $r['charge_to'] ?? '';
-            $charge_sched = $r['charge_sched'] ?? '';
-            $is_partner_charge = (strtoupper($charge_to) === 'PARTNER');
-            $is_customer_daily = (strtoupper($charge_to) === 'CUSTOMER' && in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
-            $is_customer_non_daily = (strtoupper($charge_to) === 'CUSTOMER' && !in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
-            $is_both = (strtoupper($charge_to) === 'BOTH');
-            
-            if ($is_partner_charge || $is_customer_non_daily) {
-                // CHARGE BY PARTNER or CHARGE BY CUSTOMER (WEEKLY/MONTHLY/SEMI-MONTHLY/other):
-                // Settlement Amount = full amount_paid → variance = Net Amount - Settlement Amount (should be 0)
-                $r['variance_amount'] = ($r['total_amount_paid'] ?? 0) - ($r['settlement_amount_paid'] ?? 0);
-            } elseif ($is_customer_daily) {
-                // CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): variance = Net Amount - Settlement Amount - Settlement Charge to Partner
-                $r['variance_amount'] = ($r['total_amount_paid'] ?? 0) - (($r['settlement_amount_paid'] ?? 0) + ($r['settlement_charge_partner'] ?? 0));
-            } elseif ($is_both) {
-                // BOTH: variance = Net Amount - Settlement Amount - Total Settlement Charge
-                $r['variance_amount'] = ($r['total_amount_paid'] ?? 0) - (($r['settlement_amount_paid'] ?? 0) + ($r['settlement_charge'] ?? 0));
-            } else {
-                // Fallback: variance = Net Amount - Settlement Amount - Total Settlement Charge
-                $r['variance_amount'] = ($r['total_amount_paid'] ?? 0) - (($r['settlement_amount_paid'] ?? 0) + ($r['settlement_charge'] ?? 0));
-            }
-            
-            $r['charge_type_display'] = getChargeTypeDisplay($r['charge_sched'] ?? '', $r['charge_to'] ?? '');
-            $rows[] = $r;
-        }
-    } else {
-        error_log("MySQL Error in getPartnerPeriodResults: " . mysqli_error($conn));
-    }
-    return $rows;
-}
-
-// Handle form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
-    // selected_day / selected_month always 'all' (filter buttons removed; use expandable breakdown instead)
-    $selected_day = 'all';
-    $selected_month = 'all';
-    
-    // FIX: Re-fetch date values for daily time frame
-    if ($time_frame === 'daily') {
-        $date_from = $_POST['date_from_daily'] ?? date('Y-m-d');
-        $date_to = $date_from;
-    }
-    
-    // ============================================
-    // FIX: Define start and end datetime variables
-    // ============================================
+): array {
     $start_datetime = '';
     $end_datetime = '';
-    
-    // FIX: Calculate start and end datetime for use in queries
+
     if ($time_frame === 'daily') {
         $start_datetime = $date_from . ' 00:00:00';
         $end_datetime = $date_from . ' 23:59:59';
     } elseif ($time_frame === 'date_range') {
-        if ($selected_day && $selected_day !== 'all') {
+        if ($selected_day && $selected_day !== 'all' && $date_from) {
             $selected_date = date('Y-m-d', strtotime($date_from . ' + ' . ($selected_day - 1) . ' days'));
             $start_datetime = $selected_date . ' 00:00:00';
             $end_datetime = $selected_date . ' 23:59:59';
@@ -259,7 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
             $end_datetime = $date_to . ' 23:59:59';
         }
     } elseif ($time_frame === 'monthly') {
-        if ($selected_month && $selected_month !== 'all') {
+        if ($selected_month && $selected_month !== 'all' && $month_from) {
             $selected_month_date = date('Y-m', strtotime($month_from . ' + ' . ($selected_month - 1) . ' months'));
             $start_datetime = $selected_month_date . '-01 00:00:00';
             $end_datetime = date('Y-m-t 23:59:59', strtotime($selected_month_date . '-01'));
@@ -268,300 +75,402 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
             $end_datetime = date('Y-m-t 23:59:59', strtotime($month_to . '-01'));
         }
     }
-    
-    // Build the query for billspayment_transaction with detailed breakdown
-    // FIX: Use separate conditions for normal and cancelled transactions
-    $where_clause = buildWhereClause($time_frame, $partner_id, $date_from, $date_to, $month_from, $month_to, $selected_day, $selected_month);
-    
-    if (!empty($where_clause) && !empty($start_datetime) && !empty($end_datetime)) {
-        // ============================================
-        // FIX: Updated query - Transactions based on datetime with status NULL/empty
-        // Cancelled transactions based on cancellation_date
-        // ORDER BY partner_name ASC for proper alphabetical sorting
-        // ============================================
-        $query = "SELECT 
-            -- FIX: Use COALESCE to handle NULL/empty partner_id_kpx
-            COALESCE(NULLIF(bt.partner_id_kpx, ''), CONCAT('UNKNOWN_', bt.sub_billers_name, '_', bt.id)) as partner_id_kpx,
-            CASE 
-                WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
-                ELSE bt.sub_billers_name
-            END as sub_billers_name,
-            -- Get partner_name and charge type fields from masterdata table using LEFT JOIN
+
+    return [$start_datetime, $end_datetime];
+}
+
+// ============================================
+// Build partner filter fragment (sargable, escaped once)
+// ============================================
+function buildPartnerFilter(string|int $partner_id, string $alias = 'bt'): string {
+    global $conn;
+    if (empty($partner_id)) {
+        return '';
+    }
+    return " AND {$alias}.partner_id_kpx = '" . mysqli_real_escape_string($conn, $partner_id) . "'";
+}
+
+// ============================================
+// Main aggregated query — split into UNION ALL
+// for normal and cancelled halves so indexes can be used.
+//
+// FIX: add MAX(bt.partner_name) AS bt_partner_name as a fallback
+// when the partner is not registered in partner_masterfile.
+// ============================================
+function fetchPartnerAggregates(
+    string $start_datetime,
+    string $end_datetime,
+    string $partner_filter
+): array {
+    global $conn;
+
+    // ---- NORMAL / ACTIVE transactions ----
+    $normal_sql = "
+        SELECT
+            bt.partner_id_kpx,
+            bt.sub_billers_name,
+            MAX(bt.partner_name) AS bt_partner_name,
             pm.partner_name,
             pm.charge_sched,
             pm.charge_to,
-            -- Transactions (based on datetime AND status IS NULL OR status = '')
-            COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as datetime_volume,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as datetime_amount_paid,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_partner ELSE 0 END) as datetime_charge_partner,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_customer ELSE 0 END) as datetime_charge_customer,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as datetime_charge_total,
-            -- Cancelled Transactions (based on cancellation_date)
-            COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancellation_volume,
-            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancellation_amount_paid,
-            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_partner ELSE 0 END) as cancellation_charge_partner,
-            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_customer ELSE 0 END) as cancellation_charge_customer,
-            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancellation_charge_total,
-            -- NET values (datetime - cancellation)
-            (COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) - 
-             COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as total_volume,
-            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) + 
-             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as total_amount_paid,
-            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_partner ELSE 0 END) - 
-             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_partner ELSE 0 END)) as total_charge_partner,
-            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.charge_to_customer ELSE 0 END) - 
-             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.charge_to_customer ELSE 0 END)) as total_charge_customer,
-            (SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) - 
-             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as total_charge,
-            -- SETTLEMENT Transactions (include all settled based on datetime and status NULL/empty)
-            -- Settlement Amount adjusted by charge type:
-            --   CHARGE BY PARTNER (any frequency) → amount_paid (full amount)
-            --   CHARGE BY CUSTOMER DAILY / PER TRANSACTION → amount_paid - charge_to_partner
-            --   BOTH → amount_paid - charge_to_partner
-            --   CHARGE BY CUSTOMER (Monthly/Semi-monthly/Weekly) → amount_paid (full amount)
-            COUNT(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN 1 END) as settlement_volume,
-            SUM(CASE 
-                WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' 
-                     AND (bt.status IS NULL OR bt.status = '') 
-                     AND bt.settle_unsettle = 'Settled' 
-                THEN 
-                    CASE 
-                        -- CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): deduct partner charge
-                        WHEN UPPER(COALESCE(pm.charge_to, '')) = 'CUSTOMER' 
+            COUNT(*)                              AS normal_volume,
+            SUM(bt.amount_paid)                   AS normal_amount_paid,
+            SUM(bt.charge_to_partner)             AS normal_charge_partner,
+            SUM(bt.charge_to_customer)            AS normal_charge_customer,
+            SUM(bt.charge_to_partner + bt.charge_to_customer) AS normal_charge_total,
+            COUNT(CASE WHEN bt.settle_unsettle = 'Settled' THEN 1 END) AS settlement_volume,
+            SUM(CASE
+                WHEN bt.settle_unsettle = 'Settled' THEN
+                    CASE
+                        WHEN UPPER(COALESCE(pm.charge_to, '')) = 'CUSTOMER'
                              AND UPPER(COALESCE(pm.charge_sched, '')) IN ('DAILY', 'PER TRANSACTION')
                         THEN bt.amount_paid - IFNULL(bt.charge_to_partner, 0)
-                        -- BOTH: deduct partner charge
                         WHEN UPPER(COALESCE(pm.charge_to, '')) = 'BOTH'
                         THEN bt.amount_paid - IFNULL(bt.charge_to_partner, 0)
-                        -- CHARGE BY PARTNER (any frequency): full amount_paid
                         WHEN UPPER(COALESCE(pm.charge_to, '')) = 'PARTNER'
                         THEN bt.amount_paid
-                        -- CHARGE BY CUSTOMER (Monthly/Semi-monthly/Weekly/other): full amount_paid
                         ELSE bt.amount_paid
                     END
-                ELSE 0 
-            END) as settlement_amount_paid,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN bt.charge_to_partner ELSE 0 END) as settlement_charge_partner,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN bt.charge_to_customer ELSE 0 END) as settlement_charge_customer,
-            SUM(CASE WHEN bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') AND bt.settle_unsettle = 'Settled' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
-          FROM mldb.billspayment_transaction bt
-          LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
-          $where_clause
-          GROUP BY 
-            COALESCE(NULLIF(bt.partner_id_kpx, ''), CONCAT('UNKNOWN_', bt.sub_billers_name, '_', bt.id)),
-            CASE 
-                WHEN bt.sub_billers_name IS NULL OR bt.sub_billers_name = '' THEN '-'
-                ELSE bt.sub_billers_name
-            END,
+                ELSE 0
+            END) AS settlement_amount_paid,
+            SUM(CASE WHEN bt.settle_unsettle = 'Settled' THEN bt.charge_to_partner ELSE 0 END)  AS settlement_charge_partner,
+            SUM(CASE WHEN bt.settle_unsettle = 'Settled' THEN bt.charge_to_customer ELSE 0 END) AS settlement_charge_customer,
+            SUM(CASE WHEN bt.settle_unsettle = 'Settled' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) AS settlement_charge
+        FROM mldb.billspayment_transaction bt
+        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+        WHERE bt.datetime BETWEEN '{$start_datetime}' AND '{$end_datetime}'
+          AND (bt.status IS NULL OR bt.status = '')
+          {$partner_filter}
+        GROUP BY bt.partner_id_kpx, bt.sub_billers_name, pm.partner_name, pm.charge_sched, pm.charge_to
+    ";
+
+    // ---- CANCELLED transactions ----
+    $cancelled_sql = "
+        SELECT
+            bt.partner_id_kpx,
+            bt.sub_billers_name,
+            MAX(bt.partner_name) AS bt_partner_name,
             pm.partner_name,
             pm.charge_sched,
-            pm.charge_to
-          ORDER BY 
-            -- Put NULL partner names (unassigned) at the top
-            CASE WHEN pm.partner_name IS NULL THEN 1 ELSE 0 END,
-            -- Then sort alphabetically by partner name
-            pm.partner_name ASC,
-            -- Then by total volume descending within each partner
-            total_volume DESC";
-        
-        $results = mysqli_query($conn, $query);
-        
-        // Debug: Check for query errors
-        if (!$results) {
-            error_log("MySQL Error: " . mysqli_error($conn));
-            error_log("Query: " . $query);
+            pm.charge_to,
+            COUNT(*)                              AS cancel_volume,
+            SUM(bt.amount_paid)                   AS cancel_amount_paid,
+            SUM(bt.charge_to_partner)             AS cancel_charge_partner,
+            SUM(bt.charge_to_customer)            AS cancel_charge_customer,
+            SUM(bt.charge_to_partner + bt.charge_to_customer) AS cancel_charge_total
+        FROM mldb.billspayment_transaction bt
+        LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
+        WHERE bt.cancellation_date BETWEEN '{$start_datetime}' AND '{$end_datetime}'
+          {$partner_filter}
+        GROUP BY bt.partner_id_kpx, bt.sub_billers_name, pm.partner_name, pm.charge_sched, pm.charge_to
+    ";
+
+    $normal_result    = mysqli_query($conn, $normal_sql);
+    $cancelled_result = mysqli_query($conn, $cancelled_sql);
+
+    if (!$normal_result) {
+        error_log("MySQL Error (normal): " . mysqli_error($conn));
+        error_log("Query: " . $normal_sql);
+    }
+    if (!$cancelled_result) {
+        error_log("MySQL Error (cancelled): " . mysqli_error($conn));
+        error_log("Query: " . $cancelled_sql);
+    }
+
+    // ---- Build an index of cancelled rows keyed by (partner_id_kpx + sub_billers_name) ----
+    $cancelled_by_key = [];
+    if ($cancelled_result) {
+        while ($row = mysqli_fetch_assoc($cancelled_result)) {
+            $key = ($row['partner_id_kpx'] ?? '') . '||' . ($row['sub_billers_name'] ?? '');
+            $cancelled_by_key[$key] = $row;
         }
     }
-    
-    // FIX: Get daily summary for daily time frame with NET values
-    // ADDED: Settlement summary for daily
-    if ($time_frame === 'daily' && !empty($date_from)) {
-        $start_datetime = $date_from . ' 00:00:00';
-        $end_datetime = $date_from . ' 23:59:59';
-        
-        $day_query = "SELECT 
-                        -- Normal/Success transactions (datetime with status NULL/empty AND cancellation_date IS NULL)
-                        COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as success_volume,
-                        SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as success_amount,
-                        SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as success_charge,
-                        -- Cancelled transactions (based on cancellation_date)
-                        COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancelled_volume,
-                        SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancelled_amount,
-                        SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancelled_charge,
-                        -- NET volume (success - cancelled)
-                        (COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) - 
-                         COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as net_volume,
-                        (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) - 
-                         SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as net_amount,
-                        (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
-                         SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge,
-                        -- SETTLEMENT Summary (based on datetime with status NULL/empty)
-                        COUNT(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as settlement_volume,
-                        SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as settlement_amount,
-                        SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
-                      FROM mldb.billspayment_transaction bt
-                      WHERE ((bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '')) OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
-        
-        if (!empty($partner_id)) {
-            $day_query .= " AND bt.partner_id_kpx = '" . mysqli_real_escape_string($conn, $partner_id) . "'";
+
+    // ---- Merge normal + cancelled ----
+    $merged = [];
+    if ($normal_result) {
+        while ($row = mysqli_fetch_assoc($normal_result)) {
+            $key = ($row['partner_id_kpx'] ?? '') . '||' . ($row['sub_billers_name'] ?? '');
+            $row['cancel_volume']          = 0;
+            $row['cancel_amount_paid']     = 0;
+            $row['cancel_charge_partner']  = 0;
+            $row['cancel_charge_customer'] = 0;
+            $row['cancel_charge_total']    = 0;
+
+            if (isset($cancelled_by_key[$key])) {
+                $c = $cancelled_by_key[$key];
+                $row['cancel_volume']          = (int)$c['cancel_volume'];
+                $row['cancel_amount_paid']     = (float)$c['cancel_amount_paid'];
+                $row['cancel_charge_partner']  = (float)$c['cancel_charge_partner'];
+                $row['cancel_charge_customer'] = (float)$c['cancel_charge_customer'];
+                $row['cancel_charge_total']    = (float)$c['cancel_charge_total'];
+                unset($cancelled_by_key[$key]);
+            }
+
+            $row['datetime_volume']          = (int)$row['normal_volume'];
+            $row['datetime_amount_paid']     = (float)$row['normal_amount_paid'];
+            $row['datetime_charge_partner']  = (float)$row['normal_charge_partner'];
+            $row['datetime_charge_customer'] = (float)$row['normal_charge_customer'];
+            $row['datetime_charge_total']    = (float)$row['normal_charge_total'];
+            $row['cancellation_volume']          = $row['cancel_volume'];
+            $row['cancellation_amount_paid']     = $row['cancel_amount_paid'];
+            $row['cancellation_charge_partner']  = $row['cancel_charge_partner'];
+            $row['cancellation_charge_customer'] = $row['cancel_charge_customer'];
+            $row['cancellation_charge_total']    = $row['cancel_charge_total'];
+
+            // NET
+            $row['total_volume']          = $row['datetime_volume'] - $row['cancellation_volume'];
+            $row['total_amount_paid']     = $row['datetime_amount_paid'] + $row['cancellation_amount_paid'];
+            $row['total_charge_partner']  = $row['datetime_charge_partner'] - $row['cancellation_charge_partner'];
+            $row['total_charge_customer'] = $row['datetime_charge_customer'] - $row['cancellation_charge_customer'];
+            $row['total_charge']          = $row['datetime_charge_total'] - $row['cancellation_charge_total'];
+
+            // FIX: normalize bt_partner_name
+            $row['bt_partner_name'] = $row['bt_partner_name'] ?? '';
+
+            $merged[$key] = $row;
         }
-        
-        $day_result = mysqli_query($conn, $day_query);
-        $day_data = mysqli_fetch_assoc($day_result);
-        
-        $daily_summary[1] = [
-            'date' => $date_from,
-            'day_number' => 1,
-            'total_volume' => $day_data['net_volume'] ?? 0,
-            'total_amount_paid' => $day_data['net_amount'] ?? 0,
-            'total_charge' => $day_data['net_charge'] ?? 0,
-            'success_volume' => $day_data['success_volume'] ?? 0,
-            'cancelled_volume' => $day_data['cancelled_volume'] ?? 0,
-            'settlement_volume' => $day_data['settlement_volume'] ?? 0,
-            'settlement_amount' => $day_data['settlement_amount'] ?? 0,
-            'settlement_charge' => $day_data['settlement_charge'] ?? 0
+    }
+
+    // ---- Cancelled-only keys (no active counterpart) ----
+    foreach ($cancelled_by_key as $key => $c) {
+        $row = [
+            'partner_id_kpx'      => $c['partner_id_kpx'],
+            'sub_billers_name'    => $c['sub_billers_name'],
+            'bt_partner_name'     => $c['bt_partner_name'] ?? '',
+            'partner_name'        => $c['partner_name'],
+            'charge_sched'        => $c['charge_sched'],
+            'charge_to'           => $c['charge_to'],
+            'datetime_volume'     => 0,
+            'datetime_amount_paid'=> 0,
+            'datetime_charge_partner' => 0,
+            'datetime_charge_customer'=> 0,
+            'datetime_charge_total'   => 0,
+            'cancellation_volume'          => (int)$c['cancel_volume'],
+            'cancellation_amount_paid'     => (float)$c['cancel_amount_paid'],
+            'cancellation_charge_partner'  => (float)$c['cancel_charge_partner'],
+            'cancellation_charge_customer' => (float)$c['cancel_charge_customer'],
+            'cancellation_charge_total'    => (float)$c['cancel_charge_total'],
+            'settlement_volume'            => 0,
+            'settlement_amount_paid'       => 0,
+            'settlement_charge_partner'    => 0,
+            'settlement_charge_customer'   => 0,
+            'settlement_charge'            => 0,
         ];
+        $row['total_volume']          = -$row['cancellation_volume'];
+        $row['total_amount_paid']     = $row['cancellation_amount_paid'];
+        $row['total_charge_partner']  = -$row['cancellation_charge_partner'];
+        $row['total_charge_customer'] = -$row['cancellation_charge_customer'];
+        $row['total_charge']          = -$row['cancellation_charge_total'];
+        $merged[$key] = $row;
     }
-    
-    // FIX: Get daily summary for the date range with NET values
-    // ADDED: Settlement summary for each day
+
+    return array_values($merged);
+}
+
+// ============================================
+// Single grouped query for daily summary
+// ============================================
+function fetchDailySummary(
+    string $start_datetime,
+    string $end_datetime,
+    string $partner_filter,
+    array $all_dates
+): array {
+    global $conn;
+
+    $sql = "
+        SELECT
+            DATE(bt.datetime) AS d,
+            COUNT(CASE WHEN bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN 1 END) AS success_volume,
+            SUM(CASE WHEN bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) AS success_amount,
+            SUM(CASE WHEN bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) AS success_charge,
+            COUNT(CASE WHEN bt.cancellation_date BETWEEN '{$start_datetime}' AND '{$end_datetime}' THEN 1 END) AS cancelled_volume,
+            SUM(CASE WHEN bt.cancellation_date BETWEEN '{$start_datetime}' AND '{$end_datetime}' THEN bt.amount_paid ELSE 0 END) AS cancelled_amount,
+            SUM(CASE WHEN bt.cancellation_date BETWEEN '{$start_datetime}' AND '{$end_datetime}' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) AS cancelled_charge,
+            COUNT(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN 1 END) AS settlement_volume,
+            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) AS settlement_amount,
+            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) AS settlement_charge
+        FROM mldb.billspayment_transaction bt
+        WHERE bt.datetime BETWEEN '{$start_datetime}' AND '{$end_datetime}'
+           OR bt.cancellation_date BETWEEN '{$start_datetime}' AND '{$end_datetime}'
+           {$partner_filter}
+        GROUP BY DATE(bt.datetime)
+    ";
+
+    $res = mysqli_query($conn, $sql);
+    if (!$res) {
+        error_log("MySQL Error (daily summary): " . mysqli_error($conn));
+        return [];
+    }
+
+    $by_date = [];
+    while ($row = mysqli_fetch_assoc($res)) {
+        $by_date[$row['d']] = $row;
+    }
+
+    $summary = [];
+    $counter = 1;
+    foreach ($all_dates as $date) {
+        $r = $by_date[$date] ?? null;
+        $successVol   = $r ? (int)$r['success_volume']    : 0;
+        $cancelVol    = $r ? (int)$r['cancelled_volume']  : 0;
+        $successAmt   = $r ? (float)$r['success_amount']  : 0;
+        $cancelAmt    = $r ? (float)$r['cancelled_amount']: 0;
+        $successChg   = $r ? (float)$r['success_charge']  : 0;
+        $cancelChg    = $r ? (float)$r['cancelled_charge']: 0;
+
+        $summary[$counter] = [
+            'date'               => $date,
+            'day_number'         => $counter,
+            'total_volume'       => $successVol - $cancelVol,
+            'total_amount_paid'  => $successAmt + $cancelAmt,
+            'total_charge'       => $successChg + $cancelChg,
+            'success_volume'     => $successVol,
+            'cancelled_volume'   => $cancelVol,
+            'settlement_volume'  => $r ? (int)$r['settlement_volume'] : 0,
+            'settlement_amount'  => $r ? (float)$r['settlement_amount'] : 0,
+            'settlement_charge'  => $r ? (float)$r['settlement_charge'] : 0,
+        ];
+        $counter++;
+    }
+
+    return $summary;
+}
+
+// ============================================
+// Single grouped query for monthly summary
+// ============================================
+function fetchMonthlySummary(
+    string $start_month,
+    string $end_month,
+    string $partner_filter
+): array {
+    global $conn;
+
+    $start_datetime = $start_month . '-01 00:00:00';
+    $end_datetime   = date('Y-m-t 23:59:59', strtotime($end_month . '-01'));
+
+    $sql = "
+        SELECT
+            DATE_FORMAT(bt.datetime, '%Y-%m') AS m,
+            COUNT(CASE WHEN bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN 1 END) AS success_volume,
+            SUM(CASE WHEN bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) AS success_amount,
+            SUM(CASE WHEN bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) AS success_charge,
+            COUNT(CASE WHEN bt.cancellation_date BETWEEN '{$start_datetime}' AND '{$end_datetime}' THEN 1 END) AS cancelled_volume,
+            SUM(CASE WHEN bt.cancellation_date BETWEEN '{$start_datetime}' AND '{$end_datetime}' THEN bt.amount_paid ELSE 0 END) AS cancelled_amount,
+            SUM(CASE WHEN bt.cancellation_date BETWEEN '{$start_datetime}' AND '{$end_datetime}' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) AS cancelled_charge,
+            COUNT(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN 1 END) AS settlement_volume,
+            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) AS settlement_amount,
+            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) AS settlement_charge
+        FROM mldb.billspayment_transaction bt
+        WHERE bt.datetime BETWEEN '{$start_datetime}' AND '{$end_datetime}'
+           OR bt.cancellation_date BETWEEN '{$start_datetime}' AND '{$end_datetime}'
+           {$partner_filter}
+        GROUP BY DATE_FORMAT(bt.datetime, '%Y-%m')
+    ";
+
+    $res = mysqli_query($conn, $sql);
+    if (!$res) {
+        error_log("MySQL Error (monthly summary): " . mysqli_error($conn));
+        return [];
+    }
+
+    $by_month = [];
+    while ($row = mysqli_fetch_assoc($res)) {
+        $by_month[$row['m']] = $row;
+    }
+
+    $summary = [];
+    $counter = 1;
+    $current = $start_month;
+    while (strtotime($current) <= strtotime($end_month)) {
+        $r = $by_month[$current] ?? null;
+        $successVol = $r ? (int)$r['success_volume']   : 0;
+        $cancelVol  = $r ? (int)$r['cancelled_volume'] : 0;
+        $successAmt = $r ? (float)$r['success_amount'] : 0;
+        $cancelAmt  = $r ? (float)$r['cancelled_amount'] : 0;
+        $successChg = $r ? (float)$r['success_charge'] : 0;
+        $cancelChg  = $r ? (float)$r['cancelled_charge'] : 0;
+
+        $summary[$counter] = [
+            'month'              => $current,
+            'month_number'       => $counter,
+            'month_name'         => date('M Y', strtotime($current . '-01')),
+            'total_volume'       => $successVol - $cancelVol,
+            'total_amount_paid'  => $successAmt + $cancelAmt,
+            'total_charge'       => $successChg + $cancelChg,
+            'success_volume'     => $successVol,
+            'cancelled_volume'   => $cancelVol,
+            'settlement_volume'  => $r ? (int)$r['settlement_volume'] : 0,
+            'settlement_amount'  => $r ? (float)$r['settlement_amount'] : 0,
+            'settlement_charge'  => $r ? (float)$r['settlement_charge'] : 0,
+        ];
+
+        $current = date('Y-m', strtotime($current . ' + 1 month'));
+        $counter++;
+    }
+
+    return $summary;
+}
+
+// ============================================
+// Handle form submission
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
+    $selected_day   = $_POST['selected_day']   ?? 'all';
+    $selected_month = $_POST['selected_month'] ?? 'all';
+
+    if ($time_frame === 'daily') {
+        $date_from = $_POST['date_from_daily'] ?? date('Y-m-d');
+        $date_to   = $date_from;
+    }
+
+    [$start_datetime, $end_datetime] = calculateDateRange(
+        $time_frame, $date_from, $date_to, $month_from, $month_to, $selected_day, $selected_month
+    );
+
+    $partner_filter = buildPartnerFilter($partner_id);
+
+    if (!empty($start_datetime) && !empty($end_datetime)) {
+        $rows = fetchPartnerAggregates($start_datetime, $end_datetime, $partner_filter);
+
+        // Sort: NULL partner_name first, then partner_name ASC, then total_volume DESC
+        // FIX: also consider bt_partner_name so unregistered partners sort sensibly
+        usort($rows, function ($a, $b) {
+            $aName = !empty($a['partner_name']) ? $a['partner_name'] : ($a['bt_partner_name'] ?? '');
+            $bName = !empty($b['partner_name']) ? $b['partner_name'] : ($b['bt_partner_name'] ?? '');
+
+            $aNull = empty($aName) ? 1 : 0;
+            $bNull = empty($bName) ? 1 : 0;
+            if ($aNull !== $bNull) return $bNull - $aNull;
+
+            $cmp = strcmp((string)$aName, (string)$bName);
+            if ($cmp !== 0) return $cmp;
+
+            return ($b['total_volume'] ?? 0) <=> ($a['total_volume'] ?? 0);
+        });
+
+        $results = $rows; // now an array, not a mysqli_result
+    }
+
+    if ($time_frame === 'daily' && !empty($date_from)) {
+        $all_dates = [$date_from];
+        $daily_summary = fetchDailySummary($start_datetime, $end_datetime, $partner_filter, $all_dates);
+    }
+
     if ($time_frame === 'date_range' && !empty($date_from) && !empty($date_to)) {
-        $start_date = $date_from;
-        $end_date = $date_to;
-        $current_date = $start_date;
-        $day_counter = 1;
-        
-        while (strtotime($current_date) <= strtotime($end_date)) {
-            $start_datetime = $current_date . ' 00:00:00';
-            $end_datetime = $current_date . ' 23:59:59';
-            
-            $day_query = "SELECT 
-                            -- Normal/Success transactions (datetime with status NULL/empty AND cancellation_date IS NULL)
-                            COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as success_volume,
-                            SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as success_amount,
-                            SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as success_charge,
-                            -- Cancelled transactions (based on cancellation_date)
-                            COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancelled_volume,
-                            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancelled_amount,
-                            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancelled_charge,
-                            -- NET volume (success - cancelled)
-                            (COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) - 
-                             COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as net_volume,
-                            (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) + 
-                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as net_amount,
-                            (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
-                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge,
-                            -- SETTLEMENT Summary (based on datetime with status NULL/empty)
-                            COUNT(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as settlement_volume,
-                            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as settlement_amount,
-                            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
-                          FROM mldb.billspayment_transaction bt
-                          WHERE ((bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '')) OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
-            
-            if (!empty($partner_id)) {
-                $day_query .= " AND bt.partner_id_kpx = '" . mysqli_real_escape_string($conn, $partner_id) . "'";
-            }
-            
-            $day_result = mysqli_query($conn, $day_query);
-            $day_data = mysqli_fetch_assoc($day_result);
-            
-            $daily_summary[$day_counter] = [
-                'date' => $current_date,
-                'day_number' => $day_counter,
-                'total_volume' => $day_data['net_volume'] ?? 0,
-                'total_amount_paid' => $day_data['net_amount'] ?? 0,
-                'total_charge' => $day_data['net_charge'] ?? 0,
-                'success_volume' => $day_data['success_volume'] ?? 0,
-                'cancelled_volume' => $day_data['cancelled_volume'] ?? 0,
-                'settlement_volume' => $day_data['settlement_volume'] ?? 0,
-                'settlement_amount' => $day_data['settlement_amount'] ?? 0,
-                'settlement_charge' => $day_data['settlement_charge'] ?? 0
-            ];
-            
-            // Collect per-partner breakdown for this day (for expandable rows)
-            $period_rows = getPartnerPeriodResults($start_datetime, $end_datetime, $partner_id);
-            foreach ($period_rows as $prow) {
-                $pkey = $prow['partner_id_kpx'] . '|' . ($prow['sub_billers_name'] ?? '-');
-                if (!isset($partner_period_details[$pkey])) {
-                    $partner_period_details[$pkey] = [];
-                }
-                $partner_period_details[$pkey][$current_date] = $prow;
-            }
-            
-            $current_date = date('Y-m-d', strtotime($current_date . ' + 1 day'));
-            $day_counter++;
+        $all_dates = [];
+        $cur = $date_from;
+        while (strtotime($cur) <= strtotime($date_to)) {
+            $all_dates[] = $cur;
+            $cur = date('Y-m-d', strtotime($cur . ' + 1 day'));
         }
+        $daily_summary = fetchDailySummary($start_datetime, $end_datetime, $partner_filter, $all_dates);
     }
-    
-    // FIX: Get monthly summary for the month range with NET values
-    // ADDED: Settlement summary for each month
+
     if ($time_frame === 'monthly' && !empty($month_from) && !empty($month_to)) {
-        $start_month = $month_from;
-        $end_month = $month_to;
-        $current_month = $start_month;
-        $month_counter = 1;
-        
-        while (strtotime($current_month) <= strtotime($end_month)) {
-            $start_datetime = $current_month . '-01 00:00:00';
-            $end_datetime = date('Y-m-t 23:59:59', strtotime($current_month . '-01'));
-            
-            $month_query = "SELECT 
-                            -- Normal/Success transactions (datetime with status NULL/empty AND cancellation_date IS NULL)
-                            COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as success_volume,
-                            SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as success_amount,
-                            SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as success_charge,
-                            -- Cancelled transactions (based on cancellation_date)
-                            COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END) as cancelled_volume,
-                            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END) as cancelled_amount,
-                            SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as cancelled_charge,
-                            -- NET volume (success - cancelled)
-                            (COUNT(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) - 
-                             COUNT(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN 1 END)) as net_volume,
-                            (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) + 
-                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN bt.amount_paid ELSE 0 END)) as net_amount,
-                            (SUM(CASE WHEN bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) + 
-                             SUM(CASE WHEN bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime' THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END)) as net_charge,
-                            -- SETTLEMENT Summary (based on datetime with status NULL/empty)
-                            COUNT(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN 1 END) as settlement_volume,
-                            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN bt.amount_paid ELSE 0 END) as settlement_amount,
-                            SUM(CASE WHEN bt.settle_unsettle = 'Settled' AND bt.cancellation_date IS NULL AND bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '') THEN (bt.charge_to_partner + bt.charge_to_customer) ELSE 0 END) as settlement_charge
-                          FROM mldb.billspayment_transaction bt
-                          WHERE ((bt.datetime BETWEEN '$start_datetime' AND '$end_datetime' AND (bt.status IS NULL OR bt.status = '')) OR bt.cancellation_date BETWEEN '$start_datetime' AND '$end_datetime')";
-            
-            if (!empty($partner_id)) {
-                $month_query .= " AND bt.partner_id_kpx = '" . mysqli_real_escape_string($conn, $partner_id) . "'";
-            }
-            
-            $month_result = mysqli_query($conn, $month_query);
-            $month_data = mysqli_fetch_assoc($month_result);
-            
-            $monthly_summary[$month_counter] = [
-                'month' => $current_month,
-                'month_number' => $month_counter,
-                'month_name' => date('M Y', strtotime($current_month . '-01')),
-                'total_volume' => $month_data['net_volume'] ?? 0,
-                'total_amount_paid' => $month_data['net_amount'] ?? 0,
-                'total_charge' => $month_data['net_charge'] ?? 0,
-                'success_volume' => $month_data['success_volume'] ?? 0,
-                'cancelled_volume' => $month_data['cancelled_volume'] ?? 0,
-                'settlement_volume' => $month_data['settlement_volume'] ?? 0,
-                'settlement_amount' => $month_data['settlement_amount'] ?? 0,
-                'settlement_charge' => $month_data['settlement_charge'] ?? 0
-            ];
-            
-            // Collect per-partner breakdown for this month (for expandable rows)
-            $period_rows = getPartnerPeriodResults($start_datetime, $end_datetime, $partner_id);
-            foreach ($period_rows as $prow) {
-                $pkey = $prow['partner_id_kpx'] . '|' . ($prow['sub_billers_name'] ?? '-');
-                if (!isset($partner_period_details[$pkey])) {
-                    $partner_period_details[$pkey] = [];
-                }
-                $partner_period_details[$pkey][$current_month] = $prow;
-            }
-            
-            $current_month = date('Y-m', strtotime($current_month . ' + 1 month'));
-            $month_counter++;
-        }
+        $monthly_summary = fetchMonthlySummary($month_from, $month_to, $partner_filter);
     }
 }
 
@@ -576,44 +485,60 @@ if (!empty($partner_id)) {
 }
 
 // ============================================
-// FIX: Function to clean partner name for display
+// Function to clean partner name for display
+// FIX: fall back to billspayment_transaction.partner_name when
+// the partner is not registered in partner_masterfile
+//
+// Returns: [ 'name' => '...', 'is_unregistered' => bool, 'partner_id' => '...' ]
 // ============================================
-function cleanPartnerName($partner_id, $sub_billers_name = '') {
-    global $conn;
-    
-    // If partner_id is empty or starts with 'UNKNOWN_', show sub_billers_name
-    if (empty($partner_id) || strpos($partner_id, 'UNKNOWN_') === 0) {
-        return !empty($sub_billers_name) && $sub_billers_name !== '-' 
-            ? $sub_billers_name . ' (Unassigned)' 
+function resolvePartnerDisplay($partner_id, $sub_billers_name = '', $masterfile_name = '', $bt_partner_name = '') {
+    // No partner ID at all → unassigned
+    if (empty($partner_id)) {
+        $name = !empty($sub_billers_name) && $sub_billers_name !== '-'
+            ? $sub_billers_name . ' (Unassigned)'
             : 'Unassigned Partner';
+        return ['name' => $name, 'is_unassigned' => true, 'is_unregistered' => false];
     }
-    
-    // Try to get partner name from masterfile
-    $name_query = "SELECT partner_name FROM masterdata.partner_masterfile WHERE partner_id_kpx = '" . mysqli_real_escape_string($conn, $partner_id) . "'";
-    $name_result = mysqli_query($conn, $name_query);
-    if ($name_row = mysqli_fetch_assoc($name_result)) {
-        return $name_row['partner_name'];
+
+    // Partner ID registered in masterfile → normal path
+    if (!empty($masterfile_name)) {
+        return ['name' => $masterfile_name, 'is_unassigned' => false, 'is_unregistered' => false];
     }
-    
-    // Fallback: return the partner_id
-    return $partner_id;
+
+    // Partner ID NOT in masterfile → fall back to bt.partner_name
+    $fallback = '';
+    if (!empty($bt_partner_name) && $bt_partner_name !== '-') {
+        $fallback = $bt_partner_name;
+    } else {
+        $fallback = $partner_id; // last resort — show the raw ID
+    }
+
+    return [
+        'name'             => $fallback,
+        'is_unassigned'    => false,
+        'is_unregistered'  => true,
+    ];
+}
+
+// ============================================
+// Legacy wrapper (kept for backward compatibility)
+// ============================================
+function cleanPartnerName($partner_id, $sub_billers_name = '', $masterfile_name = '', $bt_partner_name = '') {
+    $r = resolvePartnerDisplay($partner_id, $sub_billers_name, $masterfile_name, $bt_partner_name);
+    return $r['name'];
 }
 
 // ============================================
 // FUNCTION TO GET CHARGE TYPE DISPLAY
-// NOTE: 'PER TRANSACTION' is displayed as 'DAILY' so it matches
-// the CHARGE BY CUSTOMER DAILY behavior everywhere in the UI.
+// 'PER TRANSACTION' displayed as 'DAILY'
 // ============================================
 function getChargeTypeDisplay($charge_sched, $charge_to) {
-    // Handle NULL or empty values
     if (empty($charge_sched) && empty($charge_to)) {
         return 'N/A';
     }
-    
-    // Build the charge type string based on available data
+
     $charge_parts = [];
-    
-    // Add charge_to description
+
     if (!empty($charge_to)) {
         if (strtoupper($charge_to) === 'PARTNER') {
             $charge_parts[] = 'CHARGE BY PARTNER';
@@ -623,9 +548,7 @@ function getChargeTypeDisplay($charge_sched, $charge_to) {
             $charge_parts[] = strtoupper($charge_to);
         }
     }
-    
-    // Add charge_sched description
-    // Treat 'PER TRANSACTION' the same as 'DAILY'
+
     if (!empty($charge_sched)) {
         $charge_sched_upper = strtoupper($charge_sched);
         if ($charge_sched_upper === 'PER TRANSACTION') {
@@ -634,7 +557,7 @@ function getChargeTypeDisplay($charge_sched, $charge_to) {
             $charge_parts[] = $charge_sched_upper;
         }
     }
-    
+
     return !empty($charge_parts) ? implode(' ', $charge_parts) : 'N/A';
 }
 
@@ -663,94 +586,77 @@ function calculateVariance($net_value, $settlement_value) {
     <link rel="stylesheet" href="css/volume.css?v=<?= time(); ?>">
 
     <style>
-        /* Variance column styling */
-        .variance-negative {
-            color: #d93025;
-            font-weight: bold;
-        }
-        .variance-positive {
-            color: #1e8e3e;
-            font-weight: bold;
-        }
-        .variance-zero {
-            color: #666;
-        }
-        .variance-header {
-            background: #f3e5f5 !important;
-            color: #6a1b9a !important;
-        }
-        .variance-cell {
-            background: #f3e5f5;
-        }
-        /* Charge Type styling */
+        .variance-negative { color: #d93025; font-weight: bold; }
+        .variance-positive { color: #1e8e3e; font-weight: bold; }
+        .variance-zero { color: #666; }
+        .variance-header { background: #f3e5f5 !important; color: #6a1b9a !important; }
+        .variance-cell { background: #f3e5f5; }
         .charge-type-badge {
-            display: inline-block;
-            padding: 3px 10px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
+            display: inline-block; padding: 3px 10px; border-radius: 12px;
+            font-size: 11px; font-weight: 600; text-transform: uppercase;
             letter-spacing: 0.3px;
         }
-        .charge-type-partner {
-            background: #e3f2fd;
-           
+        .charge-type-partner { background: #e3f2fd; }
+        .charge-type-customer { background: #f3e5f5; color: #6a1b9a; }
+        .charge-type-daily { background: #e8f5e9; color: #2e7d32; }
+        .charge-type-weekly { background: #fff3e0; color: #e65100; }
+        .charge-type-monthly { background: #fce4ec; color: #c62828; }
+        .charge-type-default { background: #f5f5f5; color: #616161; }
+        .charge-partner-header { background: #e3f2fd !important; color: #1565c0 !important; }
+        .charge-customer-header { background: #f3e5f5 !important; color: #6a1b9a !important; }
+        .charge-total-header { background: #e8f5e9 !important; color: #2e7d32 !important; }
+        .charge-partner-cell { background: #e3f2fd; }
+        .charge-customer-cell { background: #f3e5f5; }
+        .charge-total-cell { background: #e8f5e9; }
+
+        .date-filter-bar {
+            display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+            padding: 10px 10px; background: #f8f9fa; border: 1px solid #e0e0e0;
+            border-radius: 8px; margin-bottom: 15px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
         }
-        .charge-type-customer {
-            background: #f3e5f5;
-            color: #6a1b9a;
+        .date-filter-label {
+            font-weight: 600; color: #333; font-size: 13px;
+            margin-right: 4px; white-space: nowrap;
         }
-        .charge-type-daily {
-            background: #e8f5e9;
-            color: #2e7d32;
+        .date-filter-form {
+            display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
         }
-        .charge-type-weekly {
-            background: #fff3e0;
-            color: #e65100;
+        .date-filter-btn {
+            padding: 6px 14px; border: 1px solid #d0d0d0; background: #fff;
+            color: #333; border-radius: 20px; font-size: 12px; font-weight: 500;
+            cursor: pointer; transition: all 0.2s ease; white-space: nowrap;
         }
-        .charge-type-monthly {
-            background: #fce4ec;
-            color: #c62828;
+        .date-filter-btn:hover {
+            background: #fde3e3; border-color: #e8211a; color: #e81a1a;
         }
-        .charge-type-default {
-            background: #f5f5f5;
-            color: #616161;
+        .date-filter-btn.active {
+            background: #e81a1a; border-color: #e81a1a; color: #fff;
+            box-shadow: 0 2px 4px rgba(26, 115, 232, 0.3);
         }
-        /* Charge column headers */
-        .charge-partner-header {
-            background: #e3f2fd !important;
-            color: #1565c0 !important;
+        .date-filter-btn i { margin-right: 4px; }
+
+        /* Unregistered partner warning */
+        .partner-warning {
+            display: block;
+            font-size: 10px;
+            color: #b26a00;
+            font-style: italic;
+            margin-top: 2px;
+            line-height: 1.3;
         }
-        .charge-customer-header {
-            background: #f3e5f5 !important;
-            color: #6a1b9a !important;
+        .partner-unregistered-name {
+            color: #b26a00;
+            font-weight: 600;
         }
-        .charge-total-header {
-            background: #e8f5e9 !important;
-            color: #2e7d32 !important;
-        }
-        .charge-partner-cell {
-            background: #e3f2fd;
-        }
-        .charge-customer-cell {
-            background: #f3e5f5;
-        }
-        .charge-total-cell {
-            background: #e8f5e9;
-        }
-        /* Expandable partner breakdown */
-        .partner-main-row:hover {
-            background: #f0f7ff;
-        }
-        .expand-chevron.expanded {
-            transform: rotate(90deg);
-        }
-        .partner-detail-row td {
-            border-top: none !important;
-            font-size: 13px;
-        }
-        .partner-detail-row:hover {
-            background: #eef2f7 !important;
+        .partner-id-chip {
+            display: inline-block;
+            background: #ffd2d2;
+            color: #b20000;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 11px;
         }
     </style>
 </head>
@@ -758,8 +664,7 @@ function calculateVariance($net_value, $settlement_value) {
     <div class="main-container">
         <?php include '../../../templates/header_ui.php'; ?>
         <?php include '../../../templates/sidebar.php'; ?>
-        
-        <!-- Loading Overlay -->
+
         <div id="loading-overlay">
             <div class="loading-spinner"></div>
             <div class="loading-text">Loading Report...</div>
@@ -768,13 +673,12 @@ function calculateVariance($net_value, $settlement_value) {
                 <div class="loading-progress-bar"></div>
             </div>
         </div>
-        
+
         <div class="bp-section-header" role="region" aria-label="Page title">
             <div class="bp-section-title">
                 <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
                 <div>
                     <h2>Volume Report</h2>
-                    <!-- <p class="bp-section-sub">Summary of transaction volumes by partner and period</p> -->
                 </div>
             </div>
         </div>
@@ -806,31 +710,26 @@ function calculateVariance($net_value, $settlement_value) {
                     </select>
                 </div>
 
-                <!-- FIX: Daily Date Group - Changed name to date_from_daily -->
                 <div class="form-group" id="daily_date_group" style="display: <?php echo $time_frame == 'daily' ? 'flex' : 'none'; ?>;">
                     <label for="date_from_daily">Date</label>
                     <input type="date" id="date_from_daily" name="date_from_daily" value="<?php echo ($time_frame == 'daily') ? $date_from : date('Y-m-d'); ?>">
                 </div>
 
-                <!-- Date Range Group - Start Date -->
                 <div class="form-group" id="date_range_group" style="display: <?php echo $time_frame == 'date_range' ? 'flex' : 'none'; ?>;">
                     <label for="date_from_range">Transaction Date From</label>
                     <input type="date" id="date_from_range" name="date_from" value="<?php echo ($time_frame == 'date_range') ? $date_from : date('Y-m-d'); ?>">
                 </div>
 
-                <!-- Date Range Group - End Date -->
                 <div class="form-group" id="date_to_group" style="display: <?php echo $time_frame == 'date_range' ? 'flex' : 'none'; ?>;">
                     <label for="date_to">Transaction End Date</label>
                     <input type="date" id="date_to" name="date_to" value="<?php echo ($time_frame == 'date_range') ? $date_to : date('Y-m-d'); ?>">
                 </div>
 
-                <!-- Monthly Group - Month From -->
                 <div class="form-group" id="month_from_group" style="display: <?php echo $time_frame == 'monthly' ? 'flex' : 'none'; ?>;">
                     <label for="month_from">Transaction Month From</label>
                     <input type="month" id="month_from" name="month_from" value="<?php echo $month_from; ?>">
                 </div>
 
-                <!-- Monthly Group - Month To -->
                 <div class="form-group" id="month_to_group" style="display: <?php echo $time_frame == 'monthly' ? 'flex' : 'none'; ?>;">
                     <label for="month_to">Transaction Month To</label>
                     <input type="month" id="month_to" name="month_to" value="<?php echo $month_to; ?>">
@@ -855,10 +754,69 @@ function calculateVariance($net_value, $settlement_value) {
 
         <!-- Results Section -->
         <?php if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])): ?>
-            <!-- Results Table (day/month filter buttons removed — use expandable chevron rows for breakdown) -->
             <div class="results-container" id="resultsContainer">
-                <?php if ($results && mysqli_num_rows($results) > 0): 
-                    $total_records = mysqli_num_rows($results);
+
+                <?php if (($time_frame === 'date_range' || $time_frame === 'monthly')
+                          && (($time_frame === 'date_range' && !empty($date_from) && !empty($date_to))
+                              || ($time_frame === 'monthly' && !empty($month_from) && !empty($month_to)))): ?>
+                <div class="date-filter-bar">
+                    <span class="date-filter-label">
+                        <i class="fa-solid fa-filter"></i> Filter by Date:
+                    </span>
+                    <form method="POST" action="" class="date-filter-form" id="dateFilterForm">
+                        <input type="hidden" name="partner_id" value="<?php echo htmlspecialchars($partner_id); ?>">
+                        <input type="hidden" name="time_frame" value="<?php echo htmlspecialchars($time_frame); ?>">
+                        <input type="hidden" name="date_from" value="<?php echo htmlspecialchars($date_from); ?>">
+                        <input type="hidden" name="date_to" value="<?php echo htmlspecialchars($date_to); ?>">
+                        <input type="hidden" name="month_from" value="<?php echo htmlspecialchars($month_from); ?>">
+                        <input type="hidden" name="month_to" value="<?php echo htmlspecialchars($month_to); ?>">
+                        <input type="hidden" name="date_from_daily" value="<?php echo htmlspecialchars($date_from); ?>">
+                        <input type="hidden" name="generate_report" value="1">
+
+                        <button type="submit" name="selected_day" value="all"
+                                class="date-filter-btn <?php echo (($time_frame === 'date_range' && $selected_day === 'all') || ($time_frame === 'monthly' && $selected_month === 'all')) ? 'active' : ''; ?>">
+                            <i class="fa-solid fa-calendar-days"></i> All
+                        </button>
+
+                        <?php if ($time_frame === 'date_range'): ?>
+                            <?php
+                            $current = $date_from;
+                            $idx = 1;
+                            while (strtotime($current) <= strtotime($date_to)):
+                                $is_active = ($selected_day !== 'all' && (int)$selected_day === $idx) ? 'active' : '';
+                            ?>
+                                <button type="submit" name="selected_day" value="<?php echo $idx; ?>"
+                                        class="date-filter-btn <?php echo $is_active; ?>">
+                                    <?php echo date('m/d (D)', strtotime($current)); ?>
+                                </button>
+                            <?php
+                                $current = date('Y-m-d', strtotime($current . ' + 1 day'));
+                                $idx++;
+                            endwhile;
+                            ?>
+                        <?php elseif ($time_frame === 'monthly'): ?>
+                            <?php
+                            $current = $month_from;
+                            $idx = 1;
+                            while (strtotime($current) <= strtotime($month_to)):
+                                $is_active = ($selected_month !== 'all' && (int)$selected_month === $idx) ? 'active' : '';
+                            ?>
+                                <button type="submit" name="selected_month" value="<?php echo $idx; ?>"
+                                        class="date-filter-btn <?php echo $is_active; ?>">
+                                    <?php echo date('M Y', strtotime($current . '-01')); ?>
+                                </button>
+                            <?php
+                                $current = date('Y-m', strtotime($current . ' + 1 month'));
+                                $idx++;
+                            endwhile;
+                            ?>
+                        <?php endif; ?>
+                    </form>
+                </div>
+                <?php endif; ?>
+
+                <?php if (!empty($results)):
+                    $total_records = count($results);
                     $total_datetime_volume = 0;
                     $total_datetime_amount = 0;
                     $total_datetime_charge_partner = 0;
@@ -881,67 +839,68 @@ function calculateVariance($net_value, $settlement_value) {
                     $total_settlement_charge = 0;
                     $total_variance_volume = 0;
                     $total_variance_amount = 0;
-                    
+                    $unregistered_partner_ids = [];
+
                     $display_results = [];
-                    while ($row = mysqli_fetch_assoc($results)) {
-                        // Calculate variance for this row
+                    foreach ($results as $row) {
                         $row['variance_volume'] = calculateVariance($row['total_volume'], $row['settlement_volume']);
-                        
-                        // Check charge type for variance calculation
+
                         $charge_to = $row['charge_to'] ?? '';
                         $charge_sched = $row['charge_sched'] ?? '';
-                        $is_partner_charge = (strtoupper($charge_to) === 'PARTNER');
-                        $is_customer_daily = (strtoupper($charge_to) === 'CUSTOMER' && in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
-                        $is_customer_non_daily = (strtoupper($charge_to) === 'CUSTOMER' && !in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
-                        $is_both = (strtoupper($charge_to) === 'BOTH');
-                        
+                        $is_partner_charge       = (strtoupper($charge_to) === 'PARTNER');
+                        $is_customer_daily       = (strtoupper($charge_to) === 'CUSTOMER' && in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
+                        $is_customer_non_daily   = (strtoupper($charge_to) === 'CUSTOMER' && !in_array(strtoupper($charge_sched), ['DAILY', 'PER TRANSACTION']));
+                        $is_both                 = (strtoupper($charge_to) === 'BOTH');
+
                         if ($is_partner_charge || $is_customer_non_daily) {
-                            // CHARGE BY PARTNER or CHARGE BY CUSTOMER (WEEKLY/MONTHLY/SEMI-MONTHLY/other):
-                            // Settlement Amount = full amount_paid → variance = Net Amount - Settlement Amount (should be 0)
                             $row['variance_amount'] = $row['total_amount_paid'] - $row['settlement_amount_paid'];
                         } elseif ($is_customer_daily) {
-                            // CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): variance = Net Amount - Settlement Amount - Settlement Charge to Partner
                             $row['variance_amount'] = $row['total_amount_paid'] - ($row['settlement_amount_paid'] + $row['settlement_charge_partner']);
                         } elseif ($is_both) {
-                            // BOTH: variance = Net Amount - Settlement Amount - Total Settlement Charge
                             $row['variance_amount'] = $row['total_amount_paid'] - ($row['settlement_amount_paid'] + $row['settlement_charge']);
                         } else {
-                            // Fallback: variance = Net Amount - Settlement Amount - Total Settlement Charge
                             $row['variance_amount'] = $row['total_amount_paid'] - ($row['settlement_amount_paid'] + $row['settlement_charge']);
                         }
-                        
-                        // Get charge type display
+
                         $row['charge_type_display'] = getChargeTypeDisplay($row['charge_sched'] ?? '', $row['charge_to'] ?? '');
-                        
+
+                      // Track unregistered partner IDs for the summary banner (store the fallback name too)
+if (!empty($row['partner_id_kpx']) && empty($row['partner_name'])) {
+    $fallback_name = !empty($row['bt_partner_name']) && $row['bt_partner_name'] !== '-'
+        ? $row['bt_partner_name']
+        : $row['partner_id_kpx']; // last resort = raw ID
+
+    // If multiple rows share the same partner_id, keep the first non-empty name
+    if (!isset($unregistered_partner_ids[$row['partner_id_kpx']]) || empty($unregistered_partner_ids[$row['partner_id_kpx']])) {
+        $unregistered_partner_ids[$row['partner_id_kpx']] = $fallback_name;
+    }
+}
                         $display_results[] = $row;
-                        $total_datetime_volume += $row['datetime_volume'];
-                        $total_datetime_amount += $row['datetime_amount_paid'];
-                        $total_datetime_charge_partner += $row['datetime_charge_partner'];
+
+                        $total_datetime_volume          += $row['datetime_volume'];
+                        $total_datetime_amount          += $row['datetime_amount_paid'];
+                        $total_datetime_charge_partner  += $row['datetime_charge_partner'];
                         $total_datetime_charge_customer += $row['datetime_charge_customer'];
-                        $total_datetime_charge_total += $row['datetime_charge_total'];
-                        $total_cancellation_volume += $row['cancellation_volume'];
-                        $total_cancellation_amount += $row['cancellation_amount_paid'];
-                        $total_cancellation_charge_partner += $row['cancellation_charge_partner'];
+                        $total_datetime_charge_total    += $row['datetime_charge_total'];
+                        $total_cancellation_volume          += $row['cancellation_volume'];
+                        $total_cancellation_amount          += $row['cancellation_amount_paid'];
+                        $total_cancellation_charge_partner  += $row['cancellation_charge_partner'];
                         $total_cancellation_charge_customer += $row['cancellation_charge_customer'];
-                        $total_cancellation_charge_total += $row['cancellation_charge_total'];
-                        // FIX: These are now NET values (datetime - cancellation)
-                        $total_volume += $row['total_volume'];
-                        $total_amount += $row['total_amount_paid'];
-                        $total_charge_partner += $row['total_charge_partner'];
+                        $total_cancellation_charge_total    += $row['cancellation_charge_total'];
+                        $total_volume          += $row['total_volume'];
+                        $total_amount          += $row['total_amount_paid'];
+                        $total_charge_partner  += $row['total_charge_partner'];
                         $total_charge_customer += $row['total_charge_customer'];
-                        $total_charge += $row['total_charge'];
-                        // Settlement totals
-                        $total_settlement_volume += $row['settlement_volume'];
-                        $total_settlement_amount += $row['settlement_amount_paid'];
-                        $total_settlement_charge_partner += $row['settlement_charge_partner'];
+                        $total_charge          += $row['total_charge'];
+                        $total_settlement_volume          += $row['settlement_volume'];
+                        $total_settlement_amount          += $row['settlement_amount_paid'];
+                        $total_settlement_charge_partner  += $row['settlement_charge_partner'];
                         $total_settlement_charge_customer += $row['settlement_charge_customer'];
-                        $total_settlement_charge += $row['settlement_charge'];
-                        // Variance totals
+                        $total_settlement_charge          += $row['settlement_charge'];
                         $total_variance_volume += $row['variance_volume'];
                         $total_variance_amount += $row['variance_amount'];
                     }
                 ?>
-                    <!-- Summary Statistics -->
                     <div class="summary-stats">
                         <div class="stat-card">
                             <div class="stat-value"><?php echo number_format($total_records); ?></div>
@@ -969,12 +928,39 @@ function calculateVariance($net_value, $settlement_value) {
                         </div>
                     </div>
 
-                    <!-- Table with Scroll -->
+                    <?php if (!empty($unregistered_partner_ids)): ?>
+                    <div class="unregistered-banner" style="
+                        background: #ffe1e1;
+                        border: 1px solid #ff8080;
+                        border-left: 5px solid #f50000;
+                        border-radius: 6px;
+                        padding: 10px 14px;
+                        margin-bottom: 15px;
+                        color: #282828;
+                        font-size: 13px;
+                        line-height: 1.5;
+                    ">
+                        <div style="display: flex; align-items: flex-start; gap: 10px;">
+                            <i class="fa-solid fa-triangle-exclamation" style="color: #f57c00; font-size: 18px; margin-top: 2px;"></i>
+                            <div>
+                                <strong>Unregistered Partner IDs detected (<?php echo count($unregistered_partner_ids); ?>):</strong>
+                                The following Partner IDs exist in <code>Bills Payment Transaction</code> but are <strong>not registered</strong> in <code>Masterdata Partner Masterfile</code>. The report shows the name from the transaction record as a fallback. Please register these IDs in the Partner Masterfile.
+                                <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px;">
+    <?php foreach ($unregistered_partner_ids as $pid => $pname): ?>
+        <span class="partner-id-chip" title="<?php echo htmlspecialchars($pname, ENT_QUOTES, 'UTF-8'); ?>">
+            <?php echo htmlspecialchars($pid); ?>
+        </span>
+    <?php endforeach; ?>
+</div>
+                            </div>
+                        </div>
+                    </div>
+                    <?php endif; ?>
+
                     <div class="table-wrapper">
                         <table class="results-table">
                             <thead>
                                 <tr>
-                                    <th rowspan="3" style="min-width: 40px;"></th>
                                     <th rowspan="3" style="min-width: 50px;">No.</th>
                                     <th rowspan="3" style="min-width: 180px;">Partner Name</th>
                                     <th rowspan="3" style="min-width: 140px;">Charge Type</th>
@@ -1016,62 +1002,45 @@ function calculateVariance($net_value, $settlement_value) {
                                     <th>Vol.</th>
                                     <th>₱ Amount</th>
                                 </tr>
-
                             </thead>
                             <tbody>
-                                <?php 
+                                <?php
                                 $counter = 1;
-                                $show_breakdown = ($time_frame === 'date_range' || $time_frame === 'monthly');
-                                
-                                foreach ($display_results as $row): 
-                                    // ============================================
-                                    // FIX: Clean partner name display
-                                    // ============================================
-                                    $partner_name = cleanPartnerName($row['partner_id_kpx'], $row['sub_billers_name']);
-                                    
-                                    // Check if this is an unassigned partner
-                                    $is_unassigned = (strpos($row['partner_id_kpx'], 'UNKNOWN_') === 0);
-                                    
-                                    // Get the sub_billers_name for display
+                                foreach ($display_results as $row):
+                                    // FIX: resolve display + flags
+                                    $info = resolvePartnerDisplay(
+                                        $row['partner_id_kpx'] ?? '',
+                                        $row['sub_billers_name'] ?? '',
+                                        $row['partner_name'] ?? '',
+                                        $row['bt_partner_name'] ?? ''
+                                    );
+                                    $partner_name     = $info['name'];
+                                    $is_unassigned    = $info['is_unassigned'];
+                                    $is_unregistered  = $info['is_unregistered'];
+
                                     $display_sub_biller = $row['sub_billers_name'] ?? '-';
                                     if ($is_unassigned && $display_sub_biller === '-') {
                                         $display_sub_biller = 'Unassigned Partner Transaction';
                                     }
-                                    
-                                    // Calculate variance values
+
                                     $variance_volume = $row['variance_volume'];
                                     $variance_amount = $row['variance_amount'];
-                                    
-                                    // Determine variance styling
-                                    $volume_class = '';
-                                    $amount_class = '';
-                                    if ($variance_volume > 0) {
-                                        $volume_class = 'variance-positive';
-                                    } elseif ($variance_volume < 0) {
-                                        $volume_class = 'variance-negative';
-                                    } else {
-                                        $volume_class = 'variance-zero';
-                                    }
-                                    
-                                    if ($variance_amount > 0) {
-                                        $amount_class = 'variance-positive';
-                                    } elseif ($variance_amount < 0) {
-                                        $amount_class = 'variance-negative';
-                                    } else {
-                                        $amount_class = 'variance-zero';
-                                    }
-                                    
-                                    // Get charge type display
+
+                                    if ($variance_volume > 0) $volume_class = 'variance-positive';
+                                    elseif ($variance_volume < 0) $volume_class = 'variance-negative';
+                                    else $volume_class = 'variance-zero';
+
+                                    if ($variance_amount > 0) $amount_class = 'variance-positive';
+                                    elseif ($variance_amount < 0) $amount_class = 'variance-negative';
+                                    else $amount_class = 'variance-zero';
+
                                     $charge_type_display = $row['charge_type_display'];
-                                    
-                                    // Determine charge type CSS class for styling
                                     $charge_type_class = 'charge-type-default';
                                     if (stripos($charge_type_display, 'PARTNER') !== false) {
                                         $charge_type_class = 'charge-type-partner';
                                     } elseif (stripos($charge_type_display, 'CUSTOMER') !== false) {
                                         $charge_type_class = 'charge-type-customer';
                                     }
-                                    
                                     if (stripos($charge_type_display, 'DAILY') !== false) {
                                         $charge_type_class .= ' charge-type-daily';
                                     } elseif (stripos($charge_type_display, 'WEEKLY') !== false) {
@@ -1079,23 +1048,22 @@ function calculateVariance($net_value, $settlement_value) {
                                     } elseif (stripos($charge_type_display, 'MONTHLY') !== false) {
                                         $charge_type_class .= ' charge-type-monthly';
                                     }
-                                    
-                                    $pkey = $row['partner_id_kpx'] . '|' . ($row['sub_billers_name'] ?? '-');
-                                    $period_details = $partner_period_details[$pkey] ?? [];
-                                    $has_details = $show_breakdown && !empty($period_details);
-                                    $row_id = 'partner-row-' . $counter;
                                 ?>
-                                    <tr class="partner-main-row" data-row-id="<?php echo $row_id; ?>">
-                                        <td style="text-align: center; cursor: <?php echo $has_details ? 'pointer' : 'default'; ?>;" <?php if ($has_details): ?>onclick="togglePartnerBreakdown('<?php echo $row_id; ?>')"<?php endif; ?>>
-                                            <?php if ($has_details): ?>
-                                                <i class="fa-solid fa-chevron-right expand-chevron" id="chevron-<?php echo $row_id; ?>" style="transition: transform 0.2s; color: #1a73e8;"></i>
-                                            <?php endif; ?>
-                                        </td>
+                                    <tr>
                                         <td><?php echo $counter++; ?></td>
-                                        <td style="text-align: left; padding-left: 15px; <?php echo $is_unassigned ? 'color: #d93025; font-style: italic;' : ''; ?>">
-                                            <?php echo htmlspecialchars($partner_name); ?>
-                                            <?php if ($is_unassigned): ?>
-                                                <span style="font-size: 10px; color: #d93025; display: block;">(No Partner ID)</span>
+                                        <td style="text-align: left; padding-left: 15px; <?php echo $is_unassigned ? 'color: #d93025; font-style: italic;' : ($is_unregistered ? 'color: #b26a00;' : ''); ?>">
+                                            <?php if ($is_unregistered): ?>
+                                                <span class="partner-unregistered-name"><?php echo htmlspecialchars($partner_name); ?></span>
+                                                <span class="partner-warning">
+                                                    <i class="fa-solid fa-triangle-exclamation"></i>
+                                                    Partner ID <strong><?php echo htmlspecialchars($row['partner_id_kpx']); ?></strong>
+                                                    is not registered in the Partner Masterfile. Please register it.
+                                                </span>
+                                            <?php else: ?>
+                                                <?php echo htmlspecialchars($partner_name); ?>
+                                                <?php if ($is_unassigned): ?>
+                                                    <span style="font-size: 10px; color: #d93025; display: block;">(No Partner ID)</span>
+                                                <?php endif; ?>
                                             <?php endif; ?>
                                         </td>
                                         <td style="text-align: center;">
@@ -1104,27 +1072,22 @@ function calculateVariance($net_value, $settlement_value) {
                                             </span>
                                         </td>
                                         <td style="text-align: left; padding-left: 15px;"><?php echo htmlspecialchars($display_sub_biller); ?></td>
-                                        <!-- Transaction -->
                                         <td><?php echo number_format($row['datetime_volume']); ?></td>
                                         <td style="text-align: right;"><?php echo number_format($row['datetime_amount_paid'], 2); ?></td>
                                         <td><?php echo number_format($row['datetime_charge_partner'], 2); ?></td>
                                         <td><?php echo number_format($row['datetime_charge_customer'], 2); ?></td>
-                                        <!-- Cancelled Transaction -->
                                         <td><?php echo number_format($row['cancellation_volume']); ?></td>
                                         <td style="text-align: right;"><?php echo number_format(abs($row['cancellation_amount_paid']), 2); ?></td>
                                         <td><?php echo number_format(abs($row['cancellation_charge_partner']), 2); ?></td>
                                         <td><?php echo number_format(abs($row['cancellation_charge_customer']), 2); ?></td>
-                                        <!-- NET -->
                                         <td><strong><?php echo number_format($row['total_volume']); ?></strong></td>
                                         <td><strong><?php echo number_format($row['total_amount_paid'], 2); ?></strong></td>
                                         <td><strong><?php echo number_format($row['total_charge_partner'], 2); ?></strong></td>
                                         <td><strong><?php echo number_format($row['total_charge_customer'], 2); ?></strong></td>
-                                        <!-- Settlement -->
                                         <td><?php echo number_format($row['settlement_volume']); ?></td>
                                         <td><?php echo number_format($row['settlement_amount_paid'], 2); ?></td>
                                         <td><?php echo number_format($row['settlement_charge_partner'], 2); ?></td>
                                         <td><?php echo number_format($row['settlement_charge_customer'], 2); ?></td>
-                                        <!-- Variance -->
                                         <td class="<?php echo $volume_class; ?>">
                                             <?php echo number_format($variance_volume); ?>
                                         </td>
@@ -1132,115 +1095,28 @@ function calculateVariance($net_value, $settlement_value) {
                                             <?php echo number_format($variance_amount, 2); ?>
                                         </td>
                                     </tr>
-                                    <?php if ($has_details): 
-                                        // Sort period keys chronologically
-                                        ksort($period_details);
-                                        foreach ($period_details as $period_key => $drow):
-                                            $period_label = $period_key;
-                                            if ($time_frame === 'date_range') {
-                                                $period_label = date('M j, Y (D)', strtotime($period_key));
-                                            } elseif ($time_frame === 'monthly') {
-                                                $period_label = date('M Y', strtotime($period_key . '-01'));
-                                            }
-                                            
-                                            // Calculate variance for detail row
-                                            $dv_vol = ($drow['total_volume'] ?? 0) - ($drow['settlement_volume'] ?? 0);
-                                            
-                                            // Check charge type for variance calculation
-                                            $d_charge_to = $drow['charge_to'] ?? '';
-                                            $d_charge_sched = $drow['charge_sched'] ?? '';
-                                            $d_is_partner_charge = (strtoupper($d_charge_to) === 'PARTNER');
-                                            $d_is_customer_daily = (strtoupper($d_charge_to) === 'CUSTOMER' && in_array(strtoupper($d_charge_sched), ['DAILY', 'PER TRANSACTION']));
-                                            $d_is_customer_non_daily = (strtoupper($d_charge_to) === 'CUSTOMER' && !in_array(strtoupper($d_charge_sched), ['DAILY', 'PER TRANSACTION']));
-                                            $d_is_both = (strtoupper($d_charge_to) === 'BOTH');
-                                            
-                                            if ($d_is_partner_charge || $d_is_customer_non_daily) {
-                                                // CHARGE BY PARTNER or CHARGE BY CUSTOMER (WEEKLY/MONTHLY/SEMI-MONTHLY/other):
-                                                // Settlement Amount = full amount_paid → variance = Net Amount - Settlement Amount (should be 0)
-                                                $dv_amt = ($drow['total_amount_paid'] ?? 0) - ($drow['settlement_amount_paid'] ?? 0);
-                                            } elseif ($d_is_customer_daily) {
-                                                // CHARGE BY CUSTOMER DAILY (including PER TRANSACTION): variance = Net Amount - Settlement Amount - Settlement Charge to Partner
-                                                $dv_amt = ($drow['total_amount_paid'] ?? 0) - (($drow['settlement_amount_paid'] ?? 0) + ($drow['settlement_charge_partner'] ?? 0));
-                                            } elseif ($d_is_both) {
-                                                // BOTH: variance = Net Amount - Settlement Amount - Total Settlement Charge
-                                                $dv_amt = ($drow['total_amount_paid'] ?? 0) - (($drow['settlement_amount_paid'] ?? 0) + ($drow['settlement_charge'] ?? 0));
-                                            } else {
-                                                // Fallback: variance = Net Amount - Settlement Amount - Total Settlement Charge
-                                                $dv_amt = ($drow['total_amount_paid'] ?? 0) - (($drow['settlement_amount_paid'] ?? 0) + ($drow['settlement_charge'] ?? 0));
-                                            }
-                                            
-                                            $dv_vol_class = $dv_vol > 0 ? 'variance-positive' : ($dv_vol < 0 ? 'variance-negative' : 'variance-zero');
-                                            $dv_amt_class = $dv_amt > 0 ? 'variance-positive' : ($dv_amt < 0 ? 'variance-negative' : 'variance-zero');
-                                    ?>
-                                    <tr class="partner-detail-row detail-of-<?php echo $row_id; ?>" style="display: none; background: #f8f9fa;">
-                                        <td></td>
-                                        <td></td>
-                                        <td style="text-align: left; padding-left: 30px; font-size: 13px; color: #555;">
-                                            <i class="fa-solid fa-calendar-day" style="margin-right: 6px; color: #1a73e8;"></i>
-                                            <?php echo htmlspecialchars($period_label); ?>
-                                        </td>
-                                        <td style="text-align: center; font-size: 12px; color: #888;">—</td>
-                                        <td style="text-align: left; padding-left: 15px; font-size: 12px; color: #888;">—</td>
-                                        <!-- Transaction -->
-                                        <td><?php echo number_format($drow['datetime_volume'] ?? 0); ?></td>
-                                        <td style="text-align: right;"><?php echo number_format($drow['datetime_amount_paid'] ?? 0, 2); ?></td>
-                                        <td><?php echo number_format($drow['datetime_charge_partner'] ?? 0, 2); ?></td>
-                                        <td><?php echo number_format($drow['datetime_charge_customer'] ?? 0, 2); ?></td>
-                                        <!-- Cancelled Transaction -->
-                                        <td><?php echo number_format($drow['cancellation_volume'] ?? 0); ?></td>
-                                        <td style="text-align: right;"><?php echo number_format(abs($drow['cancellation_amount_paid'] ?? 0), 2); ?></td>
-                                        <td><?php echo number_format(abs($drow['cancellation_charge_partner'] ?? 0), 2); ?></td>
-                                        <td><?php echo number_format(abs($drow['cancellation_charge_customer'] ?? 0), 2); ?></td>
-                                        <!-- NET -->
-                                        <td><strong><?php echo number_format($drow['total_volume'] ?? 0); ?></strong></td>
-                                        <td><strong><?php echo number_format($drow['total_amount_paid'] ?? 0, 2); ?></strong></td>
-                                        <td><strong><?php echo number_format($drow['total_charge_partner'] ?? 0, 2); ?></strong></td>
-                                        <td><strong><?php echo number_format($drow['total_charge_customer'] ?? 0, 2); ?></strong></td>
-                                        <!-- Settlement -->
-                                        <td><?php echo number_format($drow['settlement_volume'] ?? 0); ?></td>
-                                        <td><?php echo number_format($drow['settlement_amount_paid'] ?? 0, 2); ?></td>
-                                        <td><?php echo number_format($drow['settlement_charge_partner'] ?? 0, 2); ?></td>
-                                        <td><?php echo number_format($drow['settlement_charge_customer'] ?? 0, 2); ?></td>
-                                        <!-- Variance -->
-                                        <td class="<?php echo $dv_vol_class; ?>">
-                                            <?php echo number_format($dv_vol); ?>
-                                        </td>
-                                        <td class="<?php echo $dv_amt_class; ?>">
-                                            <?php echo number_format($dv_amt, 2); ?>
-                                        </td>
-                                    </tr>
-                                    <?php endforeach; endif; ?>
                                 <?php endforeach; ?>
-                                
-                                <!-- FIX: TOTAL now uses NET values -->
+
                                 <tr class="grand-total">
-                                    <td colspan="5" style="text-align: right; padding-right: 20px;">TOTAL</td>
+                                    <td colspan="4" style="text-align: right; padding-right: 20px;">TOTAL</td>
                                     <td><?php echo number_format($total_datetime_volume); ?></td>
                                     <td style="text-align: right;"><?php echo number_format($total_datetime_amount, 2); ?></td>
                                     <td><?php echo number_format($total_datetime_charge_partner, 2); ?></td>
                                     <td><?php echo number_format($total_datetime_charge_customer, 2); ?></td>
-                                    <!-- Cancellation totals -->
                                     <td><?php echo number_format($total_cancellation_volume); ?></td>
                                     <td style="text-align: right;"><?php echo number_format(abs($total_cancellation_amount), 2); ?></td>
                                     <td><?php echo number_format(abs($total_cancellation_charge_partner), 2); ?></td>
                                     <td><?php echo number_format(abs($total_cancellation_charge_customer), 2); ?></td>
-                                    <!-- NET totals -->
                                     <td><strong><?php echo number_format($total_volume); ?></strong></td>
                                     <td><strong><?php echo number_format($total_amount, 2); ?></strong></td>
                                     <td><strong><?php echo number_format($total_charge_partner, 2); ?></strong></td>
                                     <td><strong><?php echo number_format($total_charge_customer, 2); ?></strong></td>
-                                    <!-- Settlement totals -->
                                     <td><strong><?php echo number_format($total_settlement_volume); ?></strong></td>
                                     <td><strong><?php echo number_format($total_settlement_amount, 2); ?></strong></td>
                                     <td><strong><?php echo number_format($total_settlement_charge_partner, 2); ?></strong></td>
                                     <td><strong><?php echo number_format($total_settlement_charge_customer, 2); ?></strong></td>
-                                    <!-- Variance totals -->
-                                    <td>
-                                        <strong><?php echo number_format($total_variance_volume); ?></strong>
-                                    </td>
-                                    <td>
-                                        <strong><?php echo number_format($total_variance_amount, 2); ?></strong>
-                                    </td>
+                                    <td><strong><?php echo number_format($total_variance_volume); ?></strong></td>
+                                    <td><strong><?php echo number_format($total_variance_amount, 2); ?></strong></td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1264,46 +1140,23 @@ function calculateVariance($net_value, $settlement_value) {
                 width: '100%'
             });
             toggleDateFields();
-            
-            // Hide loading overlay if it's showing and page is fully loaded
+
             if (document.readyState === 'complete') {
                 hideLoading();
             }
-            
-            // ============================================
-            // ATTACH LOADING TO DAY AND MONTH FILTER FORMS
-            // ============================================
-            // Day filter forms
-            $('.filter-day-form').on('submit', function() {
-                showLoading('Filtering by Day...');
-                return true;
-            });
-            
-            // Month filter forms
-            $('.filter-month-form').on('submit', function() {
-                showLoading('Filtering by Month...');
-                return true;
-            });
         });
 
-        // ============================================
-        // LOADING OVERLAY FUNCTIONS
-        // ============================================
         function showLoading(message = 'Loading Report...') {
             const overlay = document.getElementById('loading-overlay');
             if (overlay) {
                 const textElement = overlay.querySelector('.loading-text');
-                if (textElement) {
-                    textElement.textContent = message;
-                }
+                if (textElement) textElement.textContent = message;
                 overlay.classList.add('active');
                 document.body.classList.add('loading');
-                
-                // Reset progress bar animation
+
                 const progressBar = overlay.querySelector('.loading-progress-bar');
                 if (progressBar) {
                     progressBar.style.animation = 'none';
-                    // Trigger reflow
                     void progressBar.offsetWidth;
                     progressBar.style.animation = 'progress 2s ease-in-out infinite';
                 }
@@ -1318,98 +1171,62 @@ function calculateVariance($net_value, $settlement_value) {
             }
         }
 
-        // ============================================
-        // HANDLE PAGE REFRESH - Show loading on refresh
-        // ============================================
-        // This will show loading when the page is being refreshed
-        window.addEventListener('beforeunload', function(e) {
-            // Only show if we have results or filters applied
-            const hasResults = document.querySelector('.results-container');
-            const hasFilters = document.querySelector('.filter-container');
-            
-            if (hasResults || hasFilters) {
-                // We can't show the overlay on beforeunload reliably,
-                // but we can set a flag to show it when the page loads
-                sessionStorage.setItem('pageRefreshing', 'true');
-            }
-        });
-
-        // ============================================
-        // FORM SUBMISSION WITH LOADING OVERLAY
-        // ============================================
         document.addEventListener('DOMContentLoaded', function() {
             const filterForm = document.getElementById('filterForm');
             if (filterForm) {
                 filterForm.addEventListener('submit', function(e) {
                     const submitButton = document.activeElement;
-                    // Only show loading if Generate button is clicked
                     if (submitButton && submitButton.name === 'generate_report') {
                         const timeFrame = document.getElementById('time_frame').value;
                         let loadingMessage = 'Generating Report...';
-                        
                         switch(timeFrame) {
-                            case 'daily':
-                                loadingMessage = 'Loading Daily Report...';
-                                break;
-                            case 'date_range':
-                                loadingMessage = 'Loading Date Range Report...';
-                                break;
-                            case 'monthly':
-                                loadingMessage = 'Loading Monthly Report...';
-                                break;
-                            default:
-                                loadingMessage = 'Generating Report...';
+                            case 'daily':      loadingMessage = 'Loading Daily Report...'; break;
+                            case 'date_range': loadingMessage = 'Loading Date Range Report...'; break;
+                            case 'monthly':    loadingMessage = 'Loading Monthly Report...'; break;
                         }
-                        
                         showLoading(loadingMessage);
-                        
-                        // Safety timeout to hide loading if something goes wrong
-                        if (window.loadingTimeout) {
-                            clearTimeout(window.loadingTimeout);
-                        }
+
+                        if (window.loadingTimeout) clearTimeout(window.loadingTimeout);
                         window.loadingTimeout = setTimeout(function() {
                             hideLoading();
-                            // Show error message if still loading
                             Swal.fire({
                                 icon: 'warning',
                                 title: 'Loading Timeout',
                                 text: 'The report is taking longer than expected. Please try again.',
                                 confirmButtonColor: '#1a73e8'
                             });
-                        }, 60000); // 60 seconds max
+                        }, 60000);
                     }
                 });
             }
 
-            // Hide loading when page is fully loaded
+            const dateFilterForm = document.getElementById('dateFilterForm');
+            if (dateFilterForm) {
+                dateFilterForm.addEventListener('submit', function(e) {
+                    const clickedBtn = document.activeElement;
+                    if (clickedBtn && clickedBtn.classList.contains('date-filter-btn')) {
+                        showLoading('Filtering by Date...');
+                    }
+                });
+            }
+
             window.addEventListener('load', function() {
-                setTimeout(function() {
-                    hideLoading();
-                }, 500);
+                setTimeout(function() { hideLoading(); }, 500);
             });
 
-            // Also hide loading when results are displayed
             if (document.querySelector('.results-container') || document.querySelector('.no-results')) {
-                setTimeout(function() {
-                    hideLoading();
-                }, 300);
+                setTimeout(function() { hideLoading(); }, 300);
             }
         });
 
-        // ============================================
-        // TOGGLE DATE FIELDS
-        // ============================================
         function toggleDateFields() {
             const timeFrame = document.getElementById('time_frame').value;
-            
-            // Hide all groups first
             document.getElementById('daily_date_group').style.display = 'none';
             document.getElementById('date_range_group').style.display = 'none';
             document.getElementById('date_to_group').style.display = 'none';
             document.getElementById('month_from_group').style.display = 'none';
             document.getElementById('month_to_group').style.display = 'none';
-            
-            // Show appropriate groups based on time frame
+
             if (timeFrame === 'daily') {
                 document.getElementById('daily_date_group').style.display = 'flex';
             } else if (timeFrame === 'date_range') {
@@ -1421,41 +1238,6 @@ function calculateVariance($net_value, $settlement_value) {
             }
         }
 
-        // Toggle per-partner day/month breakdown rows
-        function togglePartnerBreakdown(rowId) {
-            const detailRows = document.querySelectorAll('.detail-of-' + rowId);
-            const chevron = document.getElementById('chevron-' + rowId);
-            if (!detailRows.length) return;
-            
-            const isHidden = detailRows[0].style.display === 'none' || detailRows[0].style.display === '';
-            detailRows.forEach(function(r) {
-                r.style.display = isHidden ? 'table-row' : 'none';
-            });
-            if (chevron) {
-                if (isHidden) {
-                    chevron.classList.add('expanded');
-                } else {
-                    chevron.classList.remove('expanded');
-                }
-            }
-        }
-
-        // ============================================
-        // DAY AND MONTH SELECTORS
-        // ============================================
-        function setSelectedDay(day) {
-            document.getElementById('selected_day_input').value = day;
-            // Show loading will be triggered by the form submit event
-        }
-
-        function setSelectedMonth(month) {
-            document.getElementById('selected_month_input').value = month;
-            // Show loading will be triggered by the form submit event
-        }
-
-        // ============================================
-        // FORM VALIDATION
-        // ============================================
         document.getElementById('filterForm').addEventListener('submit', function(e) {
             const timeFrame = document.getElementById('time_frame').value;
             let isValid = true;
@@ -1463,35 +1245,28 @@ function calculateVariance($net_value, $settlement_value) {
 
             if (timeFrame === 'daily') {
                 const date = document.getElementById('date_from_daily').value;
-                if (!date) {
-                    isValid = false;
-                    errorMessage = 'Please select a date.';
-                }
+                if (!date) { isValid = false; errorMessage = 'Please select a date.'; }
             } else if (timeFrame === 'date_range') {
                 const dateFrom = document.getElementById('date_from_range').value;
                 const dateTo = document.getElementById('date_to').value;
                 if (!dateFrom || !dateTo) {
-                    isValid = false;
-                    errorMessage = 'Please select both start date and end date.';
+                    isValid = false; errorMessage = 'Please select both start date and end date.';
                 } else if (dateFrom > dateTo) {
-                    isValid = false;
-                    errorMessage = 'Start Date cannot be later than End Date.';
+                    isValid = false; errorMessage = 'Start Date cannot be later than End Date.';
                 }
             } else if (timeFrame === 'monthly') {
                 const monthFrom = document.getElementById('month_from').value;
                 const monthTo = document.getElementById('month_to').value;
                 if (!monthFrom || !monthTo) {
-                    isValid = false;
-                    errorMessage = 'Please select both month from and month to.';
+                    isValid = false; errorMessage = 'Please select both month from and month to.';
                 } else if (monthFrom > monthTo) {
-                    isValid = false;
-                    errorMessage = 'Month From cannot be later than Month To.';
+                    isValid = false; errorMessage = 'Month From cannot be later than Month To.';
                 }
             }
 
             if (!isValid) {
                 e.preventDefault();
-                hideLoading(); // Hide loading if validation fails
+                hideLoading();
                 Swal.fire({
                     icon: 'warning',
                     title: 'Validation Error',
@@ -1501,22 +1276,23 @@ function calculateVariance($net_value, $settlement_value) {
             }
         });
 
-        // ============================================
-        // EXPORT REPORT
-        // ============================================
         function exportReport() {
-            // Get the current filter values from the form
             const partnerId = document.getElementById('partner_id').value || '';
             const timeFrame = document.getElementById('time_frame').value;
-            
+
             let dateFrom = '';
             let dateTo = '';
             let monthFrom = '';
             let monthTo = '';
             let dateFromDaily = '';
-            let selectedDay = document.getElementById('selected_day_input')?.value || 'all';
-            let selectedMonth = document.getElementById('selected_month_input')?.value || 'all';
-            
+            let selectedDay = 'all';
+            let selectedMonth = 'all';
+
+            const hiddenSelectedDay = document.querySelector('input[name="selected_day"]:not([type="hidden"])');
+            if (hiddenSelectedDay) selectedDay = hiddenSelectedDay.value;
+            const hiddenSelectedMonth = document.querySelector('input[name="selected_month"]:not([type="hidden"])');
+            if (hiddenSelectedMonth) selectedMonth = hiddenSelectedMonth.value;
+
             if (timeFrame === 'daily') {
                 dateFromDaily = document.getElementById('date_from_daily').value || '';
             } else if (timeFrame === 'date_range') {
@@ -1526,8 +1302,7 @@ function calculateVariance($net_value, $settlement_value) {
                 monthFrom = document.getElementById('month_from').value || '';
                 monthTo = document.getElementById('month_to').value || '';
             }
-            
-            // If no data is selected, show a warning
+
             if (!partnerId && !dateFromDaily && !dateFrom && !monthFrom) {
                 Swal.fire({
                     icon: 'warning',
@@ -1537,11 +1312,9 @@ function calculateVariance($net_value, $settlement_value) {
                 });
                 return;
             }
-            
-            // Show loading for export
+
             showLoading('Preparing Export...');
-            
-            // Build the export URL with parameters
+
             let url = 'export_volume.php?';
             url += 'partner_id=' + encodeURIComponent(partnerId);
             url += '&time_frame=' + encodeURIComponent(timeFrame);
@@ -1552,16 +1325,11 @@ function calculateVariance($net_value, $settlement_value) {
             url += '&date_from_daily=' + encodeURIComponent(dateFromDaily);
             url += '&selected_day=' + encodeURIComponent(selectedDay);
             url += '&selected_month=' + encodeURIComponent(selectedMonth);
-            
-            // Open the export in a new window/tab
+
             const exportWindow = window.open(url, '_blank');
-            
-            // Hide loading after a short delay
-            setTimeout(() => {
-                hideLoading();
-            }, 2000);
-            
-            // Handle cases where popup is blocked
+
+            setTimeout(() => { hideLoading(); }, 2000);
+
             if (!exportWindow || exportWindow.closed || typeof exportWindow.closed == 'undefined') {
                 hideLoading();
                 Swal.fire({
@@ -1574,15 +1342,11 @@ function calculateVariance($net_value, $settlement_value) {
             }
         }
 
-        // ============================================
-        // DEBUG REPORT
-        // ============================================
         function debugReport() {
-            // Get current filter values for debugging
             const partnerId = document.getElementById('partner_id').value || 'All';
             const timeFrame = document.getElementById('time_frame').value;
             let dateInfo = '';
-            
+
             if (timeFrame === 'daily') {
                 dateInfo = document.getElementById('date_from_daily').value || 'Not set';
             } else if (timeFrame === 'date_range') {
@@ -1594,7 +1358,7 @@ function calculateVariance($net_value, $settlement_value) {
                 const to = document.getElementById('month_to').value || 'Not set';
                 dateInfo = from + ' to ' + to;
             }
-            
+
             Swal.fire({
                 icon: 'info',
                 title: 'Debug Information',
@@ -1603,8 +1367,6 @@ function calculateVariance($net_value, $settlement_value) {
                         <p><strong>Partner:</strong> ${partnerId}</p>
                         <p><strong>Time Frame:</strong> ${timeFrame}</p>
                         <p><strong>Date Range:</strong> ${dateInfo}</p>
-                        <p><strong>Selected Day:</strong> ${document.getElementById('selected_day_input')?.value || 'all'}</p>
-                        <p><strong>Selected Month:</strong> ${document.getElementById('selected_month_input')?.value || 'all'}</p>
                         <p><strong>User:</strong> <?php echo $current_user_email; ?></p>
                         <p><strong>PHP Version:</strong> <?php echo phpversion(); ?></p>
                     </div>
@@ -1614,31 +1376,17 @@ function calculateVariance($net_value, $settlement_value) {
             });
         }
 
-        // ============================================
-        // HANDLE AJAX REQUESTS (if any)
-        // ============================================
-        // This will hide loading if there's an AJAX error
-        $(document).ajaxError(function() {
-            hideLoading();
+        $(document).ajaxError(function() { hideLoading(); });
+
+        $(window).on('load', function() {
+            setTimeout(function() { hideLoading(); }, 500);
         });
 
-        // Hide loading when page is fully loaded (additional safety)
-        $(window).on('load', function() {
-            setTimeout(function() {
-                hideLoading();
-            }, 500);
-        });
-        
-        // ============================================
-        // HANDLE RESET BUTTON
-        // ============================================
-        // Show loading when reset link is clicked
         document.addEventListener('DOMContentLoaded', function() {
             const resetLink = document.querySelector('.btn-reset');
             if (resetLink) {
                 resetLink.addEventListener('click', function(e) {
                     showLoading('Resetting Filters...');
-                    // The page will reload, so we don't need to hide
                 });
             }
         });

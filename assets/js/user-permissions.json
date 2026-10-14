@@ -402,6 +402,9 @@
         "BI Create Automated",
         "BI Create Manual",
         "BI Report Billing Invoice",
+        "BP Report Volume",
+        "BP Settlement Adjustment Entry",
+        "BP Settlement Per Bank",
         "CAD Loggings",
         "CAD Loggings Report",
         "Invoice Review"

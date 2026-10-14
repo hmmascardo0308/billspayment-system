@@ -75,17 +75,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bp_ref_no'])) {
     $cad_remarks       = strtoupper(trim($_POST['cad_status_remarks']  ?? ''));
     $requested_date    = date('Y-m-d H:i:s');
 
-    // === ADDED: Status (user-selectable, defaults to OPEN) ===
+    // === Status (user-selectable, defaults to OPEN) ===
     $allowed_statuses = ['OPEN', 'CLOSED'];
     $status = strtoupper(trim($_POST['status'] ?? 'OPEN'));
     if (!in_array($status, $allowed_statuses, true)) {
         $status = 'OPEN';
     }
-    // === END ADDED ===
+    // === END ===
 
-    $correct_biller_id = '';
-    $correct_biller    = '';
-    $correct_amount    = null;
+    // ---- Reason-dependent fields ----
+    $correct_biller_id          = '';
+    $correct_biller             = '';
+    $correct_amount             = null;
+    $correct_account_name       = '';
+    $correct_account_number     = '';
+    $expected_amount_to_pay     = null;
 
     if ($reason === 'WRONG BILLER') {
         $correct_biller_id = trim($_POST['correct_biller'] ?? '');
@@ -93,6 +97,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bp_ref_no'])) {
         $correct_amount_raw = $_POST['correct_amount'] ?? '';
         if ($correct_amount_raw !== '') {
             $correct_amount = abs((float)$correct_amount_raw);
+        }
+    } elseif ($reason === 'WRONG ACCOUNT NAME') {
+        // === NEW: Correct Account Name ===
+        $correct_account_name = strtoupper(trim($_POST['correct_account_name'] ?? ''));
+    } elseif ($reason === 'WRONG ACCOUNT NUMBER') {
+        // === NEW: Correct Account Number ===
+        $correct_account_number = strtoupper(trim($_POST['correct_account_number'] ?? ''));
+    } elseif ($reason === 'NO PAYMENT COLLECTED FROM CUSTOMER') {
+        // === NEW: Expected Amount to Pay ===
+        $expected_raw = $_POST['expected_amount_to_pay'] ?? '';
+        if ($expected_raw !== '') {
+            $expected_amount_to_pay = abs((float)$expected_raw);
         }
     }
 
@@ -123,6 +139,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bp_ref_no'])) {
         header('Location: ' . $_SERVER['PHP_SELF']);
         exit;
     }
+    // === NEW validations ===
+    if ($reason === 'WRONG ACCOUNT NAME' && $correct_account_name === '') {
+        $_SESSION['cad_flash_error'] = 'Please enter a Correct Account Name for "Wrong Account Name" reason.';
+        header('Location: ' . $_SERVER['PHP_SELF']);
+        exit;
+    }
+    if ($reason === 'WRONG ACCOUNT NUMBER' && $correct_account_number === '') {
+        $_SESSION['cad_flash_error'] = 'Please enter a Correct Account Number for "Wrong Account Number" reason.';
+        header('Location: ' . $_SERVER['PHP_SELF']);
+        exit;
+    }
+    if ($reason === 'NO PAYMENT COLLECTED FROM CUSTOMER' && $expected_amount_to_pay === null) {
+        $_SESSION['cad_flash_error'] = 'Please enter the Expected Amount to Pay for "No Payment Collected from Customer" reason.';
+        header('Location: ' . $_SERVER['PHP_SELF']);
+        exit;
+    }
+    // === END NEW validations ===
 
     if ($has_cad_perm && $partner_action === '') {
         $_SESSION['cad_flash_error'] = 'Please select a Partner Action.';
@@ -205,6 +238,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bp_ref_no'])) {
     $cancelled_date_val = ($cancelled_date === '') ? null : $cancelled_date;
     $partner_action_val = ($partner_action === '') ? null : $partner_action;
 
+    // Normalize empty-string fields to NULL for optional columns
+    $correct_account_name_val   = ($correct_account_name   === '') ? null : $correct_account_name;
+    $correct_account_number_val = ($correct_account_number === '') ? null : $correct_account_number;
+
     // ---- Handle file uploads ----
     $uploaded_filenames = [];
 
@@ -255,6 +292,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bp_ref_no'])) {
         ? implode(',', $uploaded_filenames)
         : null;
 
+    // === UPDATED INSERT: added correct_account_name, correct_account_number, expected_amount_to_pay ===
     $sql = "INSERT INTO cad_loggings.cad_loggings_requests (
                 payment_date,
                 cancelled_date,
@@ -270,6 +308,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bp_ref_no'])) {
                 account_name,
                 amount_paid,
                 correct_amount,
+                correct_account_name,
+                correct_account_number,
+                expected_amount_to_pay,
                 ir_no,
                 reason,
                 fault,
@@ -282,14 +323,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bp_ref_no'])) {
                 user_type,
                 status,
                 send_to
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     try {
         $conn->begin_transaction();
 
         if ($stmt = $conn->prepare($sql)) {
+            // Type string: 29 placeholders
+            // s = string, d = double
+            // payment_date(s), cancelled_date(s), region(s), branch_id(s), branch_name(s),
+            // original_biller_id(s), original_biller(s), correct_biller_id(s), correct_biller(s),
+            // bp_reference(s), account_no(s), account_name(s), amount_paid(d), correct_amount(d),
+            // correct_account_name(s), correct_account_number(s), expected_amount_to_pay(d),
+            // ir_no(s), reason(s), fault(s), partner_action(s), attachment_files(s),
+            // vpo_remarks(s), cad_remarks(s), requested_date(s), transacted_by(s),
+            // user_type(s), status(s), send_to(s)
             $stmt->bind_param(
-                'ssssssssssssddssssssssssss',
+                'ssssssssssssddsssdsssssssssss',
                 $payment_date,
                 $cancelled_date_val,
                 $region,
@@ -304,6 +354,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bp_ref_no'])) {
                 $account_name,
                 $amount_paid,
                 $correct_amount,
+                $correct_account_name_val,
+                $correct_account_number_val,
+                $expected_amount_to_pay,
                 $ir_no,
                 $reason,
                 $fault,
@@ -314,7 +367,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bp_ref_no'])) {
                 $requested_date,
                 $transacted_by,
                 $user_type_label,
-                $status,          // === now user-selectable ===
+                $status,
                 $send_to
             );
 
@@ -409,6 +462,23 @@ try {
     <link href="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/css/select2.min.css" rel="stylesheet" />
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="cad.css?v=<?= time(); ?>">
+
+    <style>
+        /* Inline notice banner for cancelled transactions */
+        .cancelled-notice {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #fff4e5;
+            border: 1px solid #ffb74d;
+            color: #8a4b00;
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin-bottom: 14px;
+            font-size: 13px;
+        }
+        .cancelled-notice i { color: #ef6c00; }
+    </style>
 </head>
 <body>
     <div class="main-container">
@@ -424,6 +494,13 @@ try {
 
        <div class="cad-form-container">
     <div class="cad-form-card">
+
+        <!-- Inline cancelled notice (hidden by default) -->
+        <div id="cancelledNotice" class="cancelled-notice" style="display:none;">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+            <span>This BP Ref. No. is a <strong>CANCELLED</strong> transaction. Logging is allowed but please add remarks.</span>
+        </div>
+
         <form id="cadLoggingForm" method="POST" action="" enctype="multipart/form-data">
 
             <!-- TOP SECTION -->
@@ -516,9 +593,14 @@ try {
                         <option value=""></option>
                         <option value="WRONG BILLER">Wrong Partner</option>
                         <option value="WRONG AMOUNT">Wrong Amount</option>
+                        <option value="WRONG ACCOUNT NAME">Wrong Account Name</option>
+                        <option value="WRONG ACCOUNT NUMBER">Wrong Account Number</option>
+                        <option value="NO PAYMENT COLLECTED FROM CUSTOMER">No Payment Collected from Customer</option>
+                        <option value="DOUBLE POSTING">Double Posting</option>
                     </select>
                 </div>
 
+                <!-- Correct Partner (WRONG BILLER) -->
                 <div class="cad-form-group reason-dependent" id="wrapCorrectBiller">
                     <label for="correct_biller">Correct Partner:</label>
                     <select id="correct_biller" name="correct_biller" class="cad-select"
@@ -532,9 +614,31 @@ try {
                     </select>
                 </div>
 
+                <!-- Correct Amount (WRONG AMOUNT) -->
                 <div class="cad-form-group reason-dependent" id="wrapCorrectAmount">
                     <label for="correct_amount">Correct Amount:</label>
                     <input type="number" id="correct_amount" name="correct_amount"
+                           step="0.01" min="0" placeholder="0.00" style="width:100%;">
+                </div>
+
+                <!-- === NEW: Correct Account Name (WRONG ACCOUNT NAME) === -->
+                <div class="cad-form-group reason-dependent" id="wrapCorrectAccountName">
+                    <label for="correct_account_name">Correct Account Name:</label>
+                    <input type="text" id="correct_account_name" name="correct_account_name"
+                           placeholder="Enter correct account name" style="width:100%;">
+                </div>
+
+                <!-- === NEW: Correct Account Number (WRONG ACCOUNT NUMBER) === -->
+                <div class="cad-form-group reason-dependent" id="wrapCorrectAccountNumber">
+                    <label for="correct_account_number">Correct Account Number:</label>
+                    <input type="text" id="correct_account_number" name="correct_account_number"
+                           placeholder="Enter correct account number" style="width:100%;">
+                </div>
+
+                <!-- === NEW: Expected Amount to Pay (NO PAYMENT COLLECTED FROM CUSTOMER) === -->
+                <div class="cad-form-group reason-dependent" id="wrapExpectedAmountToPay">
+                    <label for="expected_amount_to_pay">Expected Amount to Pay:</label>
+                    <input type="number" id="expected_amount_to_pay" name="expected_amount_to_pay"
                            step="0.01" min="0" placeholder="0.00" style="width:100%;">
                 </div>
 
@@ -549,14 +653,12 @@ try {
                     </select>
                 </div>
 
-               
-
                 <div class="cad-form-group">
                     <label for="irno">IR No.:</label>
                     <input type="text" id="irno" name="irno" placeholder="Enter IR Number" required>
                 </div>
 
-                 <!-- === ADDED: Status dropdown (OPEN / CLOSED) === -->
+                <!-- Status dropdown (OPEN / CLOSED) -->
                 <div class="cad-form-group">
                     <label for="status">Status:</label>
                     <select id="status" name="status" class="cad-select" required
@@ -565,7 +667,6 @@ try {
                         <option value="CLOSED">CLOSED</option>
                     </select>
                 </div>
-                <!-- === END ADDED === -->
 
                 <!-- ATTACHMENTS -->
                 <div class="cad-form-group full-width" style="margin-top: 15px;">
@@ -693,7 +794,6 @@ try {
                     disabled: isDisabled
                 });
 
-                // Ensure the underlying <select> disabled state matches
                 if (isDisabled) {
                     $el.prop('disabled', true);
                     $el.addClass('readonly-select');
@@ -725,12 +825,10 @@ try {
                 var branchDisabled   = $branchSelect.prop('disabled');
                 var currentBranchVal = $branchSelect.val();
 
-                // Destroy existing Select2 so we can rebuild the options
                 if ($branchSelect.data('select2')) {
                     $branchSelect.select2('destroy');
                 }
 
-                // Temporarily remove disabled so we can manipulate options cleanly
                 $branchSelect.prop('disabled', false);
 
                 $branchSelect.empty();
@@ -746,11 +844,9 @@ try {
                     }
                 });
 
-                // Restore disabled state + visual class
                 $branchSelect.prop('disabled', branchDisabled);
                 $branchSelect.toggleClass('readonly-select', branchDisabled);
 
-                // Re-init Select2 with the preserved disabled state
                 $branchSelect.select2({
                     width: '100%',
                     placeholder: $branchSelect.data('placeholder') || '-- Select Branch --',
@@ -758,7 +854,6 @@ try {
                     disabled: branchDisabled
                 });
 
-                // Restore previous selection if still available
                 if (currentBranchVal && $branchSelect.find('option[value="' + currentBranchVal + '"]').length) {
                     $branchSelect.val(currentBranchVal).trigger('change.select2');
                 }
@@ -769,30 +864,59 @@ try {
 
             // ---- Reason toggle ----
             var $reason = $('#reason');
-            var $wrapCorrectBiller = $('#wrapCorrectBiller');
-            var $wrapCorrectAmount = $('#wrapCorrectAmount');
-            var $correctBiller = $('#correct_biller');
-            var $correctAmount = $('#correct_amount');
+            var $wrapCorrectBiller         = $('#wrapCorrectBiller');
+            var $wrapCorrectAmount         = $('#wrapCorrectAmount');
+            var $wrapCorrectAccountName    = $('#wrapCorrectAccountName');
+            var $wrapCorrectAccountNumber  = $('#wrapCorrectAccountNumber');
+            var $wrapExpectedAmountToPay   = $('#wrapExpectedAmountToPay');
+
+            var $correctBiller        = $('#correct_biller');
+            var $correctAmount        = $('#correct_amount');
+            var $correctAccountName   = $('#correct_account_name');
+            var $correctAccountNumber = $('#correct_account_number');
+            var $expectedAmountToPay  = $('#expected_amount_to_pay');
+
             var $partnerAction = $('#partner_action');
             var $partnerActionHint = $('#partnerActionHint');
 
             function toggleReasonFields() {
                 var val = ($reason.val() || '').toUpperCase();
 
+                // Hide all reason-dependent wrappers
                 $wrapCorrectBiller.removeClass('visible');
                 $wrapCorrectAmount.removeClass('visible');
+                $wrapCorrectAccountName.removeClass('visible');
+                $wrapCorrectAccountNumber.removeClass('visible');
+                $wrapExpectedAmountToPay.removeClass('visible');
 
+                // Clear values that no longer apply
                 if (val !== 'WRONG BILLER') {
                     $correctBiller.val(null).trigger('change.select2');
                 }
                 if (val !== 'WRONG AMOUNT') {
                     $correctAmount.val('');
                 }
+                if (val !== 'WRONG ACCOUNT NAME') {
+                    $correctAccountName.val('');
+                }
+                if (val !== 'WRONG ACCOUNT NUMBER') {
+                    $correctAccountNumber.val('');
+                }
+                if (val !== 'NO PAYMENT COLLECTED FROM CUSTOMER') {
+                    $expectedAmountToPay.val('');
+                }
 
+                // Show the applicable wrapper
                 if (val === 'WRONG BILLER') {
                     $wrapCorrectBiller.addClass('visible');
                 } else if (val === 'WRONG AMOUNT') {
                     $wrapCorrectAmount.addClass('visible');
+                } else if (val === 'WRONG ACCOUNT NAME') {
+                    $wrapCorrectAccountName.addClass('visible');
+                } else if (val === 'WRONG ACCOUNT NUMBER') {
+                    $wrapCorrectAccountNumber.addClass('visible');
+                } else if (val === 'NO PAYMENT COLLECTED FROM CUSTOMER') {
+                    $wrapExpectedAmountToPay.addClass('visible');
                 }
 
                 if (CAN_EDIT_CAD) {
@@ -815,9 +939,6 @@ try {
                 '#regionname, #date_of_payment, #date_cancelled, #amount'
             );
 
-            // Toggle disabled state on a Select2-backed select.
-            // Destroys and re-initializes Select2 so the disabled state is
-            // guaranteed to apply, and toggles the .readonly-select class.
             function setSelect2Disabled($sel, disabled) {
                 var placeholder = $sel.data('placeholder') || '-- Select --';
                 var currentVal  = $sel.val();
@@ -842,57 +963,43 @@ try {
             }
 
             function lockAutofillFields() {
-                // Text / date / number inputs
                 $('#account_no, #account_name, #date_of_payment, #date_cancelled, #amount')
                     .prop('disabled', true)
                     .addClass('readonly-input');
 
-                // Select2 selects
                 setSelect2Disabled($('#original_biller'), true);
                 setSelect2Disabled($('#branchname'),     true);
                 setSelect2Disabled($('#regionname'),     true);
             }
 
-            // Partial unlock — used when the BP Ref IS found and NOT cancelled.
-            // Keeps Partner Name locked (derived from lookup) but allows the
-            // other fields to be editable.
             function unlockAutofillFields() {
-                // Enable text / date / number inputs
                 $('#account_no, #account_name, #date_of_payment, #date_cancelled, #amount')
                     .prop('disabled', false)
                     .removeClass('readonly-input');
 
-                // Partner Name stays locked forever (always derived from lookup)
                 setSelect2Disabled($('#original_biller'), true);
 
-                // Enable Region + Branch for manual selection
                 setSelect2Disabled($('#regionname'), false);
-                filterBranches(); // rebuilds branch options based on current region
+                filterBranches();
 
-                // Branch must be re-enabled AFTER filterBranches rebuild
                 setSelect2Disabled($('#branchname'), false);
             }
 
-            // Full unlock — used when the BP Ref is NOT found in the DB.
-            // ALL autofill fields become user-input, INCLUDING Partner Name.
             function unlockAllAutofillFields() {
-                // Enable ALL text / date / number inputs
                 $('#account_no, #account_name, #date_of_payment, #date_cancelled, #amount')
                     .prop('disabled', false)
                     .prop('readonly', false)
                     .removeAttr('disabled')
                     .removeClass('readonly-input');
 
-                // Enable ALL Select2 selects, INCLUDING Partner Name
                 setSelect2Disabled($('#original_biller'), false);
                 setSelect2Disabled($('#regionname'), false);
 
-                filterBranches(); // rebuild branch list based on region
+                filterBranches();
 
                 setSelect2Disabled($('#branchname'), false);
             }
 
-            // Default state: locked
             lockAutofillFields();
 
             // ============================================================
@@ -1003,31 +1110,16 @@ try {
             });
 
             // ============================================================
-            //  CANCELLED LOCK / UNLOCK
+            //  LOCKABLE SECTION (reason / fault / remarks etc.)
+            //  Cancelled transactions are NO LONGER locked.
             // ============================================================
             var $lockableSection = $('#lockableSection');
             var $saveLogBtn      = $('#saveLogBtn');
+            var $cancelledNotice = $('#cancelledNotice');
 
             var vpoRemarksWasReadonly = $('#vpo_remarks').prop('readonly') === true;
             var cadRemarksWasReadonly = $('#cad_status_remarks').prop('readonly') === true;
             var partnerActionWasDisabled = $('#partner_action').prop('disabled') === true;
-
-            function lockFormForCancelled() {
-                $lockableSection.addClass('cad-locked-section');
-                $lockableSection.find('input, select, textarea').prop('disabled', true);
-
-                // Lock autofill fields too
-                lockAutofillFields();
-
-                $dropZone.css('pointer-events', 'none');
-
-                $saveLogBtn.prop('disabled', true)
-                            .html('<i class="fa-solid fa-lock"></i> Logging Disabled');
-
-                currentFiles = [];
-                $attachList.empty();
-                $attachInput.val('');
-            }
 
             function unlockForm() {
                 $lockableSection.removeClass('cad-locked-section');
@@ -1058,31 +1150,30 @@ try {
                     $('#partner_action').removeClass('readonly-select');
                 }
 
-                // Sync Select2 disabled state for lockable selects
-               $lockableSection.find('.cad-select').each(function() {
-    var $el = $(this);
-    var isDisabled = $el.prop('disabled');
-    var placeholder = $el.data('placeholder') || '-- Select --';
-    var currentVal = $el.val();
+                $lockableSection.find('.cad-select').each(function() {
+                    var $el = $(this);
+                    var isDisabled = $el.prop('disabled');
+                    var placeholder = $el.data('placeholder') || '-- Select --';
+                    var currentVal = $el.val();
 
-    if ($el.data('select2')) {
-        $el.select2('destroy');
-    }
+                    if ($el.data('select2')) {
+                        $el.select2('destroy');
+                    }
 
-    $el.prop('disabled', isDisabled);
-    $el.toggleClass('readonly-select', isDisabled);
+                    $el.prop('disabled', isDisabled);
+                    $el.toggleClass('readonly-select', isDisabled);
 
-    $el.select2({
-        width: '100%',
-        placeholder: placeholder,
-        allowClear: true,
-        disabled: isDisabled
-    });
+                    $el.select2({
+                        width: '100%',
+                        placeholder: placeholder,
+                        allowClear: true,
+                        disabled: isDisabled
+                    });
 
-    if (currentVal !== null && currentVal !== undefined && currentVal !== '') {
-        $el.val(currentVal).trigger('change.select2');
-    }
-});
+                    if (currentVal !== null && currentVal !== undefined && currentVal !== '') {
+                        $el.val(currentVal).trigger('change.select2');
+                    }
+                });
 
                 $dropZone.css('pointer-events', '');
 
@@ -1099,9 +1190,10 @@ try {
                 $attachInput.val('');
                 lastRef = '';
 
+                $cancelledNotice.hide();
+
                 unlockForm();
 
-                // Clear autofill field values
                 $('#original_biller').val(null).trigger('change.select2');
                 $('#account_no, #account_name, #amount').val('');
                 $('#date_of_payment, #date_cancelled').val('');
@@ -1109,26 +1201,18 @@ try {
                 filterBranches();
                 $('#branchname').val(null).trigger('change.select2');
 
-                // === ADDED: Reset Status back to OPEN ===
-                $('#status').val('OPEN').trigger('change.select2');
-                // === END ADDED ===
+                // Clear new reason-dependent fields
+                $correctAccountName.val('');
+                $correctAccountNumber.val('');
+                $expectedAmountToPay.val('');
 
-                // Re-lock them
+                $('#status').val('OPEN').trigger('change.select2');
+
                 lockAutofillFields();
             });
 
             // Guard submit + re-enable autofill fields so they POST
             $('#cadLoggingForm').on('submit', function(e) {
-                if ($lockableSection.hasClass('cad-locked-section')) {
-                    e.preventDefault();
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Logging Disabled',
-                        text: 'This transaction is cancelled and cannot be logged.'
-                    });
-                    return false;
-                }
-                // Re-enable so disabled values get submitted
                 $autofillFields.prop('disabled', false);
             });
 
@@ -1181,6 +1265,7 @@ try {
                             $bpRef.val(null).trigger('change.select2');
                             lastRef = '';
                             lockAutofillFields();
+                            $cancelledNotice.hide();
                             return;
                         }
 
@@ -1193,10 +1278,8 @@ try {
                                 $spinner.hide();
 
                                 if (!res || !res.found) {
-                                    // Reference doesn't exist — unlock ALL fields for manual entry
                                     unlockAllAutofillFields();
 
-                                    // Clear stale values
                                     $('#original_biller').val(null).trigger('change.select2');
                                     $('#account_no, #account_name, #amount').val('');
                                     $('#date_of_payment, #date_cancelled').val('');
@@ -1204,9 +1287,9 @@ try {
                                     filterBranches();
                                     $('#branchname').val(null).trigger('change.select2');
 
-                                    // === ADDED: Manual/Excel entry → default Status to CLOSED ===
                                     $('#status').val('CLOSED').trigger('change.select2');
-                                    // === END ADDED ===
+
+                                    $cancelledNotice.hide();
 
                                     Swal.fire({
                                         icon: 'info',
@@ -1220,7 +1303,6 @@ try {
 
                                 var d = res.data;
 
-                                // Lock autofill fields — values will stay read-only
                                 lockAutofillFields();
 
                                 if (d.original_biller) {
@@ -1248,15 +1330,12 @@ try {
                                 if (d.account_no)   $('#account_no').val(d.account_no);
                                 if (d.account_name) $('#account_name').val(d.account_name);
 
-                                // === ADDED: Auto-filled from DB → default Status to OPEN ===
                                 $('#status').val('OPEN').trigger('change.select2');
-                                // === END ADDED ===
 
-                                if (d.is_cancelled) {
-                                    lockFormForCancelled();
-                                } else {
-                                    unlockForm();
-                                }
+                                // Always unlock — cancelled refs are now loggable
+                                unlockForm();
+
+                                $cancelledNotice.toggle(!!d.is_cancelled);
 
                                 Swal.fire({
                                     icon: 'success',
@@ -1268,11 +1347,11 @@ try {
                                     if (d.is_cancelled) {
                                         Swal.fire({
                                             icon: 'warning',
-                                            title: 'Cancelled Status Detected',
-                                            html: 'BP Ref. No. <b>' + refNo + '</b> is already a <b>CANCELLED</b> transaction.<br><br>' +
-                                                  '<b>Logging is disabled for this transaction.</b><br>' +
-                                                  'Please verify the details, then clear the form to log another transaction.',
-                                            confirmButtonText: 'Understood'
+                                            title: 'Cancelled Transaction Detected',
+                                            html: 'BP Ref. No. <b>' + refNo + '</b> is a <b>CANCELLED</b> transaction.<br><br>' +
+                                                  'You may still log this reference, but please review the details carefully ' +
+                                                  'and add remarks explaining why it is being logged.',
+                                            confirmButtonText: 'Understood — Proceed'
                                         });
                                     }
                                 });

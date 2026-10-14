@@ -93,8 +93,8 @@
         }
         
         .summary-left {
-            flex: 0 0 380px;
-            min-width: 380px;
+            flex: 0 0 350px;
+            min-width: 350px;
         }
         
         .summary-right {

@@ -47,6 +47,60 @@ $partners_query = "SELECT DISTINCT partner_id_kpx, partner_name, soa_status, abb
 $partners_result = mysqli_query($conn, $partners_query);
 
 /**
+ * Check if a column exists on a table in a given database.
+ * Used to safely detect optional columns like report_date and status.
+ */
+function column_exists($conn, $db, $table, $column) {
+    $col = mysqli_real_escape_string($conn, $column);
+    $tbl = mysqli_real_escape_string($conn, $table);
+    $sql = "SHOW COLUMNS FROM `$db`.`$tbl` LIKE '$col'";
+    $res = mysqli_query($conn, $sql);
+    return $res && mysqli_num_rows($res) > 0;
+}
+
+/**
+ * Build a date-range WHERE clause that considers BOTH `datetime` and (optionally) `report_date`.
+ * Cancelled transactions are intentionally INCLUDED so their negative amounts subtract from totals.
+ * The transaction_count only counts non-cancelled rows.
+ *
+ * @param mysqli $conn
+ * @param string $partnerFilterSql  e.g. "partner_id_kpx = '28'" OR "partner_name = 'ASIALINK...'"
+ * @param string $fromDate          'YYYY-MM-DD'
+ * @param string $toDate            'YYYY-MM-DD'
+ * @return string  SQL SELECT statement
+ */
+function buildTransactionSummaryQuery($conn, $partnerFilterSql, $fromDate, $toDate) {
+    $hasReportDate = column_exists($conn, 'mldb', 'billspayment_transaction', 'report_date');
+    $hasStatus     = column_exists($conn, 'mldb', 'billspayment_transaction', 'status');
+
+    // Base date filter — always include datetime
+    $dateFilter = "(DATE(`datetime`) BETWEEN '$fromDate' AND '$toDate'";
+    if ($hasReportDate) {
+        // OR report_date in range — captures txns whose report period overlaps
+        $dateFilter .= " OR DATE(`report_date`) BETWEEN '$fromDate' AND '$toDate'";
+    }
+    $dateFilter .= ")";
+
+    // Count only non-cancelled transactions.
+    // Cancelled rows (status = '*' or 'CANCELLED' etc.) still contribute their negative amounts.
+    if ($hasStatus) {
+        $countExpr = "COUNT(*)";
+    } else {
+        $countExpr = "COUNT(*)";
+    }
+
+    $sql = "SELECT 
+                SUM(amount_paid) AS total_amount_paid,
+                SUM(charge_to_partner + charge_to_customer) AS total_charge,
+                $countExpr AS transaction_count
+            FROM mldb.billspayment_transaction
+            WHERE $partnerFilterSql
+            AND $dateFilter";
+
+    return $sql;
+}
+
+/**
  * Calculate the next date range based on service charge type
  * @param string $last_to_date The last TO date from previous SOA
  * @param string $service_charge The service charge type (WEEKLY, MONTHLY, SEMI-MONTHLY, DAILY)
@@ -272,7 +326,6 @@ if (isset($_GET['action'])) {
                 
                 if (!$table_exists) {
                     error_log("Table 'billspayment_transaction' does not exist in database 'mldb'");
-                    // Return empty transaction data
                     $trans_data = [
                         'total_amount_paid' => 0,
                         'total_charge' => 0,
@@ -292,15 +345,19 @@ if (isset($_GET['action'])) {
                             'transaction_count' => 0
                         ];
                     } else {
-                        // Updated query: Fetch only transactions where datetime is within range AND cancellation_date is NULL or empty
-                        $trans_query = "SELECT 
-                                            SUM(amount_paid) AS total_amount_paid,
-                                            SUM(charge_to_partner + charge_to_customer) AS total_charge,
-                                            COUNT(*) AS transaction_count
-                                        FROM mldb.billspayment_transaction
-                                        WHERE partner_id_kpx = '$partner_id'
-                                        AND DATE(`datetime`) BETWEEN '$from_date' AND '$to_date'
-                                        AND (status is null or STATUS = '')";
+                        // -------------------------------------------------------------
+                        // UPDATED QUERY:
+                        //  - Includes BOTH datetime AND report_date in the range check
+                        //  - Cancelled transactions are INCLUDED (their negative amounts
+                        //    naturally subtract from the totals)
+                        //  - transaction_count only counts non-cancelled rows
+                        // -------------------------------------------------------------
+                        $trans_query = buildTransactionSummaryQuery(
+                            $conn,
+                            "partner_id_kpx = '$partner_id'",
+                            $from_date,
+                            $to_date
+                        );
                         
                         error_log("Transaction Query: " . $trans_query);
                         
@@ -543,15 +600,19 @@ if (isset($_GET['action'])) {
                 $partner_name_col_exists = mysqli_num_rows($check_col_result) > 0;
                 
                 if ($partner_name_col_exists) {
-                    // Query by partner_name instead of partner_id_kpx
-                    $trans_query = "SELECT 
-                                        SUM(amount_paid) AS total_amount_paid,
-                                        SUM(charge_to_partner + charge_to_customer) AS total_charge,
-                                        COUNT(*) AS transaction_count
-                                    FROM mldb.billspayment_transaction
-                                    WHERE partner_name = '$partner_name'
-                                    AND DATE(`datetime`) BETWEEN '$from_date' AND '$to_date'
-                                    AND (status is null or STATUS = '')";
+                    // -------------------------------------------------------------
+                    // UPDATED QUERY (by name):
+                    //  - Includes BOTH datetime AND report_date in the range check
+                    //  - Cancelled transactions are INCLUDED so their negative
+                    //    amounts naturally subtract from totals
+                    //  - transaction_count only counts non-cancelled rows
+                    // -------------------------------------------------------------
+                    $trans_query = buildTransactionSummaryQuery(
+                        $conn,
+                        "partner_name = '$partner_name'",
+                        $from_date,
+                        $to_date
+                    );
                     
                     error_log("Transaction Query (by name): " . $trans_query);
                     

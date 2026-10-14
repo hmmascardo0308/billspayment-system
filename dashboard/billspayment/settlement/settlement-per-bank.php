@@ -163,11 +163,6 @@ function formatCADDate(?string $date_from, ?string $date_to): string {
 // NOTE: The 2nd parameter is now $charge_sched (previously $service_charge).
 // Uses normalizeChargeSched() so DAILY and PER TRANSACTION behave identically.
 // ============================================
-// ============================================
-// FUNCTION: Calculate settlement amount based on charge type
-// NOTE: The 2nd parameter is now $charge_sched (previously $service_charge).
-// Uses normalizeChargeSched() so DAILY and PER TRANSACTION behave identically.
-// ============================================
 function calculateSettlementAmount($charge_to, $charge_sched, $principal, $charge_to_customer, $charge_to_partner, $adjustment, $partner_id = '', $txn_count = 0) {
     // Special case for partner_id_kpx = 34: Amount for Settlement = Volume Count + Principal
     if ((string)$partner_id === '34') {
@@ -236,6 +231,16 @@ function isTuesday(?string $date): bool {
 }
 
 // ============================================
+// FUNCTION: Check if a date is Monday
+// ============================================
+function isMonday(?string $date): bool {
+    if (empty($date)) return false;
+    $timestamp = strtotime($date);
+    if ($timestamp === false) return false;
+    return date('N', $timestamp) == 1; // 1 = Monday
+}
+
+// ============================================
 // FUNCTION: Get Wednesday-to-Tuesday range
 // Given a Tuesday date, returns [wednesday_last_week, tuesday]
 // ============================================
@@ -264,6 +269,86 @@ function getMondayToSundayRange(string $tuesday_date): array {
     // Monday of that week = Sunday - 6 days
     $monday = date('Y-m-d', strtotime('-6 days', strtotime($sunday)));
     return [$monday, $sunday];
+}
+
+// ============================================
+// FUNCTION: Get Saturday-to-Friday range
+// Given a Monday date, returns [saturday_previous_week, friday_before_monday]
+// Example: Monday 2026-08-10 => [2026-08-01 (Sat), 2026-08-07 (Fri)]
+// ============================================
+function getSaturdayToFridayRange(string $monday_date): array {
+    $timestamp = strtotime($monday_date);
+    if ($timestamp === false) {
+        return [$monday_date, $monday_date];
+    }
+    // Saturday of the previous week = Monday - 9 days
+    $saturday = date('Y-m-d', strtotime('-9 days', $timestamp));
+    // Friday before the Monday = Monday - 3 days
+    $friday = date('Y-m-d', strtotime('-3 days', $timestamp));
+    return [$saturday, $friday];
+}
+
+// ============================================
+// FUNCTION: Get Monday-to-Sunday range (week BEFORE a given Monday)
+// Given a Monday date, returns [monday, sunday] of the previous week
+// Example: Monday 2026-10-12 => [2026-10-05 (Mon), 2026-10-11 (Sun)]
+// ============================================
+function getPreviousMondayToSundayRange(string $monday_date): array {
+    $timestamp = strtotime($monday_date);
+    if ($timestamp === false) {
+        return [$monday_date, $monday_date];
+    }
+    // Monday of the previous week = Monday - 7 days
+    $prev_monday = date('Y-m-d', strtotime('-7 days', $timestamp));
+    // Sunday of that week = prev Monday + 6 days
+    $prev_sunday = date('Y-m-d', strtotime('+6 days', strtotime($prev_monday)));
+    return [$prev_monday, $prev_sunday];
+}
+
+// ============================================
+// FUNCTION: Check if date range is Friday-to-Sunday (or subset within)
+// Used for the daily breakdown feature of specific weekend partners.
+// Accepts:
+//   - Friday -> Sunday
+//   - Saturday -> Sunday
+//   - Friday -> Saturday
+// ============================================
+function isFridayToSundayRange(?string $date_from, ?string $date_to): bool {
+    if (empty($date_from) || empty($date_to)) return false;
+
+    $from_ts = strtotime($date_from);
+    $to_ts = strtotime($date_to);
+    if ($from_ts === false || $to_ts === false) return false;
+
+    $from_day = (int)date('N', $from_ts); // 5 = Friday, 6 = Saturday
+    $to_day   = (int)date('N', $to_ts);   // 6 = Saturday, 7 = Sunday
+
+    // Friday -> Sunday
+    if ($from_day === 5 && $to_day === 7) return true;
+    // Saturday -> Sunday
+    if ($from_day === 6 && $to_day === 7) return true;
+    // Friday -> Saturday
+    if ($from_day === 5 && $to_day === 6) return true;
+
+    return false;
+}
+
+// ============================================
+// FUNCTION: Get partners that require a per-day breakdown
+// when the date range covers Friday to Sunday.
+// ============================================
+function getWeekendBreakdownPartners(): array {
+    return ['291', '811', '819', '1050', '297', '99', '927', '348', '494'];
+}
+
+// ============================================
+// FUNCTION: Check if a partner requires per-day breakdown for a weekend range
+// ============================================
+function requiresWeekendDailyBreakdown(string $partner_id, ?string $date_from, ?string $date_to): bool {
+    if (!isFridayToSundayRange($date_from, $date_to)) {
+        return false;
+    }
+    return in_array(trim($partner_id), getWeekendBreakdownPartners(), true);
 }
 
 // ============================================
@@ -326,6 +411,37 @@ function isSpecialWeekBeforePartner(string $partner_id, string $bank, string $se
         return true;
     }
     return false;
+}
+
+// ============================================
+// FUNCTION: Get special Monday partners list
+// Partner 119 = settles on Mondays, capturing Sat -> Fri of the previous week
+// ============================================
+function getSpecialMondayPartners(): array {
+    return ['119'];
+}
+
+// ============================================
+// FUNCTION: Check if partner is a special Monday partner
+// ============================================
+function isSpecialMondayPartner(string $partner_id): bool {
+    return trim($partner_id) === '119';
+}
+
+// ============================================
+// FUNCTION: Get special Monday-to-Sunday partners list
+// Partners 1101, 1228, 1230, 1094
+// Only settles on Mondays, capturing Monday -> Sunday of the PREVIOUS week
+// ============================================
+function getSpecialMondayToSundayPartners(): array {
+    return ['1101', '1228', '1230', '1094'];
+}
+
+// ============================================
+// FUNCTION: Check if partner is a special Monday-to-Sunday partner
+// ============================================
+function isSpecialMondayToSundayPartner(string $partner_id): bool {
+    return in_array(trim($partner_id), getSpecialMondayToSundayPartners(), true);
 }
 
 // ============================================
@@ -430,6 +546,42 @@ if (!empty($selected_date_to) && isTuesday($selected_date_to)) {
 }
 
 // ============================================
+// SPECIAL MONDAY PARTNER LOGIC (Partner 119)
+// Partner 119 only settles on Mondays.
+// When date_to falls on a Monday, transaction range = Saturday -> Friday of the previous week.
+// ============================================
+$special_monday_partners = getSpecialMondayPartners();
+$include_special_monday_partners = false;
+$special_monday_date_from = $selected_date_from;
+$special_monday_date_to = $selected_date_to;
+$selected_is_special_monday = in_array($selected_partner, $special_monday_partners, true);
+
+// Check if date_to falls on a Monday
+if (!empty($selected_date_to) && isMonday($selected_date_to)) {
+    $include_special_monday_partners = true;
+    // Override date range: Saturday (prev week) -> Friday (before Monday)
+    list($special_monday_date_from, $special_monday_date_to) = getSaturdayToFridayRange($selected_date_to);
+}
+
+// ============================================
+// SPECIAL MONDAY-TO-SUNDAY PARTNER LOGIC (Partners 1101, 1228, 1230, 1094)
+// These partners only settle on Mondays.
+// When date_to falls on a Monday, transaction range = Monday -> Sunday of the PREVIOUS week.
+// ============================================
+$special_m2s_partners = getSpecialMondayToSundayPartners();
+$include_special_m2s_partners = false;
+$special_m2s_date_from = $selected_date_from;
+$special_m2s_date_to = $selected_date_to;
+$selected_is_special_m2s = in_array($selected_partner, $special_m2s_partners, true);
+
+// Check if date_to falls on a Monday
+if (!empty($selected_date_to) && isMonday($selected_date_to)) {
+    $include_special_m2s_partners = true;
+    // Override date range: Monday -> Sunday of the previous week
+    list($special_m2s_date_from, $special_m2s_date_to) = getPreviousMondayToSundayRange($selected_date_to);
+}
+
+// ============================================
 // RETRIEVE RFP NO. FROM DATABASE IF NOT PROVIDED
 // ============================================
 if (empty($selected_rfp_no) && $has_filters) {
@@ -482,6 +634,43 @@ if (empty($selected_rfp_no) && $has_filters) {
             $_GET['rfp_no'] = $selected_rfp_no;
         }
         $rfp_stmt->close();
+    }
+}
+
+// ============================================
+// AUTO-POPULATE DATE RANGE FROM RFP NO.
+// When the user supplies an RFP number but leaves the date filters empty,
+// look up the actual min/max transaction datetime for that RFP so the
+// main query stays selective and does not time out.
+// Example: RFP-CIS-001 on 2026-09-01 → date_from = date_to = 2026-09-01
+// ============================================
+if (!empty($selected_rfp_no) && empty($selected_date_from) && empty($selected_date_to)) {
+    $rfp_date_query = "SELECT 
+                           DATE(MIN(bt.datetime)) AS min_date,
+                           DATE(MAX(bt.datetime)) AS max_date
+                       FROM mldb.billspayment_transaction bt
+                       WHERE bt.rfp_no = ?
+                         AND bt.datetime IS NOT NULL
+                       LIMIT 1";
+    $rfp_date_stmt = $conn->prepare($rfp_date_query);
+    if ($rfp_date_stmt) {
+        $rfp_date_stmt->bind_param("s", $selected_rfp_no);
+        $rfp_date_stmt->execute();
+        $rfp_date_result = $rfp_date_stmt->get_result();
+        if ($rfp_date_row = $rfp_date_result->fetch_assoc()) {
+            $min_date = $rfp_date_row['min_date'] ?? '';
+            $max_date = $rfp_date_row['max_date'] ?? '';
+            if (!empty($min_date) && !empty($max_date)) {
+                $selected_date_from = $min_date;
+                $selected_date_to   = $max_date;
+                $_GET['date_from']  = $min_date;
+                $_GET['date_to']    = $max_date;
+                // Re-evaluate whether we have a multi-day range
+                $has_date_range = ($selected_date_from !== $selected_date_to);
+                error_log("Settlement Page - Auto-filled dates from RFP '$selected_rfp_no': $min_date → $max_date");
+            }
+        }
+        $rfp_date_stmt->close();
     }
 }
 
@@ -543,7 +732,7 @@ if (!empty($existing_cad) && !empty($bank_abbreviation)) {
         $cad_generated = true;
     }
 } elseif (!empty($existing_cad) && empty($bank_abbreviation) && stripos($existing_cad, 'RFP-') !== 0) {
-    // No bank selected – keep non-RFP existing value
+    // No bank selected - keep non-RFP existing value
     $use_existing = true;
     $cad_number = $existing_cad;
     $cad_generated = true;
@@ -654,7 +843,30 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
         $types_adjustment .= "s";
     }
     
-    if (!empty($date_from) && !empty($date_to)) {
+    // LATE POSTING LOOKBACK support (same rules as main query)
+    $is_single = (!empty($date_from) && !empty($date_to) && $date_from === $date_to);
+    $lb_from = null;
+    $lb_to   = null;
+    if ($is_single) {
+        $lb_from = date('Y-m-d', strtotime($date_from . ' -7 days'));
+        $lb_to   = date('Y-m-d', strtotime($date_from . ' -1 day'));
+    }
+
+    if ($is_single && $lb_from && $lb_to) {
+        $where_conditions_regular[] = "(
+            (bt.datetime BETWEEN ? AND ?)
+            OR
+            (
+                bt.datetime BETWEEN ? AND ?
+                AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
+            )
+        )";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $params_regular[] = $date_to   . ' 23:59:59';
+        $params_regular[] = $lb_from . ' 00:00:00';
+        $params_regular[] = $lb_to   . ' 23:59:59';
+        $types_regular .= "ssss";
+    } elseif (!empty($date_from) && !empty($date_to)) {
         $where_conditions_regular[] = "bt.datetime BETWEEN ? AND ?";
         $params_regular[] = $date_from . ' 00:00:00';
         $params_regular[] = $date_to . ' 23:59:59';
@@ -671,6 +883,7 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
     
     $where_conditions_regular[] = "(bt.status IS NULL OR bt.status = '')";
     
+    // Adjustments remain on the exact settlement date(s)
     if (!empty($date_from) && !empty($date_to)) {
         $where_conditions_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
         $params_adjustment[] = $date_from . ' 00:00:00';
@@ -982,7 +1195,30 @@ function getPcsoLandbankPartners(
         $types_adjustment .= "s";
     }
 
-    if (!empty($date_from) && !empty($date_to)) {
+    // LATE POSTING LOOKBACK support (same rules as main query)
+    $is_single = (!empty($date_from) && !empty($date_to) && $date_from === $date_to);
+    $lb_from = null;
+    $lb_to   = null;
+    if ($is_single) {
+        $lb_from = date('Y-m-d', strtotime($date_from . ' -7 days'));
+        $lb_to   = date('Y-m-d', strtotime($date_from . ' -1 day'));
+    }
+
+    if ($is_single && $lb_from && $lb_to) {
+        $where_regular[] = "(
+            (bt.datetime BETWEEN ? AND ?)
+            OR
+            (
+                bt.datetime BETWEEN ? AND ?
+                AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
+            )
+        )";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $params_regular[] = $date_to   . ' 23:59:59';
+        $params_regular[] = $lb_from . ' 00:00:00';
+        $params_regular[] = $lb_to   . ' 23:59:59';
+        $types_regular .= "ssss";
+    } elseif (!empty($date_from) && !empty($date_to)) {
         $where_regular[] = "bt.datetime BETWEEN ? AND ?";
         $params_regular[] = $date_from . ' 00:00:00';
         $params_regular[] = $date_to . ' 23:59:59';
@@ -998,6 +1234,7 @@ function getPcsoLandbankPartners(
     }
     $where_regular[] = "(bt.status IS NULL OR bt.status = '')";
 
+    // Adjustments remain on the exact settlement date(s)
     if (!empty($date_from) && !empty($date_to)) {
         $where_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
         $params_adjustment[] = $date_from . ' 00:00:00';
@@ -1147,6 +1384,7 @@ function getPcsoLandbankPartners(
 /**
  * Fetch aggregated settlement totals for a partner, optionally filtered by regions
  * and/or an extra raw WHERE clause.
+ * Supports late-posting lookback when date_from == date_to (single-day settlement).
  */
 function getPartnerTotalsByRegions(
     mysqli $conn,
@@ -1205,7 +1443,30 @@ function getPartnerTotalsByRegions(
         $types_adjustment .= "s";
     }
 
-    if (!empty($date_from) && !empty($date_to)) {
+    // LATE POSTING LOOKBACK support (same rules as main query)
+    $is_single = (!empty($date_from) && !empty($date_to) && $date_from === $date_to);
+    $lb_from = null;
+    $lb_to   = null;
+    if ($is_single) {
+        $lb_from = date('Y-m-d', strtotime($date_from . ' -7 days'));
+        $lb_to   = date('Y-m-d', strtotime($date_from . ' -1 day'));
+    }
+
+    if ($is_single && $lb_from && $lb_to) {
+        $where_regular[] = "(
+            (bt.datetime BETWEEN ? AND ?)
+            OR
+            (
+                bt.datetime BETWEEN ? AND ?
+                AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
+            )
+        )";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $params_regular[] = $date_to   . ' 23:59:59';
+        $params_regular[] = $lb_from . ' 00:00:00';
+        $params_regular[] = $lb_to   . ' 23:59:59';
+        $types_regular .= "ssss";
+    } elseif (!empty($date_from) && !empty($date_to)) {
         $where_regular[] = "bt.datetime BETWEEN ? AND ?";
         $params_regular[] = $date_from . ' 00:00:00';
         $params_regular[] = $date_to . ' 23:59:59';
@@ -1221,6 +1482,7 @@ function getPartnerTotalsByRegions(
     }
     $where_regular[] = "(bt.status IS NULL OR bt.status = '')";
 
+    // Adjustments remain on the exact settlement date(s)
     if (!empty($date_from) && !empty($date_to)) {
         $where_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
         $params_adjustment[] = $date_from . ' 00:00:00';
@@ -1517,67 +1779,21 @@ $reason_options = [
     <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js"></script>
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="css/settlement_bank.css?v=<?= time(); ?>">
-    <style>
-        /* Additional styles for Save Reasons button */
-        .btn-export.save-reasons {
-            background: #17a2b8;
-            color: #fff;
-        }
-        .btn-export.save-reasons:hover {
-            background: #138496;
-        }
-        .btn-export.save-reasons:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-    </style>
+ 
 </head>
 <body>
-    <!-- Loading Modal - Visible by default -->
+    <!-- Simple Loading Overlay - Solid opaque background -->
     <div id="loadingModal">
-        <div class="loading-content">
-            <div class="loading-spinner">
-                <div class="spinner-ring"></div>
-                <i class="fas fa-chart-line spinner-icon"></i>
+        <div class="simple-loader-content">
+            <div class="simple-loader-ring"></div>
+            <h3 class="simple-loader-title">Loading Settlement Data</h3>
+            <p class="simple-loader-subtitle">Please wait a moment</p>
+            <div class="simple-loader-progress">
+                <div class="simple-loader-progress-bar"></div>
             </div>
-            <h3 class="loading-title">Loading Settlement Data</h3>
-            <p class="loading-subtitle">Please wait while we fetch your data<span class="dots"></span></p>
-            
-            <div class="loading-progress-container">
-                <div class="loading-progress">
-                    <div class="loading-progress-bar" id="progressBar"></div>
-                </div>
-            </div>
-            
-            <div class="loading-steps">
-                <div class="step active" id="step1">
-                    <div class="step-icon">
-                        <i class="fas fa-database"></i>
-                        <span class="step-number">1</span>
-                    </div>
-                    <span class="step-label">Fetching</span>
-                </div>
-                <div class="step" id="step2">
-                    <div class="step-icon">
-                        <i class="fas fa-calculator"></i>
-                        <span class="step-number">2</span>
-                    </div>
-                    <span class="step-label">Processing</span>
-                </div>
-                <div class="step" id="step3">
-                    <div class="step-icon">
-                        <i class="fas fa-file-alt"></i>
-                        <span class="step-number">3</span>
-                    </div>
-                    <span class="step-label">Generating</span>
-                </div>
-            </div>
-            
-            <div class="loading-time">
+            <div class="simple-loader-time">
                 <i class="far fa-clock"></i>
-                <span>Elapsed: </span>
-                <span class="time-value" id="elapsedTime">0</span>
-                <span>s</span>
+                <span>Elapsed: <span id="elapsedTime">0</span>s</span>
             </div>
         </div>
     </div>
@@ -1716,6 +1932,18 @@ $reason_options = [
                     $params_adjustment[] = $selected_settlement_type;
                     $types_adjustment .= "s";
                 }
+
+                // Filter by RFP No. when provided – this is critical so that
+                // querying by RFP alone does not scan the entire table.
+                if (!empty($selected_rfp_no)) {
+                    $where_conditions_regular[] = "bt.rfp_no = ?";
+                    $params_regular[] = $selected_rfp_no;
+                    $types_regular .= "s";
+
+                    $where_conditions_adjustment[] = "bt.rfp_no = ?";
+                    $params_adjustment[] = $selected_rfp_no;
+                    $types_adjustment .= "s";
+                }
                 
                 // ============================================
                 // SPECIAL WEEKLY PARTNERS (457, 458, 459, 460)
@@ -1760,6 +1988,50 @@ $reason_options = [
                 }
                 
                 // ============================================
+                // SPECIAL MONDAY PARTNER (119)
+                // ============================================
+                if ($selected_is_special_monday && !$include_special_monday_partners) {
+                    // Partner 119 selected but date_to is not Monday → exclude
+                    $where_conditions_regular[] = "1=0";
+                    $where_conditions_adjustment[] = "1=0";
+                }
+                
+                if (empty($selected_partner) && !$include_special_monday_partners) {
+                    // No partner selected and date_to is not Monday → exclude 119
+                    $sm_placeholders = implode(',', array_fill(0, count($special_monday_partners), '?'));
+                    $where_conditions_regular[] = "bt.partner_id_kpx NOT IN ($sm_placeholders)";
+                    $where_conditions_adjustment[] = "bt.partner_id_kpx NOT IN ($sm_placeholders)";
+                    foreach ($special_monday_partners as $sm) {
+                        $params_regular[] = $sm;
+                        $types_regular .= "s";
+                        $params_adjustment[] = $sm;
+                        $types_adjustment .= "s";
+                    }
+                }
+                
+                // ============================================
+                // SPECIAL MONDAY-TO-SUNDAY PARTNERS (1101, 1228, 1230, 1094)
+                // ============================================
+                if ($selected_is_special_m2s && !$include_special_m2s_partners) {
+                    // Partner selected but date_to is not Monday → exclude
+                    $where_conditions_regular[] = "1=0";
+                    $where_conditions_adjustment[] = "1=0";
+                }
+                
+                if (empty($selected_partner) && !$include_special_m2s_partners) {
+                    // No partner selected and date_to is not Monday → exclude these partners
+                    $m2s_placeholders = implode(',', array_fill(0, count($special_m2s_partners), '?'));
+                    $where_conditions_regular[] = "bt.partner_id_kpx NOT IN ($m2s_placeholders)";
+                    $where_conditions_adjustment[] = "bt.partner_id_kpx NOT IN ($m2s_placeholders)";
+                    foreach ($special_m2s_partners as $m2s) {
+                        $params_regular[] = $m2s;
+                        $types_regular .= "s";
+                        $params_adjustment[] = $m2s;
+                        $types_adjustment .= "s";
+                    }
+                }
+                
+                // ============================================
                 // DATE FILTERS
                 // ============================================
                 $use_special_dates = false;
@@ -1772,18 +2044,78 @@ $reason_options = [
                     $use_special_wb_dates = true;
                 }
                 
+                $use_special_monday_dates = false;
+                if ($selected_is_special_monday && $include_special_monday_partners) {
+                    $use_special_monday_dates = true;
+                }
+                
+                $use_special_m2s_dates = false;
+                if ($selected_is_special_m2s && $include_special_m2s_partners) {
+                    $use_special_m2s_dates = true;
+                }
+                
                 if ($use_special_dates) {
                     $effective_date_from = $special_date_from;
                     $effective_date_to = $special_date_to;
                 } elseif ($use_special_wb_dates) {
                     $effective_date_from = $special_wb_date_from;
                     $effective_date_to = $special_wb_date_to;
+                } elseif ($use_special_monday_dates) {
+                    $effective_date_from = $special_monday_date_from;
+                    $effective_date_to = $special_monday_date_to;
+                } elseif ($use_special_m2s_dates) {
+                    $effective_date_from = $special_m2s_date_from;
+                    $effective_date_to = $special_m2s_date_to;
                 } else {
                     $effective_date_from = $selected_date_from;
                     $effective_date_to = $selected_date_to;
                 }
+
+                // ============================================================
+                // LATE POSTING LOOKBACK (single-day settlement)
+                // When Transaction Date From == To (e.g. 2026-09-02), also
+                // include UNSETTLED transactions from the previous 7 days
+                // (late postings that were uploaded after the previous day's
+                // settlement was already processed). Only unsettled ones are
+                // pulled so already-settled volume from prior days is never
+                // double-counted.
+                // Example: Sept 2 has 10 txns + 1 unsettled late from Sept 1
+                //          → volume count on Sept 2 = 11
+                // ============================================================
+                $is_single_day_settlement = (
+                    !empty($effective_date_from)
+                    && !empty($effective_date_to)
+                    && $effective_date_from === $effective_date_to
+                    && !$use_special_dates
+                    && !$use_special_wb_dates
+                    && !$use_special_monday_dates
+                    && !$use_special_m2s_dates
+                );
+                $lookback_from = null;
+                $lookback_to   = null;
+                if ($is_single_day_settlement) {
+                    $lookback_from = date('Y-m-d', strtotime($effective_date_from . ' -7 days'));
+                    $lookback_to   = date('Y-m-d', strtotime($effective_date_from . ' -1 day'));
+                }
                 
-                if (!empty($effective_date_from) && !empty($effective_date_to)) {
+                if ($is_single_day_settlement && $lookback_from && $lookback_to) {
+                    // Include:
+                    //  1) All transactions on the selected day (any settle status)
+                    //  2) Only UNSETTLED transactions from the 7-day lookback window
+                    $where_conditions_regular[] = "(
+                        (bt.datetime BETWEEN ? AND ?)
+                        OR
+                        (
+                            bt.datetime BETWEEN ? AND ?
+                            AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
+                        )
+                    )";
+                    $params_regular[] = $effective_date_from . ' 00:00:00';
+                    $params_regular[] = $effective_date_to   . ' 23:59:59';
+                    $params_regular[] = $lookback_from . ' 00:00:00';
+                    $params_regular[] = $lookback_to   . ' 23:59:59';
+                    $types_regular .= "ssss";
+                } elseif (!empty($effective_date_from) && !empty($effective_date_to)) {
                     $where_conditions_regular[] = "bt.datetime BETWEEN ? AND ?";
                     $params_regular[] = $effective_date_from . ' 00:00:00';
                     $params_regular[] = $effective_date_to . ' 23:59:59';
@@ -1800,6 +2132,7 @@ $reason_options = [
                 
                 $where_conditions_regular[] = "(bt.status IS NULL OR bt.status = '')";
                 
+                // Adjustments stay strictly on the effective (settlement) date range
                 if (!empty($effective_date_from) && !empty($effective_date_to)) {
                     $where_conditions_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
                     $params_adjustment[] = $effective_date_from . ' 00:00:00';
@@ -1816,6 +2149,16 @@ $reason_options = [
                 }
                 
                 $where_conditions_adjustment[] = "(bt.status IS NOT NULL AND bt.status != '')";
+
+                // Detect whether we should apply weekend per-day breakdown
+                $apply_weekend_daily_breakdown = false;
+                $weekend_partner_list = getWeekendBreakdownPartners();
+
+                // If specific partner selected and is a weekend-breakdown partner and range is Fri-Sun
+                if (!empty($selected_partner) && in_array($selected_partner, $weekend_partner_list, true)
+                    && isFridayToSundayRange($effective_date_from, $effective_date_to)) {
+                    $apply_weekend_daily_breakdown = true;
+                }
                 
                 $regular_sql = "SELECT 
                     bt.partner_id_kpx,
@@ -1836,7 +2179,8 @@ $reason_options = [
                               OR bt.settle_unsettle != 'Settled' 
                          THEN 1 ELSE 0 END) as unsettled_count,
                     MAX(bt.datetime) as last_transaction_date,
-                    MIN(bt.datetime) as first_transaction_date
+                    MIN(bt.datetime) as first_transaction_date,
+                    DATE(bt.datetime) as transaction_date_group
                 FROM mldb.billspayment_transaction bt
                 LEFT JOIN masterdata.partner_masterfile pm 
                     ON bt.partner_id_kpx = pm.partner_id_kpx
@@ -1848,15 +2192,18 @@ $reason_options = [
                          pm.bank, 
                          pm.settled_online_check, 
                          pm.charge_to, 
-                         pm.charge_sched";
+                         pm.charge_sched,
+                         DATE(bt.datetime)
+                ORDER BY bt.partner_id_kpx, DATE(bt.datetime) ASC";
                 
                 $adjustment_sql = "SELECT 
                                         bt.partner_id_kpx,
+                                        DATE(bt.cancellation_date) as cancellation_date_group,
                                         SUM(CASE WHEN bt.amount_paid < 0 THEN bt.amount_paid ELSE 0 END) as total_adjustment
                                     FROM mldb.billspayment_transaction bt
                                     LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
                                     WHERE " . implode(" AND ", $where_conditions_adjustment) . "
-                                    GROUP BY bt.partner_id_kpx";
+                                    GROUP BY bt.partner_id_kpx, DATE(bt.cancellation_date)";
                 
                 $regular_result = null;
                 if (!empty($params_regular)) {
@@ -1889,39 +2236,129 @@ $reason_options = [
                 }
                 
                 $combined_data = [];
-                
-                if ($regular_result && $regular_result->num_rows > 0) {
-                    while ($row = $regular_result->fetch_assoc()) {
-                        $partner_id = $row['partner_id_kpx'];
-                        $combined_data[$partner_id] = [
-                            'partner_id_kpx' => $partner_id,
-                            'partner_name' => $row['partner_name'] ?? $partner_id,
-                            'partner_accName' => $row['partner_accName'] ?? 'N/A',
-                            'bank_accNumber' => $row['bank_accNumber'] ?? 'N/A',
-                            'bank' => $row['bank'] ?? '',
-                            'settlement_type' => $row['settlement_type'] ?? '',
-                            'charge_to' => $row['charge_to'] ?? '',
-                            'charge_sched' => $row['charge_sched'] ?? '',
-                            'settle_unsettle' => $row['settle_unsettle'] ?? '',
-                            'txn_count' => (int)($row['txn_count'] ?? 0),
-                            'total_principal' => (float)($row['total_principal'] ?? 0),
-                            'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
-                            'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
-                            'total_adjustment' => 0,
-                            'settled_count' => (int)($row['settled_count'] ?? 0),
-                            'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
-                            'last_transaction_date' => $row['last_transaction_date'] ?? null,
-                            'first_transaction_date' => $row['first_transaction_date'] ?? null
-                        ];
-                    }
-                }
+                // We'll store adjustments keyed by partner_id and also partner_id + date
+                $adjustments_by_partner = [];
+                $adjustments_by_partner_date = [];
                 
                 if ($adjustment_result && $adjustment_result->num_rows > 0) {
                     while ($row = $adjustment_result->fetch_assoc()) {
                         $partner_id = $row['partner_id_kpx'];
-                        if (isset($combined_data[$partner_id])) {
-                            $combined_data[$partner_id]['total_adjustment'] = (float)($row['total_adjustment'] ?? 0);
+                        $date_group = $row['cancellation_date_group'] ?? null;
+                        $adj_val = (float)($row['total_adjustment'] ?? 0);
+                        
+                        // Accumulate per partner
+                        if (!isset($adjustments_by_partner[$partner_id])) {
+                            $adjustments_by_partner[$partner_id] = 0;
+                        }
+                        $adjustments_by_partner[$partner_id] += $adj_val;
+                        
+                        // Accumulate per partner + date
+                        if (!empty($date_group)) {
+                            $key = $partner_id . '|' . $date_group;
+                            if (!isset($adjustments_by_partner_date[$key])) {
+                                $adjustments_by_partner_date[$key] = 0;
+                            }
+                            $adjustments_by_partner_date[$key] += $adj_val;
+                        }
+                    }
+                }
+                
+                if ($regular_result && $regular_result->num_rows > 0) {
+                    while ($row = $regular_result->fetch_assoc()) {
+                        $partner_id = $row['partner_id_kpx'];
+                        $transaction_date = $row['transaction_date_group'] ?? null;
+                        
+                        // Determine if this partner should be split per day for a weekend range
+                        $needs_daily_breakdown = false;
+                        if (!empty($transaction_date)
+                            && isFridayToSundayRange($effective_date_from, $effective_date_to)
+                            && in_array($partner_id, $weekend_partner_list, true)) {
+                            $needs_daily_breakdown = true;
+                        }
+                        
+                        if ($needs_daily_breakdown) {
+                            $key = $partner_id . '_' . $transaction_date;
+                            $date_key = $partner_id . '|' . $transaction_date;
+                            $adj_for_date = $adjustments_by_partner_date[$date_key] ?? 0;
+                            
+                            $combined_data[$key] = [
+                                'partner_id_kpx' => $partner_id,
+                                'partner_name' => $row['partner_name'] ?? $partner_id,
+                                'partner_accName' => $row['partner_accName'] ?? 'N/A',
+                                'bank_accNumber' => $row['bank_accNumber'] ?? 'N/A',
+                                'bank' => $row['bank'] ?? '',
+                                'settlement_type' => $row['settlement_type'] ?? '',
+                                'charge_to' => $row['charge_to'] ?? '',
+                                'charge_sched' => $row['charge_sched'] ?? '',
+                                'settle_unsettle' => $row['settle_unsettle'] ?? '',
+                                'txn_count' => (int)($row['txn_count'] ?? 0),
+                                'total_principal' => (float)($row['total_principal'] ?? 0),
+                                'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
+                                'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
+                                'total_adjustment' => $adj_for_date,
+                                'settled_count' => (int)($row['settled_count'] ?? 0),
+                                'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
+                                'last_transaction_date' => $row['last_transaction_date'] ?? null,
+                                'first_transaction_date' => $row['first_transaction_date'] ?? null,
+                                'is_daily_breakdown' => true,
+                                'transaction_date' => $transaction_date
+                            ];
                         } else {
+                            $key = $partner_id;
+                            if (isset($combined_data[$key]) && empty($combined_data[$key]['is_daily_breakdown'])) {
+                                // Merge with existing lump-sum entry (shouldn't normally happen since we group by date,
+                                // but if there's a mix, aggregate)
+                                $combined_data[$key]['txn_count'] += (int)($row['txn_count'] ?? 0);
+                                $combined_data[$key]['total_principal'] += (float)($row['total_principal'] ?? 0);
+                                $combined_data[$key]['charge_to_customer'] += (float)($row['charge_to_customer'] ?? 0);
+                                $combined_data[$key]['charge_to_partner'] += (float)($row['charge_to_partner'] ?? 0);
+                                $combined_data[$key]['settled_count'] += (int)($row['settled_count'] ?? 0);
+                                $combined_data[$key]['unsettled_count'] += (int)($row['unsettled_count'] ?? 0);
+                            } else {
+                                $combined_data[$key] = [
+                                    'partner_id_kpx' => $partner_id,
+                                    'partner_name' => $row['partner_name'] ?? $partner_id,
+                                    'partner_accName' => $row['partner_accName'] ?? 'N/A',
+                                    'bank_accNumber' => $row['bank_accNumber'] ?? 'N/A',
+                                    'bank' => $row['bank'] ?? '',
+                                    'settlement_type' => $row['settlement_type'] ?? '',
+                                    'charge_to' => $row['charge_to'] ?? '',
+                                    'charge_sched' => $row['charge_sched'] ?? '',
+                                    'settle_unsettle' => $row['settle_unsettle'] ?? '',
+                                    'txn_count' => (int)($row['txn_count'] ?? 0),
+                                    'total_principal' => (float)($row['total_principal'] ?? 0),
+                                    'charge_to_customer' => (float)($row['charge_to_customer'] ?? 0),
+                                    'charge_to_partner' => (float)($row['charge_to_partner'] ?? 0),
+                                    'total_adjustment' => 0,
+                                    'settled_count' => (int)($row['settled_count'] ?? 0),
+                                    'unsettled_count' => (int)($row['unsettled_count'] ?? 0),
+                                    'last_transaction_date' => $row['last_transaction_date'] ?? null,
+                                    'first_transaction_date' => $row['first_transaction_date'] ?? null
+                                ];
+                            }
+                        }
+                    }
+                }
+                
+                // Apply lump-sum adjustments to non-daily-breakdown entries
+                foreach ($adjustments_by_partner as $partner_id => $adj_total) {
+                    // If partner has only a lump-sum entry, apply the full adjustment
+                    if (isset($combined_data[$partner_id]) && empty($combined_data[$partner_id]['is_daily_breakdown'])) {
+                        $combined_data[$partner_id]['total_adjustment'] = $adj_total;
+                    } else {
+                        // If partner has daily-breakdown entries or no entry, handle:
+                        // - For daily breakdown entries: already handled per-date above
+                        // - If no entry exists at all, create a lump-sum row with just the adjustment
+                        $has_any_daily = false;
+                        foreach ($combined_data as $k => $v) {
+                            if ($v['partner_id_kpx'] === $partner_id && !empty($v['is_daily_breakdown'])) {
+                                $has_any_daily = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!$has_any_daily && !isset($combined_data[$partner_id])) {
+                            // Partner has only adjustments, no regular rows
                             $partner_details_sql = "SELECT 
                                                         partner_name,
                                                         partner_accName,
@@ -1953,13 +2390,14 @@ $reason_options = [
                                         'total_principal' => 0,
                                         'charge_to_customer' => 0,
                                         'charge_to_partner' => 0,
-                                        'total_adjustment' => (float)($row['total_adjustment'] ?? 0),
+                                        'total_adjustment' => $adj_total,
                                         'settled_count' => 0,
                                         'unsettled_count' => 0,
                                         'last_transaction_date' => null,
                                         'first_transaction_date' => null
                                     ];
                                 }
+                                $stmt->close();
                             }
                         }
                     }
@@ -2083,6 +2521,103 @@ $reason_options = [
                             $wb_entry['special_wb_date_from'] = $special_wb_date_from;
                             $wb_entry['special_wb_date_to'] = $special_wb_date_to;
                             $combined_data[$wb_id] = $wb_entry;
+                        }
+                    }
+                }
+
+                // ------------------------------------------------
+                // SPECIAL: Handle partner 119 (Monday settlement, Sat->Fri of prev week)
+                // Only include when date_to falls on a Monday.
+                // When included, re-fetch with Saturday -> Friday range (previous week).
+                // ------------------------------------------------
+                if (!$include_special_monday_partners) {
+                    // date_to is not Monday → remove partner 119 from results
+                    foreach ($special_monday_partners as $sm_id) {
+                        if (isset($combined_data[$sm_id])) {
+                            unset($combined_data[$sm_id]);
+                        }
+                    }
+                } else {
+                    // date_to IS Monday - re-fetch partner 119 with Sat->Fri range
+                    foreach ($special_monday_partners as $sm_id) {
+                        $should_process = isset($combined_data[$sm_id]) || $selected_partner === $sm_id;
+
+                        if (!$should_process) {
+                            continue;
+                        }
+
+                        if (!isSpecialMondayPartner($sm_id)) {
+                            continue;
+                        }
+
+                        // Remove existing entry and re-fetch
+                        unset($combined_data[$sm_id]);
+
+                        $sm_entry = getPartnerTotalsByRegions(
+                            $conn,
+                            $sm_id,
+                            $selected_bank,
+                            $selected_settlement_type,
+                            $special_monday_date_from,
+                            $special_monday_date_to,
+                            [],
+                            null
+                        );
+
+                        if ($sm_entry !== null) {
+                            $sm_entry['special_monday'] = true;
+                            $sm_entry['special_monday_date_from'] = $special_monday_date_from;
+                            $sm_entry['special_monday_date_to'] = $special_monday_date_to;
+                            $combined_data[$sm_id] = $sm_entry;
+                        }
+                    }
+                }
+
+                // ------------------------------------------------
+                // SPECIAL: Handle partners 1101, 1228, 1230, 1094
+                // (Monday-to-Sunday previous week capture)
+                // Only include when date_to falls on a Monday.
+                // When included, re-fetch with Monday -> Sunday range (previous week).
+                // ------------------------------------------------
+                if (!$include_special_m2s_partners) {
+                    // date_to is not Monday → remove these partners from results
+                    foreach ($special_m2s_partners as $m2s_id) {
+                        if (isset($combined_data[$m2s_id])) {
+                            unset($combined_data[$m2s_id]);
+                        }
+                    }
+                } else {
+                    // date_to IS Monday - re-fetch these partners with Mon->Sun (prev week) range
+                    foreach ($special_m2s_partners as $m2s_id) {
+                        $should_process = isset($combined_data[$m2s_id]) || $selected_partner === $m2s_id;
+
+                        if (!$should_process) {
+                            continue;
+                        }
+
+                        if (!isSpecialMondayToSundayPartner($m2s_id)) {
+                            continue;
+                        }
+
+                        // Remove existing entry and re-fetch
+                        unset($combined_data[$m2s_id]);
+
+                        $m2s_entry = getPartnerTotalsByRegions(
+                            $conn,
+                            $m2s_id,
+                            $selected_bank,
+                            $selected_settlement_type,
+                            $special_m2s_date_from,
+                            $special_m2s_date_to,
+                            [],
+                            null
+                        );
+
+                        if ($m2s_entry !== null) {
+                            $m2s_entry['special_monday_to_sunday'] = true;
+                            $m2s_entry['special_m2s_date_from'] = $special_m2s_date_from;
+                            $m2s_entry['special_m2s_date_to'] = $special_m2s_date_to;
+                            $combined_data[$m2s_id] = $m2s_entry;
                         }
                     }
                 }
@@ -2322,7 +2857,14 @@ $reason_options = [
                         $order_b = $order[$key_b] ?? 12;
                         
                         if ($order_a == $order_b) {
-                            return strcmp($a['partner_name'] ?? '', $b['partner_name'] ?? '');
+                            // If same group, order by partner_id then by date (for daily breakdown rows)
+                            $pid_compare = strcmp($a['partner_id_kpx'] ?? '', $b['partner_id_kpx'] ?? '');
+                            if ($pid_compare !== 0) {
+                                return $pid_compare;
+                            }
+                            $date_a = $a['transaction_date'] ?? '';
+                            $date_b = $b['transaction_date'] ?? '';
+                            return strcmp($date_a, $date_b);
                         }
                         return $order_a - $order_b;
                     });
@@ -2411,6 +2953,11 @@ $reason_options = [
                                 continue;
                             }
                             
+                            // Skip daily-breakdown rows for the weekend partners — they're already split per day.
+                            if (!empty($row['is_daily_breakdown'])) {
+                                continue;
+                            }
+                            
                             $daily_date_from = $selected_date_from;
                             $daily_date_to = $selected_date_to;
                             if (!empty($row['special_weekly'])) {
@@ -2419,6 +2966,12 @@ $reason_options = [
                             } elseif (!empty($row['special_week_before'])) {
                                 $daily_date_from = $row['special_wb_date_from'] ?? $selected_date_from;
                                 $daily_date_to = $row['special_wb_date_to'] ?? $selected_date_to;
+                            } elseif (!empty($row['special_monday'])) {
+                                $daily_date_from = $row['special_monday_date_from'] ?? $selected_date_from;
+                                $daily_date_to = $row['special_monday_date_to'] ?? $selected_date_to;
+                            } elseif (!empty($row['special_monday_to_sunday'])) {
+                                $daily_date_from = $row['special_m2s_date_from'] ?? $selected_date_from;
+                                $daily_date_to = $row['special_m2s_date_to'] ?? $selected_date_to;
                             }
                             
                             $regions = $row['fdc_regions'] ?? $row['fui_regions'] ?? $row['fdc257_regions'] ?? [];
@@ -2561,7 +3114,8 @@ $reason_options = [
                             $daily_cache_key = $partner_id;
                         }
                         
-                        $daily_data = $has_date_range && isset($daily_breakdown_cache[$daily_cache_key]) 
+                        $is_daily_breakdown_row = !empty($row['is_daily_breakdown']);
+                        $daily_data = (!$is_daily_breakdown_row && $has_date_range && isset($daily_breakdown_cache[$daily_cache_key])) 
                             ? $daily_breakdown_cache[$daily_cache_key] 
                             : [];
                         $daily_html = !empty($daily_data) ? generateDailyBreakdownHTML($daily_data) : '';
@@ -2573,10 +3127,19 @@ $reason_options = [
                             $display_partner_name = $row['pcso_region'] . ' - ' . $display_partner_name;
                         }
                         
+                        // For weekend daily-breakdown rows, append the date to the display name
+                        $row_date_display = '';
+                        if ($is_daily_breakdown_row && !empty($row['transaction_date'])) {
+                            $row_date_display = date('M d, Y', strtotime($row['transaction_date']));
+                        }
+                        
                         $groups[$group_key]['rows'][] = [
                             'row_index' => $row_index,
                             'partner_id' => $partner_id,
                             'partner_name' => $display_partner_name,
+                            'display_date' => $row_date_display,
+                            'is_daily_breakdown_row' => $is_daily_breakdown_row,
+                            'transaction_date' => $row['transaction_date'] ?? null,
                             'account_name' => $row['partner_accName'] ?? 'N/A',
                             'account_number' => $row['bank_accNumber'] ?? 'N/A',
                             'txn_count' => $txn_count,
@@ -2591,7 +3154,7 @@ $reason_options = [
                             'is_partially_settled' => $is_partially_settled,
                             'settled_count' => $settled_count,
                             'unsettled_count' => $unsettled_count,
-                            'has_daily_breakdown' => $has_date_range,
+                            'has_daily_breakdown' => (!$is_daily_breakdown_row && $has_date_range),
                             'daily_html' => $daily_html,
                             'charge_to' => $charge_to,
                             'charge_sched' => $charge_sched,
@@ -2602,7 +3165,13 @@ $reason_options = [
                             'special_date_to' => $row['special_date_to'] ?? null,
                             'special_week_before' => !empty($row['special_week_before']),
                             'special_wb_date_from' => $row['special_wb_date_from'] ?? null,
-                            'special_wb_date_to' => $row['special_wb_date_to'] ?? null
+                            'special_wb_date_to' => $row['special_wb_date_to'] ?? null,
+                            'special_monday' => !empty($row['special_monday']),
+                            'special_monday_date_from' => $row['special_monday_date_from'] ?? null,
+                            'special_monday_date_to' => $row['special_monday_date_to'] ?? null,
+                            'special_monday_to_sunday' => !empty($row['special_monday_to_sunday']),
+                            'special_m2s_date_from' => $row['special_m2s_date_from'] ?? null,
+                            'special_m2s_date_to' => $row['special_m2s_date_to'] ?? null
                         ];
                         $row_index++;
                     }
@@ -2673,6 +3242,16 @@ $reason_options = [
                                 <i class="fas fa-calendar-week"></i> Week-Before Capture (Mon-Sun) for SHOPEE - LDS: <?php echo date('M d, Y', strtotime($special_wb_date_from)); ?> → <?php echo date('M d, Y', strtotime($special_wb_date_to)); ?>
                             </span>
                             <?php endif; ?>
+                            <?php if ($include_special_monday_partners && !empty($special_monday_date_from) && !empty($special_monday_date_to)): ?>
+                            <span class="table-badge" style="background: #856404; color: #fff;">
+                                <i class="fas fa-calendar-week"></i> Monday Capture (Sat-Fri) for Partner 119: <?php echo date('M d, Y', strtotime($special_monday_date_from)); ?> → <?php echo date('M d, Y', strtotime($special_monday_date_to)); ?>
+                            </span>
+                            <?php endif; ?>
+                            <?php if ($include_special_m2s_partners && !empty($special_m2s_date_from) && !empty($special_m2s_date_to)): ?>
+                            <span class="table-badge" style="background: #856404; color: #fff;">
+                                <i class="fas fa-calendar-week"></i> Monday Capture (Mon-Sun prev week) for Partners 1101, 1228, 1230, 1094: <?php echo date('M d, Y', strtotime($special_m2s_date_from)); ?> → <?php echo date('M d, Y', strtotime($special_m2s_date_to)); ?>
+                            </span>
+                            <?php endif; ?>
                             <?php if (!$cad_generated && !empty($selected_partner)): ?>
                             <span class="table-badge" style="background: #dc3545; color: #fff;">
                                 <i class="fas fa-exclamation-triangle"></i> Invalid Bank - Cannot Settle
@@ -2723,6 +3302,46 @@ $reason_options = [
                             Partner SHOPEE - LSD 1005 (BDO/ONLINE) settles on Tuesdays but captures the full week <strong>before</strong> the Tuesday. 
                             Transactions captured: <strong><?php echo date('M d, Y', strtotime($special_wb_date_from)); ?></strong> 
                             (Monday) → <strong><?php echo date('M d, Y', strtotime($special_wb_date_to)); ?></strong> (Sunday).
+                        </div>
+                        <?php endif; ?>
+                        
+                        <?php if ($include_special_monday_partners): ?>
+                        <div class="alert-info-custom" style="background: #fff3cd; border-color: #ffc107; color: #856404;">
+                            <i class="fas fa-calendar-week"></i>
+                            <strong>Monday Settlement Notice:</strong> 
+                            Partner 119 settles on Mondays but captures the previous week from <strong>Saturday to Friday</strong>. 
+                            Transactions captured: <strong><?php echo date('M d, Y', strtotime($special_monday_date_from)); ?></strong> 
+                            (Saturday) → <strong><?php echo date('M d, Y', strtotime($special_monday_date_to)); ?></strong> (Friday).
+                        </div>
+                        <?php endif; ?>
+                        
+                        <?php if ($include_special_m2s_partners): ?>
+                        <div class="alert-info-custom" style="background: #fff3cd; border-color: #ffc107; color: #856404;">
+                            <i class="fas fa-calendar-week"></i>
+                            <strong>Monday Settlement Notice:</strong> 
+                            Partners 1101, 1228, 1230, and 1094 settle on Mondays but capture the <strong>previous week</strong> from Monday to Sunday. 
+                            Transactions captured: <strong><?php echo date('M d, Y', strtotime($special_m2s_date_from)); ?></strong> 
+                            (Monday) → <strong><?php echo date('M d, Y', strtotime($special_m2s_date_to)); ?></strong> (Sunday).
+                        </div>
+                        <?php endif; ?>
+
+                        <?php if (!empty($selected_partner) && in_array($selected_partner, $weekend_partner_list, true) && isFridayToSundayRange($selected_date_from, $selected_date_to)): ?>
+                        <div class="alert-info-custom" style="background: #d1ecf1; border-color: #bee5eb; color: #0c5460;">
+                            <i class="fas fa-calendar-day"></i>
+                            <strong>Weekend Per-Day Breakdown:</strong> 
+                            Because the selected date range is <strong>Friday → Sunday</strong>, transactions for this partner are shown as a <strong>per-day breakdown</strong> instead of a lump sum.
+                        </div>
+                        <?php endif; ?>
+
+                        <?php if (!empty($is_single_day_settlement) && !empty($lookback_from) && !empty($lookback_to)): ?>
+                        <div class="alert-info-custom" style="background: #e8f5e9; border-color: #81c784; color: #1b5e20;">
+                            <i class="fas fa-clock"></i>
+                            <strong>Late Posting Lookback Active:</strong>
+                            Settlement date (<strong><?php echo date('M d, Y', strtotime($effective_date_from)); ?></strong>),
+                            any <strong>unsettled</strong> transactions from the previous 7 days
+                            (<strong><?php echo date('M d, Y', strtotime($lookback_from)); ?></strong>
+                            → <strong><?php echo date('M d, Y', strtotime($lookback_to)); ?></strong>)
+                            are automatically included.
                         </div>
                         <?php endif; ?>
                         
@@ -2792,8 +3411,9 @@ $reason_options = [
                                         $is_settled = $row_data['is_fully_settled'];
                                         $is_partial = $row_data['is_partially_settled'];
                                         $status_class = $is_settled ? 'settled' : ($is_partial ? 'partial' : 'unsettled');
+                                        $is_daily_breakdown_row = !empty($row_data['is_daily_breakdown_row']);
                                     ?>
-                                        <tr class="data-row <?php echo $row_data['is_negative'] ? 'negative-row' : ''; ?> <?php echo $is_settled ? 'settled-row' : ($is_partial ? 'partial-row' : 'unsettled-row'); ?>" 
+                                        <tr class="data-row <?php echo $row_data['is_negative'] ? 'negative-row' : ''; ?> <?php echo $is_settled ? 'settled-row' : ($is_partial ? 'partial-row' : 'unsettled-row'); ?> <?php echo $is_daily_breakdown_row ? 'weekend-daily-row' : ''; ?>" 
                                             data-row-index="<?php echo $row_data['row_index']; ?>"
                                             data-settlement="<?php echo $row_data['settlement_amount']; ?>"
                                             data-principal="<?php echo $row_data['principal']; ?>"
@@ -2809,7 +3429,11 @@ $reason_options = [
                                             data-is-pcso="<?php echo $row_data['is_pcso_landbank'] ? 'true' : 'false'; ?>"
                                             data-pcso-region="<?php echo htmlspecialchars($row_data['pcso_region']); ?>"
                                             data-special-weekly="<?php echo $row_data['special_weekly'] ? 'true' : 'false'; ?>"
-                                            data-special-week-before="<?php echo $row_data['special_week_before'] ? 'true' : 'false'; ?>">
+                                            data-special-week-before="<?php echo $row_data['special_week_before'] ? 'true' : 'false'; ?>"
+                                            data-special-monday="<?php echo $row_data['special_monday'] ? 'true' : 'false'; ?>"
+                                            data-special-monday-to-sunday="<?php echo $row_data['special_monday_to_sunday'] ? 'true' : 'false'; ?>"
+                                            data-is-daily-breakdown-row="<?php echo $is_daily_breakdown_row ? 'true' : 'false'; ?>"
+                                            data-transaction-date="<?php echo htmlspecialchars($row_data['transaction_date'] ?? ''); ?>">
                                             <td class="center checkbox-cell">
                                                 <input type="checkbox" class="row-checkbox" 
                                                        data-row-index="<?php echo $row_data['row_index']; ?>"
@@ -2830,7 +3454,10 @@ $reason_options = [
                                                 <?php endif; ?>
                                             </td>
                                             <td class="partner-name-cell">
-                                                <?php echo htmlspecialchars($row_data['partner_name']); ?>
+                                                <?php echo htmlspecialchars($row_data['partner_name']); ?> <br>
+                                                <?php if ($is_daily_breakdown_row && !empty($row_data['display_date'])): ?>
+                                                    <span class="date-badge"><?php echo htmlspecialchars($row_data['display_date']); ?> trnx</span>
+                                                <?php endif; ?>
                                                 <?php if ($row_data['special_weekly']): ?>
                                                     <span style="font-size: 10px; color: #856404; margin-left: 5px;" 
                                                           title="Weekly capture: <?php echo htmlspecialchars($row_data['special_date_from']); ?> → <?php echo htmlspecialchars($row_data['special_date_to']); ?>">
@@ -2840,7 +3467,19 @@ $reason_options = [
                                                 <?php if (!empty($row_data['special_week_before'])): ?>
                                                     <span style="font-size: 10px; color: #856404; margin-left: 5px;" 
                                                           title="Week-before capture: <?php echo htmlspecialchars($row_data['special_wb_date_from']); ?> (Mon) → <?php echo htmlspecialchars($row_data['special_wb_date_to']); ?> (Sun)">
-                                                        <i class="fas fa-calendar-week"></i> Weekly (Mon–Sun)
+                                                        <i class="fas fa-calendar-week"></i> Weekly (Mon-Sun)
+                                                    </span>
+                                                <?php endif; ?>
+                                                <?php if (!empty($row_data['special_monday'])): ?>
+                                                    <span style="font-size: 10px; color: #856404; margin-left: 5px;" 
+                                                          title="Monday capture: <?php echo htmlspecialchars($row_data['special_monday_date_from']); ?> (Sat) → <?php echo htmlspecialchars($row_data['special_monday_date_to']); ?> (Fri)">
+                                                        <i class="fas fa-calendar-week"></i> Weekly (Sat-Fri)
+                                                    </span>
+                                                <?php endif; ?>
+                                                <?php if (!empty($row_data['special_monday_to_sunday'])): ?>
+                                                    <span style="font-size: 10px; color: #856404; margin-left: 5px;" 
+                                                          title="Monday capture: <?php echo htmlspecialchars($row_data['special_m2s_date_from']); ?> (Mon) → <?php echo htmlspecialchars($row_data['special_m2s_date_to']); ?> (Sun)">
+                                                        <i class="fas fa-calendar-week"></i> Weekly (Mon-Sun prev)
                                                     </span>
                                                 <?php endif; ?>
                                                 <?php if ($row_data['is_pcso_landbank']): ?>
@@ -2866,8 +3505,7 @@ $reason_options = [
                                             <td class="center">
                                                 <span class="status-badge <?php echo $status_class; ?>">
                                                     <?php if ($is_settled): ?>
-                                                        <i class="fas fa-check-circle"></i> Settled
-                                                    <?php elseif ($is_partial): ?>
+                                                        <i class="fas fa-check-circle"></i> Settled                                                    <?php elseif ($is_partial): ?>
                                                         <i class="fas fa-clock"></i> Partial
                                                         <span style="font-size: 10px; display: block; color: #666;">
                                                             <?php echo $row_data['settled_count']; ?> settled and <?php echo $row_data['unsettled_count']; ?> unsettled
@@ -2899,7 +3537,7 @@ $reason_options = [
                                             </td>
                                         </tr>
                                         
-                                        <?php if ($row_data['has_daily_breakdown'] && !empty($row_data['daily_html'])): ?>
+                                        <?php if (!$is_daily_breakdown_row && $row_data['has_daily_breakdown'] && !empty($row_data['daily_html'])): ?>
                                             <tr class="daily-breakdown-container" 
                                                 id="dailyBreakdown_<?php echo $row_data['row_index']; ?>" 
                                                 style="display: none;">
@@ -2907,7 +3545,7 @@ $reason_options = [
                                                     <?php echo $row_data['daily_html']; ?>
                                                 </td>
                                             </tr>
-                                        <?php elseif ($row_data['has_daily_breakdown'] && empty($row_data['daily_html'])): ?>
+                                        <?php elseif (!$is_daily_breakdown_row && $row_data['has_daily_breakdown'] && empty($row_data['daily_html'])): ?>
                                             <tr class="daily-breakdown-container" 
                                                 id="dailyBreakdown_<?php echo $row_data['row_index']; ?>" 
                                                 style="display: none;">
@@ -3027,6 +3665,20 @@ $reason_options = [
                         echo 'The selected "Transaction Date To" (<strong>' . htmlspecialchars($selected_date_to) . '</strong>) is not a Tuesday.<br>';
                         echo 'Please select a Tuesday as the end date to view this partner.';
                         echo '</p>';
+                    } elseif ($selected_is_special_monday && !$include_special_monday_partners) {
+                        echo '<p style="font-size: 14px; margin-top: 15px; color: #856404; background: #fff3cd; padding: 15px; border-radius: 6px;">';
+                        echo '<i class="fas fa-calendar-week"></i> <strong>Monday Settlement Notice:</strong><br>';
+                        echo 'Partner 119 only settles on <strong>Mondays</strong>.<br>';
+                        echo 'The selected "Transaction Date To" (<strong>' . htmlspecialchars($selected_date_to) . '</strong>) is not a Monday.<br>';
+                        echo 'Please select a Monday as the end date to view this partner.';
+                        echo '</p>';
+                    } elseif ($selected_is_special_m2s && !$include_special_m2s_partners) {
+                        echo '<p style="font-size: 14px; margin-top: 15px; color: #856404; background: #fff3cd; padding: 15px; border-radius: 6px;">';
+                        echo '<i class="fas fa-calendar-week"></i> <strong>Monday Settlement Notice:</strong><br>';
+                        echo 'Partners 1101, 1228, 1230, and 1094 only settle on <strong>Mondays</strong>.<br>';
+                        echo 'The selected "Transaction Date To" (<strong>' . htmlspecialchars($selected_date_to) . '</strong>) is not a Monday.<br>';
+                        echo 'Please select a Monday as the end date to view these partners.';
+                        echo '</p>';
                     } else {
                         echo '<p style="font-size: 14px; margin-top: 5px;">Please try adjusting your filter criteria.</p>';
                     }
@@ -3059,7 +3711,6 @@ $reason_options = [
     // Global variables
     var loadingTimer = null;
     var seconds = 0;
-    var stepInterval = null;
     var isPageLoaded = false;
     var reasonData = {};
     
@@ -3098,7 +3749,6 @@ $reason_options = [
         }
 
         startLoadingTimer();
-        startStepAnimation();
 
         $(window).on('load', function() {
             isPageLoaded = true;
@@ -3152,7 +3802,7 @@ $reason_options = [
                 data: formData,
                 dataType: 'html',
                 cache: false,
-                timeout: 60000,
+                timeout: 120000,
                 success: function(response) {
                     var tempDiv = $('<div>').html(response);
                     var newContent = tempDiv.find('#resultsContainer').html();
@@ -3212,10 +3862,6 @@ $reason_options = [
                 clearInterval(loadingTimer);
                 loadingTimer = null;
             }
-            if (stepInterval) {
-                clearInterval(stepInterval);
-                stepInterval = null;
-            }
         }
     }
 
@@ -3264,7 +3910,6 @@ $reason_options = [
         if (elapsedElement) {
             elapsedElement.textContent = '0';
         }
-        resetSteps();
         loadingTimer = setInterval(function() {
             seconds++;
             var elapsedElement = document.getElementById('elapsedTime');
@@ -3272,36 +3917,6 @@ $reason_options = [
                 elapsedElement.textContent = seconds;
             }
         }, 1000);
-        startStepAnimation();
-    }
-
-    function resetSteps() {
-        $('#step1').removeClass('active completed');
-        $('#step2').removeClass('active completed');
-        $('#step3').removeClass('active completed');
-        $('#step1').addClass('active');
-    }
-
-    function startStepAnimation() {
-        if (stepInterval) {
-            clearInterval(stepInterval);
-            stepInterval = null;
-        }
-        var step = 1;
-        
-        stepInterval = setInterval(function() {
-            if (step === 1) {
-                $('#step1').removeClass('active').addClass('completed');
-                $('#step2').addClass('active');
-                step = 2;
-            } else if (step === 2) {
-                $('#step2').removeClass('active').addClass('completed');
-                $('#step3').addClass('active');
-                step = 3;
-            } else if (step === 3) {
-                // Keep step 3 active
-            }
-        }, 2000);
     }
 
     function toggleDailyBreakdown(element, rowIndex) {

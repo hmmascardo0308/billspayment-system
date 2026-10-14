@@ -501,10 +501,7 @@ $export_qs = http_build_query([
     'date_from'    => $_GET['date_from']    ?? '',
     'date_to'      => $_GET['date_to']      ?? '',
 ]);
-?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
+?><!DOCTYPE html><html lang="en"><head>
     <meta charset="UTF-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -515,9 +512,7 @@ $export_qs = http_build_query([
     <script src="../../../assets/js/sweetalert2.all.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js"></script>
     <link rel="stylesheet" href="css/billsgle.css?v=<?= time(); ?>">
-    <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
-</head>
-<body>
+    <link rel="icon" href="../../../images/MLW logo.png" type="image/png"></head><body>
     <div class="main-container">
         <?php include '../../../templates/header_ui.php'; ?>
         <?php include '../../../templates/sidebar.php'; ?>
@@ -846,19 +841,16 @@ $export_qs = http_build_query([
                                     <?php elseif ($can_expand): ?>
                                         <td class="col-glcode" style="padding: 0.35rem 0.5rem; text-align: right; color:#999;">(<?php echo $row['gle_row_count']; ?> rows)</td>
                                         <td class="col-gldesc" style="padding: 0.35rem 0.5rem;">—</td>
-                                        <td class="col-desc" style="padding: 0.35rem 0.5rem;">                                                <?php echo htmlspecialchars($g['desc'] ?? '—'); ?>
-</td>
+                                        <td class="col-desc" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($g['desc'] ?? '—'); ?></td>
                                         <td class="col-reference" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($row['reference_no'] ?? '—'); ?></td>
-                                        <td class="col-datetime" style="padding: 0.35rem 0.5rem;">                                                <?php echo htmlspecialchars($g['datetime'] ?? '—'); ?>
-</td>
+                                        <td class="col-datetime" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($g['datetime'] ?? '—'); ?></td>
                                         <td class="col-debit" style="padding: 0.35rem 0.5rem; text-align: right; font-weight:600; color:#1565c0;">
                                             <?php echo number_format((float)$row['gle_debit_total'], 2); ?>
                                         </td>
                                         <td class="col-credit" style="padding: 0.35rem 0.5rem; text-align: right; font-weight:600; color:#6a1b9a;">
                                             <?php echo number_format((float)$row['gle_credit_total'], 2); ?>
                                         </td>
-                                        <td class="col-entry" style="padding: 0.35rem 0.5rem;">                                                <?php echo htmlspecialchars($g['entry_number'] ?? '—'); ?>
-</td>
+                                        <td class="col-entry" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($g['entry_number'] ?? '—'); ?></td>
                                     <?php else: ?>
                                         <td class="col-glcode" style="padding: 0.35rem 0.5rem; text-align: right;">—</td>
                                         <td class="col-gldesc" style="padding: 0.35rem 0.5rem;">—</td>
@@ -1067,6 +1059,4 @@ $export_qs = http_build_query([
     });
     </script>
 
-    <?php include '../../../templates/footer.php'; ?>
-</body>
-</html>
+    <?php include '../../../templates/footer.php'; ?></body></html>

@@ -1,19 +1,17 @@
 <?php
 // billspay-transaction.php
-// Connect to the database
 include '../../../config/config.php';
 require '../../../vendor/autoload.php';
 
-// Start the session
 session_start();
+date_default_timezone_set('Asia/Manila');
+
 @include_once __DIR__ . '/../../../templates/middleware.php';
 $id = resolve_user_identifier();
 if (empty($id)) { header('Location: ../../../login_form.php'); exit; }
 if (!function_exists('has_any_permission') || !has_any_permission(['Import Transaction','Bills Payment'])) { header('Location: ../../home.php'); exit; }
 
-// prefer explicit session values for current user email
 $current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
-// Extract imported_by from session
 $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
 ?>
 <!DOCTYPE html>
@@ -33,6 +31,24 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="css/billspay_transaction.css?v=<?= time(); ?>">
 
+    <style>
+        /* Late Posting row highlight */
+        tr.has-late-posting {
+            background-color: #fff3cd !important;
+        }
+        tr.has-late-posting td {
+            border-top: 1px solid #ffe69c;
+        }
+        .late-posting-badge {
+            background-color: #fd7e14;
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.78em;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+    </style>
 </head>
 <body>
     <div class="main-container">
@@ -107,13 +123,13 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
                                 </span>
                             </div>
                             <div class="col-md-3">
-                                <span class="badge bg-danger">
-                                    <i class="fa-solid fa-triangle-exclamation"></i> Empty Partner ID: <span id="emptyPartnerCount">0</span>
+                                <span class="badge bg-warning text-dark">
+                                    <i class="fas fa-user-slash"></i> No Partner ID: <span id="emptyPartnerCount">0</span>
                                 </span>
                             </div>
                             <div class="col-md-3">
-                                <span class="badge bg-danger">
-                                    <i class="fas fa-exclamation-circle"></i> Unrecognized Partner: <span id="unrecognizedPartnerCount">0</span>
+                                <span class="badge bg-warning text-dark">
+                                    <i class="fas fa-search-minus"></i> Partner Not Found in Masterfile: <span id="partnerNotFoundCount">0</span>
                                 </span>
                             </div>
                         </div>
@@ -169,6 +185,7 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
                                     <th>CAD No</th>
                                     <th>Hold Status</th>
                                     <th>Post Status</th>
+                                    <th>Import Status</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -215,9 +232,7 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <div id="warningContent" class="modal-warning-list">
-                        <!-- Warnings will be dynamically inserted here -->
-                    </div>
+                    <div id="warningContent" class="modal-warning-list"></div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
@@ -231,7 +246,7 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
         </div>
     </div>
 
-    <!-- Import Disabled Modal (Critical Errors) -->
+    <!-- Import Disabled Modal -->
     <div class="modal fade" id="importDisabledModal" tabindex="-1" aria-labelledby="importDisabledModalLabel" aria-hidden="true">
         <div class="dialog modal-lg">
             <div class="modal-content">
@@ -242,9 +257,7 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <div id="importDisabledContent">
-                        <!-- Content will be dynamically inserted here -->
-                    </div>
+                    <div id="importDisabledContent"></div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
@@ -267,9 +280,7 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
                 </div>
                 <div class="modal-body">
                     <div id="summaryQuickStats" class="mb-3"></div>
-                    <div class="summary-modal-grid" id="summaryGrid">
-                        <!-- Summary cards will be inserted here -->
-                    </div>
+                    <div class="summary-modal-grid" id="summaryGrid"></div>
                     <div class="table-responsive">
                         <table class="table table-bordered table-striped table-hover summary-table" id="summaryTable">
                             <thead class="table-dark">
@@ -280,9 +291,7 @@ $imported_by = $_SESSION['admin_name'] ?? $_SESSION['user_name'] ?? 'System';
                                     <th class="text-center" style="width: 25%;">NET</th>
                                 </tr>
                             </thead>
-                            <tbody id="summaryBody">
-                                <!-- Summary data will be inserted here -->
-                            </tbody>
+                            <tbody id="summaryBody"></tbody>
                         </table>
                     </div>
                     <div class="alert alert-danger mt-3">
@@ -315,12 +324,12 @@ $(document).ready(function() {
     let warningData = {
         emptyBranchRows: [],
         emptyPartnerRows: [],
-        unrecognizedPartnerRows: []
+        partnerNotFoundRows: []
     };
     let importDisabled = false;
 
     const current_user = "<?php echo $imported_by; ?>";
-    const imported_date = "<?php echo date('Y-m-d'); ?>";
+    const imported_date = "<?php echo date('Y-m-d H:i:s'); ?>";
 
     function toggleDropZone(show) {
         if (show) {
@@ -363,11 +372,7 @@ $(document).ready(function() {
         if (!dateString || dateString === null || dateString === undefined || dateString === '') {
             return '';
         }
-
-        if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
-            return dateString;
-        }
-
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) return dateString;
         try {
             let date = new Date(dateString);
             if (!isNaN(date.getTime())) {
@@ -409,14 +414,8 @@ $(document).ready(function() {
     }
 
     function normalizeDateTime(value) {
-        if (!value || value === null || value === undefined || value === '') {
-            return null;
-        }
-        
-        if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
-            return value;
-        }
-        
+        if (!value || value === null || value === undefined || value === '') return null;
+        if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) return value;
         try {
             let date = new Date(value);
             if (!isNaN(date.getTime())) {
@@ -429,14 +428,11 @@ $(document).ready(function() {
                 return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
             }
         } catch (e) {}
-        
         return String(value);
     }
 
     function formatValue(value, highlightNotFound = true) {
-        if (value === null || value === undefined || value === '') {
-            return '';
-        }
+        if (value === null || value === undefined || value === '') return '';
         if (highlightNotFound && value === 'Not Found') {
             return `<span class="text-not-found">${value}</span>`;
         }
@@ -457,14 +453,11 @@ $(document).ready(function() {
         return 0;
     }
 
-    // ============================================
-    // Header-name -> column-index mapping helpers
-    // ============================================
     function buildHeaderMap(worksheet) {
         const map = {};
         if (!worksheet['!ref']) return map;
         const range = XLSX.utils.decode_range(worksheet['!ref']);
-        const headerRow = 8; // 0-based row index for row 9
+        const headerRow = 8;
         for (let c = range.s.c; c <= range.e.c; c++) {
             const cell = worksheet[XLSX.utils.encode_cell({r: headerRow, c: c})];
             if (cell && cell.v !== null && cell.v !== undefined) {
@@ -507,28 +500,9 @@ $(document).ready(function() {
         const settlementAmount = netPrincipal - netCharge;
         
         return {
-            summary: {
-                count: summaryCount,
-                principal: summaryPrincipal,
-                charge: summaryCharge,
-                ctc: summaryCTC,
-                ctp: summaryCTP
-            },
-            adjustments: {
-                count: adjCount,
-                principal: adjPrincipal,
-                charge: adjCharge,
-                ctc: adjCTC,
-                ctp: adjCTP
-            },
-            net: {
-                count: netCount,
-                principal: netPrincipal,
-                charge: netCharge,
-                ctc: netCTC,
-                ctp: netCTP,
-                settlement: settlementAmount
-            }
+            summary: { count: summaryCount, principal: summaryPrincipal, charge: summaryCharge, ctc: summaryCTC, ctp: summaryCTP },
+            adjustments: { count: adjCount, principal: adjPrincipal, charge: adjCharge, ctc: adjCTC, ctp: adjCTP },
+            net: { count: netCount, principal: netPrincipal, charge: netCharge, ctc: netCTC, ctp: netCTP, settlement: settlementAmount }
         };
     }
 
@@ -586,72 +560,27 @@ $(document).ready(function() {
         const gridHtml = `
             <div class="summary-card summary-positive">
                 <h6 class="text-success">NET (Positive Amounts)</h6>
-                <div class="summary-item">
-                    <span class="label">TOTAL COUNT:</span>
-                    <span class="value">${formatNumber(stats.summary.count)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL PRINCIPAL (PHP):</span>
-                    <span class="value text-success">${formatCurrency(stats.summary.principal)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL CHARGE (PHP):</span>
-                    <span class="value text-success">${formatCurrency(stats.summary.charge)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL CTC (PHP):</span>
-                    <span class="value text-success">${formatCurrency(stats.summary.ctc)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL CTP (PHP):</span>
-                    <span class="value text-success">${formatCurrency(stats.summary.ctp)}</span>
-                </div>
+                <div class="summary-item"><span class="label">TOTAL COUNT:</span><span class="value">${formatNumber(stats.summary.count)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL PRINCIPAL (PHP):</span><span class="value text-success">${formatCurrency(stats.summary.principal)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL CHARGE (PHP):</span><span class="value text-success">${formatCurrency(stats.summary.charge)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL CTC (PHP):</span><span class="value text-success">${formatCurrency(stats.summary.ctc)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL CTP (PHP):</span><span class="value text-success">${formatCurrency(stats.summary.ctp)}</span></div>
             </div>
             <div class="summary-card summary-adjustment">
                 <h6 class="text-danger">Cancellation (Negative Amounts)</h6>
-                <div class="summary-item">
-                    <span class="label">TOTAL COUNT:</span>
-                    <span class="value">${formatNumber(stats.adjustments.count)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL PRINCIPAL (PHP):</span>
-                    <span class="value text-danger">${formatCurrency(stats.adjustments.principal)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL CHARGE (PHP):</span>
-                    <span class="value text-danger">${formatCurrency(stats.adjustments.charge)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL CTC (PHP):</span>
-                    <span class="value text-danger">${formatCurrency(stats.adjustments.ctc)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL CTP (PHP):</span>
-                    <span class="value text-danger">${formatCurrency(stats.adjustments.ctp)}</span>
-                </div>
+                <div class="summary-item"><span class="label">TOTAL COUNT:</span><span class="value">${formatNumber(stats.adjustments.count)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL PRINCIPAL (PHP):</span><span class="value text-danger">${formatCurrency(stats.adjustments.principal)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL CHARGE (PHP):</span><span class="value text-danger">${formatCurrency(stats.adjustments.charge)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL CTC (PHP):</span><span class="value text-danger">${formatCurrency(stats.adjustments.ctc)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL CTP (PHP):</span><span class="value text-danger">${formatCurrency(stats.adjustments.ctp)}</span></div>
             </div>
             <div class="summary-card summary-net">
                 <h6 class="text-primary">NET</h6>
-                <div class="summary-item">
-                    <span class="label">TOTAL COUNT:</span>
-                    <span class="value">${formatNumber(stats.net.count)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL PRINCIPAL (PHP):</span>
-                    <span class="value text-primary">${formatCurrency(stats.net.principal)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL CHARGE (PHP):</span>
-                    <span class="value text-primary">${formatCurrency(stats.net.charge)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL CTC (PHP):</span>
-                    <span class="value text-primary">${formatCurrency(stats.net.ctc)}</span>
-                </div>
-                <div class="summary-item">
-                    <span class="label">TOTAL CTP (PHP):</span>
-                    <span class="value text-primary">${formatCurrency(stats.net.ctp)}</span>
-                </div>
+                <div class="summary-item"><span class="label">TOTAL COUNT:</span><span class="value">${formatNumber(stats.net.count)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL PRINCIPAL (PHP):</span><span class="value text-primary">${formatCurrency(stats.net.principal)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL CHARGE (PHP):</span><span class="value text-primary">${formatCurrency(stats.net.charge)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL CTC (PHP):</span><span class="value text-primary">${formatCurrency(stats.net.ctc)}</span></div>
+                <div class="summary-item"><span class="label">TOTAL CTP (PHP):</span><span class="value text-primary">${formatCurrency(stats.net.ctp)}</span></div>
                 <div class="summary-item" style="border-top: 2px solid #007bff; padding-top: 8px; margin-top: 8px;">
                     <span class="label"><strong>SETTLEMENT AMOUNT (PHP):</strong></span>
                     <span class="value text-success" style="font-size: 1.1em;">${formatCurrency(stats.net.settlement)}</span>
@@ -661,36 +590,11 @@ $(document).ready(function() {
         $('#summaryGrid').html(gridHtml);
         
         const summaryData = [
-            {
-                metric: 'TOTAL COUNT',
-                summary: formatNumber(stats.summary.count),
-                adjustments: formatNumber(stats.adjustments.count),
-                net: formatNumber(stats.net.count)
-            },
-            {
-                metric: 'TOTAL PRINCIPAL (PHP)',
-                summary: formatCurrency(stats.summary.principal),
-                adjustments: formatCurrency(stats.adjustments.principal),
-                net: formatCurrency(stats.net.principal)
-            },
-            {
-                metric: 'TOTAL CHARGE (PHP)',
-                summary: formatCurrency(stats.summary.charge),
-                adjustments: formatCurrency(stats.adjustments.charge),
-                net: formatCurrency(stats.net.charge)
-            },
-            {
-                metric: 'TOTAL CTC (PHP)',
-                summary: formatCurrency(stats.summary.ctc),
-                adjustments: formatCurrency(stats.adjustments.ctc),
-                net: formatCurrency(stats.net.ctc)
-            },
-            {
-                metric: 'TOTAL CTP (PHP)',
-                summary: formatCurrency(stats.summary.ctp),
-                adjustments: formatCurrency(stats.adjustments.ctp),
-                net: formatCurrency(stats.net.ctp)
-            }
+            { metric: 'TOTAL COUNT', summary: formatNumber(stats.summary.count), adjustments: formatNumber(stats.adjustments.count), net: formatNumber(stats.net.count) },
+            { metric: 'TOTAL PRINCIPAL (PHP)', summary: formatCurrency(stats.summary.principal), adjustments: formatCurrency(stats.adjustments.principal), net: formatCurrency(stats.net.principal) },
+            { metric: 'TOTAL CHARGE (PHP)', summary: formatCurrency(stats.summary.charge), adjustments: formatCurrency(stats.adjustments.charge), net: formatCurrency(stats.net.charge) },
+            { metric: 'TOTAL CTC (PHP)', summary: formatCurrency(stats.summary.ctc), adjustments: formatCurrency(stats.adjustments.ctc), net: formatCurrency(stats.net.ctc) },
+            { metric: 'TOTAL CTP (PHP)', summary: formatCurrency(stats.summary.ctp), adjustments: formatCurrency(stats.adjustments.ctp), net: formatCurrency(stats.net.ctp) }
         ];
         
         let html = '';
@@ -712,9 +616,7 @@ $(document).ready(function() {
                 <td><strong>SETTLEMENT AMOUNT (PHP)</strong></td>
                 <td class="text-end">-</td>
                 <td class="text-end">-</td>
-                <td class="text-end text-success" style="font-size: 1.2em;">
-                    <strong>${formatCurrency(stats.net.settlement)}</strong>
-                </td>
+                <td class="text-end text-success" style="font-size: 1.2em;"><strong>${formatCurrency(stats.net.settlement)}</strong></td>
             </tr>
         `;
         
@@ -733,12 +635,9 @@ $(document).ready(function() {
         
         if (fileNames.length > 0) {
             dropFileCount.text(`${fileNames.length} file${fileNames.length > 1 ? 's' : ''}`)
-                .removeClass('bg-secondary')
-                .addClass('bg-success');
+                .removeClass('bg-secondary').addClass('bg-success');
         } else {
-            dropFileCount.text('0 files')
-                .removeClass('bg-success')
-                .addClass('bg-secondary');
+            dropFileCount.text('0 files').removeClass('bg-success').addClass('bg-secondary');
         }
         
         if (fileNames.length === 0) {
@@ -763,9 +662,7 @@ $(document).ready(function() {
                     <span class="file-name">${index + 1}. ${fileName}</span>
                     <span class="file-size">${fileSize}</span>
                     <span class="file-status">${status}</span>
-                    <span class="remove-file" data-filename="${fileName}" title="Remove file">
-                        <i class="fas fa-times-circle"></i>
-                    </span>
+                    <span class="remove-file" data-filename="${fileName}" title="Remove file"><i class="fas fa-times-circle"></i></span>
                 </div>
             `;
         });
@@ -884,9 +781,6 @@ $(document).ready(function() {
         $('#excel_file').val('');
     }
 
-    // ============================================
-    // MAIN PROCESSING FUNCTION WITH BAYADCENTER LOGIC
-    // ============================================
     function processAllFiles() {
         const fileNames = Object.keys(fileDataMap);
         if (fileNames.length === 0) {
@@ -1005,15 +899,7 @@ $(document).ready(function() {
                         payloadRows.push(rowData);
                     }
                 } else {
-                    // ============================================
-                    // KPX FORMAT - dynamic column mapping by header row
-                    // Supports:
-                    //   - KPX with Contact No. (Format 1, no Partner ID/Name columns)
-                    //   - KPX with Partner ID + Partner Name columns (Format 2)
-                    //   - Legacy KPX with Partner ID KPX + Partner ID columns
-                    // ============================================
                     const headerMap = buildHeaderMap(worksheet);
-                    console.log(`[${fileName}] KPX header map:`, headerMap);
 
                     const colDatetime       = headerMap['date / time'] ?? headerMap['datetime'] ?? 1;
                     const colControlNo      = headerMap['control no'];
@@ -1039,16 +925,11 @@ $(document).ready(function() {
                     const colPartnerId      = headerMap['partner id'];
                     const colPartnerName    = headerMap['partner name'];
 
-                    const hasPartnerIdColumns = (colPartnerIdKpx !== undefined) || (colPartnerId !== undefined);
-
-                    // Fallback partner name from B4 (used when the file has no Partner Name column)
                     let partnerNameFromHeader = null;
                     const b4 = worksheet['B4'];
                     if (b4 && b4.v) {
                         partnerNameFromHeader = String(b4.v).trim();
-                        console.log(`[${fileName}] B4 Partner Name: "${partnerNameFromHeader}"`);
                     }
-                    console.log(`[${fileName}] hasPartnerIdColumns=${hasPartnerIdColumns}, hasPartnerNameColumn=${colPartnerName !== undefined}`);
 
                     for (let r = 9; r <= range.e.r; r++) {
                         let datetimeCell = worksheet[XLSX.utils.encode_cell({r: r, c: colDatetime})];
@@ -1057,59 +938,31 @@ $(document).ready(function() {
                             break;
                         }
 
-                        // Region Code TG: prefer "region code" header, else fall back to ML Outlet
                         let regionCodeTg = readCol(worksheet, colRegionCode, r);
                         if (regionCodeTg === null || regionCodeTg === '') {
                             regionCodeTg = readCol(worksheet, colMlOutlet, r);
                         }
 
-                        // Partner IDs: read only if header exists
-                        let partnerIdKpx = colPartnerIdKpx !== undefined
+                        let excelPartnerIdFromCol = colPartnerId !== undefined
+                            ? String(readCol(worksheet, colPartnerId, r) ?? '').trim()
+                            : '';
+                        let excelPartnerIdKpxFromCol = colPartnerIdKpx !== undefined
                             ? String(readCol(worksheet, colPartnerIdKpx, r) ?? '').trim()
                             : '';
 
-                        let partnerIdFallback = colPartnerId !== undefined
-                            ? String(readCol(worksheet, colPartnerId, r) ?? '').trim()
-                            : '';
+                        let excelPartnerId = excelPartnerIdFromCol !== ''
+                            ? excelPartnerIdFromCol
+                            : excelPartnerIdKpxFromCol;
 
-                        // Per-row Partner Name column (present in Format 2), falls back to B4 (Format 1)
                         let partnerNamePerRow = colPartnerName !== undefined
                             ? String(readCol(worksheet, colPartnerName, r) ?? '').trim()
                             : '';
 
-                        // "ALL PARTNERS" is a wildcard placeholder — treat it as "no name supplied"
                         if (partnerNamePerRow.toUpperCase() === 'ALL PARTNERS') {
                             partnerNamePerRow = '';
                         }
 
-                        const resolvedPartnerName =
-                            partnerNamePerRow ||
-                            partnerNameFromHeader ||
-                            null;
-
-                        // ============================================
-                        // BAYADCENTER / GSIS LOGIC
-                        // ============================================
-                        let finalPartnerIdKpx = partnerIdKpx;
-                        let hardcodedPartnerNote = '';
-                        let isBayadCenter = false;
-
-                        if (partnerIdFallback.toUpperCase() === 'BAYADCENTER') {
-                            isBayadCenter = true;
-                            finalPartnerIdKpx = '9999';
-                            hardcodedPartnerNote = ' (hardcoded from BAYADCENTER)';
-                            console.log(`BAYADCENTER detected - setting partner_id_kpx to 9999 for row ${r}`);
-                        } else if (!partnerIdKpx) {
-                            if (partnerIdFallback.toUpperCase() === 'GSIS') {
-                                finalPartnerIdKpx = '2898';
-                                hardcodedPartnerNote = ' (hardcoded from GSIS)';
-                                console.log(`GSIS detected - setting partner_id_kpx to 2898 for row ${r}`);
-                            }
-                        }
-
-                        // Determine final partner_id / partner_name used for lookup
-                        let finalPartnerId   = isBayadCenter ? null : partnerIdFallback;
-                        let finalPartnerName = isBayadCenter ? 'BAYADCENTER' : resolvedPartnerName;
+                        const resolvedPartnerName = partnerNamePerRow || partnerNameFromHeader || null;
 
                         let rowData = {
                             status: null,
@@ -1133,7 +986,6 @@ $(document).ready(function() {
                             other_details:        readCol(worksheet, colOtherDetails, r),
                             branch_id:            readCol(worksheet, colBranchId, r),
                             ml_matic_branch_name: null,
-                            // Preserve original Excel columns for remarks when Branch ID is not in masterfile
                             branch_id_from_file:  readCol(worksheet, colBranchId, r),
                             ml_outlet_from_file:  readCol(worksheet, colMlOutlet, r),
                             region_value:         null,
@@ -1145,11 +997,10 @@ $(document).ready(function() {
                             second_approver:      readCol(worksheet, colSecondApprover, r),
                             sub_billers_id:       null,
                             sub_billers_name:     null,
-                            partner_id_kpx:       finalPartnerIdKpx,
-                            partner_id:           finalPartnerId,
-                            partner_id_fallback_original: partnerIdFallback || resolvedPartnerName || '',
-                            partner_id_hardcoded_note: hardcodedPartnerNote,
-                            partner_name:         finalPartnerName,
+                            partner_id_fallback_original: excelPartnerId || '',
+                            partner_id_kpx:       null,
+                            partner_id:           null,
+                            partner_name:         resolvedPartnerName,
                             mpm_gl_code:          null,
                             settle_unsettle:      'Unsettle',
                             claim_unclaim:        null,
@@ -1158,9 +1009,7 @@ $(document).ready(function() {
                             rfp_no:               null,
                             cad_no:               null,
                             hold_status:          null,
-                            post_transaction:     'unposted',
-                            is_bayadcenter:       isBayadCenter,
-                            has_partner_id_columns: hasPartnerIdColumns
+                            post_transaction:     'unposted'
                         };
                         payloadRows.push(rowData);
                     }
@@ -1203,34 +1052,17 @@ $(document).ready(function() {
                 Swal.close();
                 if(response.status === 'success') {
                     allRows = response.data;
-
                     allRows = processCancelledTransactions(allRows);
-                    
-                    console.log('=== Partner Data Debug ===');
-                    allRows.forEach((row, index) => {
-                        console.log(`Row ${index + 1}:`, {
-                            partner_id_kpx: row.partner_id_kpx,
-                            partner_id: row.partner_id,
-                            partner_id_fallback_original: row.partner_id_fallback_original,
-                            partner_name: row.partner_name,
-                            is_bayadcenter: row.is_bayadcenter,
-                            is_empty_kpx: isEmptyValue(row.partner_id_kpx),
-                            is_empty_partner: isEmptyValue(row.partner_id),
-                            is_not_found: row.partner_name === 'Not Found'
-                        });
-                    });
                     
                     let emptyBranchRows = [];
                     let emptyPartnerRows = [];
-                    let unrecognizedPartnerRows = [];
+                    let partnerNotFoundRows = [];
                     importDisabled = false;
                     
                     allRows.forEach((row, index) => {
                         const rowNum = index + 1;
                         
                         if (isEmptyValue(row.branch_id)) {
-                            // Prefer original Excel Branch ID / ML Outlet when the ID was present
-                            // in the file but not found in masterdata.branch_profile
                             let branchIdDisplay = '(empty)';
                             if (row.branch_id_from_file !== undefined && row.branch_id_from_file !== null && String(row.branch_id_from_file).trim() !== '') {
                                 branchIdDisplay = String(row.branch_id_from_file).trim();
@@ -1253,91 +1085,42 @@ $(document).ready(function() {
                             });
                         }
                         
-                        const partnerIdKpx = row.partner_id_kpx !== undefined && row.partner_id_kpx !== null && row.partner_id_kpx !== '' 
-                            ? String(row.partner_id_kpx).trim() 
-                            : '';
-                        
-                        let partnerIdFallback = row.partner_id_fallback_original !== undefined && row.partner_id_fallback_original !== null && row.partner_id_fallback_original !== '' 
-                            ? String(row.partner_id_fallback_original).trim() 
-                            : '';
-                        
-                        // Treat "ALL PARTNERS" as no identifier
-                        if (partnerIdFallback.toUpperCase() === 'ALL PARTNERS') {
-                            partnerIdFallback = '';
-                            row.partner_id_fallback_original = '';
+                        const excelPartnerId = (row.original_partner_id 
+                            || row.partner_id_fallback_original 
+                            || '').toString().trim();
+                        const excelPartnerName = (row.partner_name_from_file 
+                            || row.partner_name 
+                            || '').toString().trim();
+                        const lookupStatus = (row.partner_lookup_status || '').toString();
+
+                        if (excelPartnerId !== '' && lookupStatus === 'not_found') {
+                            partnerNotFoundRows.push({
+                                row: rowNum,
+                                reference_no: row.reference_no || 'N/A',
+                                partner_id: excelPartnerId,
+                                partner_name: excelPartnerName || '(empty)'
+                            });
                         }
-                        
-                        const isBayadCenter = row.is_bayadcenter === true;
-                        let hardcodedPartnerId = null;
-                        
-                        // BAYADCENTER override
-                        if (isBayadCenter || partnerIdFallback.toUpperCase() === 'BAYADCENTER') {
-                            row.partner_id_kpx = '9999';
-                            row.partner_id = null;
-                            row.partner_name = 'BAYADCENTER';
-                            row.mpm_gl_code = null;
-                            console.log(`Row ${rowNum}: BAYADCENTER - set partner_id_kpx=9999, partner_id=null, partner_name=BAYADCENTER`);
-                        } 
-                        // GSIS override (only if no partner_id_kpx)
-                        else if (partnerIdFallback.toUpperCase() === 'GSIS') {
-                            if (!partnerIdKpx || partnerIdKpx === '') {
-                                hardcodedPartnerId = '2898';
-                                row.partner_id_kpx = hardcodedPartnerId;
-                                row.partner_id = hardcodedPartnerId;
-                                console.log(`Row ${rowNum}: GSIS detected - setting partner_id_kpx to 2898`);
-                            }
-                        }
-                        
-                        let partnerIdDisplay = '';
-                        if (partnerIdKpx !== '' && partnerIdKpx !== null) {
-                            partnerIdDisplay = partnerIdKpx;
-                        } else if (hardcodedPartnerId !== null) {
-                            partnerIdDisplay = hardcodedPartnerId + ' (hardcoded from ' + partnerIdFallback + ')';
-                        } else if (partnerIdFallback !== '') {
-                            partnerIdDisplay = partnerIdFallback + ' (fallback)';
-                        } else {
-                            partnerIdDisplay = '(empty)';
-                        }
-                        
-                        const isBothEmpty = partnerIdKpx === '' && partnerIdFallback === '' && hardcodedPartnerId === null && !isBayadCenter;
-                        
-                        let isPartnerRecognized = !isEmptyValue(row.partner_name) && row.partner_name !== 'Not Found';
-                        if (isBayadCenter) isPartnerRecognized = true;
-                        
-                        if (isBothEmpty) {
+
+                        if (excelPartnerId === '' && lookupStatus === 'no_partner_id') {
                             emptyPartnerRows.push({
                                 row: rowNum,
                                 reference_no: row.reference_no || 'N/A',
-                                partner_id_kpx: partnerIdDisplay,
-                                partner_id_fallback: partnerIdFallback || '(empty)'
+                                partner_name: excelPartnerName || '(empty)'
                             });
-                            importDisabled = true;
-                        } else if (!isPartnerRecognized && !isBayadCenter) {
-                            let displayValue = partnerIdKpx !== '' 
-                                ? partnerIdKpx 
-                                : (hardcodedPartnerId !== null 
-                                    ? hardcodedPartnerId + ' (hardcoded)' 
-                                    : partnerIdFallback + ' (fallback)');
-                            unrecognizedPartnerRows.push({
-                                row: rowNum,
-                                reference_no: row.reference_no || 'N/A',
-                                partner_id_kpx: displayValue,
-                                partner_id_fallback: partnerIdFallback !== '' ? partnerIdFallback : '(empty)'
-                            });
-                            importDisabled = true;
                         }
                     });
                     
                     warningData = {
                         emptyBranchRows: emptyBranchRows,
                         emptyPartnerRows: emptyPartnerRows,
-                        unrecognizedPartnerRows: unrecognizedPartnerRows
+                        partnerNotFoundRows: partnerNotFoundRows
                     };
                     
                     $('#totalRecords').text(allRows.length);
                     $('#emptyBranchCount').text(emptyBranchRows.length);
                     $('#emptyPartnerCount').text(emptyPartnerRows.length);
-                    $('#unrecognizedPartnerCount').text(unrecognizedPartnerRows.length);
+                    $('#partnerNotFoundCount').text(partnerNotFoundRows.length);
                     $('#validation_summary').show();
                     
                     let warningHtml = '';
@@ -1348,15 +1131,10 @@ $(document).ready(function() {
                         warningHtml += `
                             <div class="alert alert-info">
                                 <h6><i class="fas fa-store"></i> Empty / Not Found Branch ID</h6>
-                                <p>The following rows have a Branch ID from the Excel that was not found in <code>masterdata.branch_profile</code> (or the Branch ID was empty). Fallback values from the Excel are shown below.</p>
+                                <p>The following rows have a Branch ID from the Excel that was not found in <code>masterdata.branch_profile</code> (or the Branch ID was empty).</p>
                                 <table class="table table-sm table-bordered table-striped">
                                     <thead class="table-dark">
-                                        <tr>
-                                            <th>Row #</th>
-                                            <th>Branch ID (fallback)</th>
-                                            <th>ML Outlet</th>
-                                            <th>Payor</th>
-                                        </tr>
+                                        <tr><th>Row #</th><th>Branch ID (fallback)</th><th>ML Outlet</th><th>Payor</th></tr>
                                     </thead>
                                     <tbody>
                                         ${emptyBranchRows.map(item => `
@@ -1369,11 +1147,30 @@ $(document).ready(function() {
                                         `).join('')}
                                     </tbody>
                                 </table>
-                                <div class="alert alert-warning mt-2 mb-0">
-                                    <i class="fas fa-exclamation-triangle"></i>
-                                    <strong>Action Required:</strong> These rows will be imported with 'Not Found' values for branch-related fields.
-                                    Please contact the administrator to register the missing Branch ID(s) in the branch masterfile.
-                                </div>
+                            </div>
+                        `;
+                    }
+                    
+                    if (partnerNotFoundRows.length > 0) {
+                        hasWarnings = true;
+                        warningHtml += `
+                            <div class="alert alert-warning">
+                                <h6><i class="fas fa-search-minus"></i> Partner ID Not Found in Masterfile</h6>
+                                <table class="table table-sm table-bordered table-striped">
+                                    <thead class="table-dark">
+                                        <tr><th>Row #</th><th>Reference No</th><th>Partner ID (from Excel)</th><th>Partner Name (from Excel)</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        ${partnerNotFoundRows.map(item => `
+                                            <tr>
+                                                <td><strong>${item.row}</strong></td>
+                                                <td>${item.reference_no}</td>
+                                                <td><code>${item.partner_id}</code></td>
+                                                <td>${item.partner_name}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
                             </div>
                         `;
                     }
@@ -1381,114 +1178,49 @@ $(document).ready(function() {
                     if (emptyPartnerRows.length > 0) {
                         hasWarnings = true;
                         warningHtml += `
-                            <div class="alert alert-danger critical-error">
-                                <h6><i class="fas fa-ban"></i> Empty Partner ID - Import Disabled</h6>
-                                <p>The following rows have no partner identifier (Partner ID KPX / Partner ID / Partner Name).</p>
+                            <div class="alert alert-warning">
+                                <h6><i class="fas fa-user-slash"></i> No Partner ID in Excel</h6>
                                 <table class="table table-sm table-bordered table-striped">
                                     <thead class="table-dark">
-                                        <tr>
-                                            <th>Row #</th>
-                                            <th>Reference No</th>
-                                            <th>Partner ID KPX</th>
-                                            <th>Partner ID / Name (fallback)</th>
-                                        </tr>
+                                        <tr><th>Row #</th><th>Reference No</th><th>Partner Name (from Excel)</th></tr>
                                     </thead>
                                     <tbody>
                                         ${emptyPartnerRows.map(item => `
                                             <tr>
                                                 <td><strong>${item.row}</strong></td>
                                                 <td>${item.reference_no}</td>
-                                                <td><code>${item.partner_id_kpx}</code></td>
-                                                <td><code>${item.partner_id_fallback}</code></td>
+                                                <td>${item.partner_name}</td>
                                             </tr>
                                         `).join('')}
                                     </tbody>
                                 </table>
-                                <div class="alert alert-danger mt-2 mb-0">
-                                    <i class="fas fa-exclamation-triangle"></i> 
-                                    <strong>Action Required:</strong> Please provide valid Partner ID KPX for these rows before importing.
-                                </div>
-                            </div>
-                        `;
-                    }
-                    
-                    if (unrecognizedPartnerRows.length > 0) {
-                        hasWarnings = true;
-                        warningHtml += `
-                            <div class="alert alert-danger critical-error">
-                                <h6><i class="fas fa-exclamation-circle"></i> Unrecognized / Unregistered Partner - Import Disabled</h6>
-                                <p>The following partner identifiers were not found in the partner masterfile. <strong>Import is disabled until these are registered.</strong></p>
-                                <table class="table table-sm table-bordered table-striped">
-                                    <thead class="table-dark">
-                                        <tr>
-                                            <th>Row #</th>
-                                            <th>Reference No</th>
-                                            <th>Partner ID KPX</th>
-                                            <th>Partner ID / Name (fallback)</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${unrecognizedPartnerRows.map(item => `
-                                            <tr>
-                                                <td><strong>${item.row}</strong></td>
-                                                <td>${item.reference_no}</td>
-                                                <td><code>${item.partner_id_kpx}</code></td>
-                                                <td><code>${item.partner_id_fallback}</code></td>
-                                            </tr>
-                                        `).join('')}
-                                    </tbody>
-                                </table>
-                                <div class="alert alert-danger mt-2 mb-0">
-                                    <i class="fas fa-exclamation-triangle"></i> 
-                                    <strong>Action Required:</strong> Please register these partner IDs in the masterfile before importing.
-                                </div>
                             </div>
                         `;
                     }
                     
                     if (hasWarnings) {
-                        let statusBadge = '';
-                        if (importDisabled) {
-                            statusBadge = `
-                                <div class="alert alert-danger mb-3">
-                                    <i class="fas fa-ban"></i> 
-                                    <strong>Import Disabled:</strong> Errors found. Please fix the issues below before proceeding.
-                                </div>
-                            `;
-                        }
-                        
                         warningHtml = `
                             <div class="alert alert-info">
                                 <i class="fas fa-info-circle"></i> <strong>${allRows.length}</strong> records loaded from ${Object.keys(fileDataMap).length} file(s) with validation issues detected:
                                 <ul class="mb-0 mt-2">
                                     ${emptyBranchRows.length > 0 ? `<li><span class="badge bg-info">${emptyBranchRows.length}</span> Empty / Not Found Branch ID rows</li>` : ''}
-                                    ${emptyPartnerRows.length > 0 ? `<li><span class="badge bg-danger">${emptyPartnerRows.length}</span> Empty Partner Identifier rows</li>` : ''}
-                                    ${unrecognizedPartnerRows.length > 0 ? `<li><span class="badge bg-primary">${unrecognizedPartnerRows.length}</span> Unrecognized Partner rows</li>` : ''}
+                                    ${emptyPartnerRows.length > 0 ? `<li><span class="badge bg-warning text-dark">${emptyPartnerRows.length}</span> No Partner ID rows</li>` : ''}
+                                    ${partnerNotFoundRows.length > 0 ? `<li><span class="badge bg-warning text-dark">${partnerNotFoundRows.length}</span> Partner Not Found in Masterfile rows</li>` : ''}
                                 </ul>
                             </div>
-                            ${statusBadge}
                             ${warningHtml}
                         `;
                         $('#warningContent').html(warningHtml);
                         $('#warningModal').modal('show');
                         
-                        if (importDisabled) {
-                            $('#proceedImportBtn')
-                                .prop('disabled', true)
-                                .addClass('import-disabled')
-                                .html('<i class="fas fa-ban"></i> Import Disabled - Fix Errors');
-                        } else {
-                            $('#proceedImportBtn')
-                                .prop('disabled', false)
-                                .removeClass('import-disabled')
-                                .html('<i class="fas fa-upload"></i> Proceed with Import');
-                        }
+                        $('#proceedImportBtn')
+                            .prop('disabled', false)
+                            .removeClass('import-disabled')
+                            .html('<i class="fas fa-upload"></i> Proceed with Import');
                         
                         $('#proceedImportBtn').off('click').on('click', function() {
-                            if (!importDisabled) {
-                                $('#warningModal').modal('hide');
-                                proceedWithImport(allRows);
-                            }
+                            $('#warningModal').modal('hide');
+                            proceedWithImport(allRows);
                         });
                     } else {
                         proceedWithImport(allRows);
@@ -1499,7 +1231,6 @@ $(document).ready(function() {
                     
                     renderTable();
                     renderPagination();
-                    
                     displaySummary(allRows);
                     
                     $('#preview_section').removeClass('d-none');
@@ -1509,8 +1240,8 @@ $(document).ready(function() {
                     
                     $('#file_status_badge')
                         .removeClass('bg-success bg-warning bg-danger')
-                        .addClass(importDisabled ? 'bg-danger' : 'bg-success')
-                        .text(importDisabled ? 'Import Disabled - Fix Errors' : 'Loaded ' + allRows.length + ' Records from ' + Object.keys(fileDataMap).length + ' file(s)');
+                        .addClass('bg-success')
+                        .text('Loaded ' + allRows.length + ' Records from ' + Object.keys(fileDataMap).length + ' file(s)');
                 } else {
                     $('#file_status_badge')
                         .removeClass('bg-success bg-warning bg-danger')
@@ -1572,30 +1303,35 @@ $(document).ready(function() {
             
             const hasNegativeAmount = amountPaid < 0 || chargeCustomer < 0 || chargePartner < 0;
             
-            if (hasNegativeAmount) {
-                rowClass += ' has-negative-amount';
-            }
+            if (hasNegativeAmount) rowClass += ' has-negative-amount';
+            if (isEmptyValue(row.branch_id)) rowClass += ' has-empty-branch';
             
-            if (isEmptyValue(row.branch_id)) {
-                rowClass += ' has-empty-branch';
-            }
+            const excelPartnerId = (row.original_partner_id || row.partner_id_fallback_original || '').toString().trim();
+            const lookupStatus = (row.partner_lookup_status || '').toString();
             
-            const isPartnerKpxEmpty = isEmptyValue(row.partner_id_kpx);
-            const isPartnerIdEmpty = isEmptyValue(row.partner_id_fallback_original);
-            
-            if (isPartnerKpxEmpty && isPartnerIdEmpty) {
+            if (excelPartnerId === '' && lookupStatus === 'no_partner_id') {
                 rowClass += ' has-empty-partner';
-            } else if (!isPartnerKpxEmpty || !isPartnerIdEmpty) {
-                if (row.partner_name === 'Not Found' || isEmptyValue(row.partner_name)) {
-                    rowClass += ' has-unrecognized-partner';
-                }
+            } else if (excelPartnerId !== '' && lookupStatus === 'not_found') {
+                rowClass += ' has-unrecognized-partner';
             }
+
+            // Late Posting row highlight (from server response if present)
+            const importStatus = (row.import_status || '').toString().trim();
+            const isLatePosting = importStatus.toLowerCase() === 'late posting';
+            if (isLatePosting) rowClass += ' has-late-posting';
             
             let statusValue = row.status;
             if (hasNegativeAmount) {
                 statusValue = '*';
             } else if (!statusValue || statusValue === null || statusValue === undefined || statusValue === '') {
                 statusValue = '';
+            }
+            
+            let importStatusCell = '';
+            if (isLatePosting) {
+                importStatusCell = `<span class="late-posting-badge"><i class="fas fa-clock"></i> LATE POSTING</span>`;
+            } else if (importStatus) {
+                importStatusCell = formatValue(importStatus);
             }
             
             let tr = `<tr class="${rowClass}">
@@ -1633,10 +1369,10 @@ $(document).ready(function() {
                 <td>${formatValue(row.second_approver)}</td>
                 <td>${formatValue(row.sub_billers_id)}</td>
                 <td>${formatValue(row.sub_billers_name)}</td>
-                <td class="table-warning"><strong>${formatValue(row.partner_name ?? 'Not Found')}</strong></td>
-                <td class="table-warning"><strong>${formatValue(row.partner_id ?? 'Not Found')}</strong></td>
+                <td class="table-warning"><strong>${formatValue(row.partner_name ?? '')}</strong></td>
+                <td class="table-warning"><strong>${formatValue(row.partner_id ?? '')}</strong></td>
                 <td class="col-u-highlight">${formatValue(row.partner_id_kpx)}</td>
-                <td class="table-warning"><strong>${formatValue(row.mpm_gl_code ?? 'Not Found')}</strong></td>
+                <td class="table-warning"><strong>${formatValue(row.mpm_gl_code ?? '')}</strong></td>
                 <td>${formatValue(row.settle_unsettle)}</td>
                 <td>${formatValue(row.claim_unclaim)}</td>
                 <td>${formatValue(row.imported_by)}</td>
@@ -1645,6 +1381,7 @@ $(document).ready(function() {
                 <td>${formatValue(row.cad_no)}</td>
                 <td>${formatValue(row.hold_status)}</td>
                 <td>${formatValue(row.post_transaction)}</td>
+                <td>${importStatusCell}</td>
             </tr>`;
             tbody.append(tr);
         });
@@ -1664,9 +1401,7 @@ $(document).ready(function() {
 
         if (startPage > 1) {
             container.append(`<button class="page-btn btn btn-sm btn-outline-secondary" data-page="1">1</button>`);
-            if (startPage > 2) {
-                container.append(`<span class="mx-1">...</span>`);
-            }
+            if (startPage > 2) container.append(`<span class="mx-1">...</span>`);
         }
 
         for (let i = startPage; i <= endPage; i++) {
@@ -1675,9 +1410,7 @@ $(document).ready(function() {
         }
 
         if (endPage < totalPages) {
-            if (endPage < totalPages - 1) {
-                container.append(`<span class="mx-1">...</span>`);
-            }
+            if (endPage < totalPages - 1) container.append(`<span class="mx-1">...</span>`);
             container.append(`<button class="page-btn btn btn-sm btn-outline-secondary" data-page="${totalPages}">${totalPages}</button>`);
         }
 
@@ -1756,28 +1489,6 @@ $(document).ready(function() {
     });
 
     function proceedWithImport(rows) {
-        if (importDisabled) {
-            Swal.fire({
-                icon: 'error',
-                title: 'Import Disabled',
-                html: `
-                    <div class="text-start">
-                        <p>Import is currently disabled due to remarks found:</p>
-                        <ul class="text-start">
-                            ${warningData.emptyPartnerRows.length > 0 ? `<li><span class="badge bg-danger">${warningData.emptyPartnerRows.length}</span> Empty Partner Identifier rows</li>` : ''}
-                            ${warningData.unrecognizedPartnerRows.length > 0 ? `<li><span class="badge bg-danger">${warningData.unrecognizedPartnerRows.length}</span> Unrecognized Partner rows</li>` : ''}
-                        </ul>
-                        <div class="alert alert-danger mt-2">
-                            <i class="fas fa-exclamation-triangle"></i> 
-                            Please fix these issues before importing.
-                        </div>
-                    </div>
-                `,
-                confirmButtonText: 'OK'
-            });
-            return;
-        }
-
         Swal.fire({
             icon: 'question',
             title: 'Ready to Import',
@@ -1789,15 +1500,9 @@ $(document).ready(function() {
                         Please ensure you have reviewed the data before proceeding.
                     </div>
                     <div class="row mt-3">
-                        <div class="col-md-4">
-                            <span class="badge bg-info">Total: ${rows.length}</span>
-                        </div>
-                        <div class="col-md-4">
-                            <span class="badge bg-warning">Empty Branch: ${warningData.emptyBranchRows.length}</span>
-                        </div>
-                        <div class="col-md-4">
-                            <span class="badge bg-success">Partner Issues: ${warningData.emptyPartnerRows.length + warningData.unrecognizedPartnerRows.length}</span>
-                        </div>
+                        <div class="col-md-4"><span class="badge bg-info">Total: ${rows.length}</span></div>
+                        <div class="col-md-4"><span class="badge bg-warning text-dark">Empty Branch: ${warningData.emptyBranchRows.length}</span></div>
+                        <div class="col-md-4"><span class="badge bg-warning text-dark">Partner Issues: ${warningData.emptyPartnerRows.length + warningData.partnerNotFoundRows.length}</span></div>
                     </div>
                     <div class="mt-2">
                         <small class="text-muted">Files: ${Object.keys(fileDataMap).join(', ')}</small>
@@ -1833,6 +1538,8 @@ $(document).ready(function() {
                             const inserted = parseInt(response.inserted || 0, 10);
                             const duplicateCount = parseInt(response.duplicate_count || 0, 10);
                             const errorCount = parseInt(response.error_count || 0, 10);
+                            const latePostingCount = parseInt(response.late_posting_count || 0, 10);
+
                             const duplicateRows = (response.duplicates || []).slice(0, 10).map(item => {
                                 const source = item.type === 'file' ? 'duplicate within this upload batch' : 'already imported in the database';
                                 const typeLabel = item.type === 'file' ? 'batch dup' : 'already imported';
@@ -1848,7 +1555,8 @@ $(document).ready(function() {
                                 html: `
                                     <div class="text-start">
                                         <p><strong>${inserted}</strong> record(s) imported.</p>
-                                        <p><strong>${duplicateCount}</strong> duplicate reference(s) skipped (same reference + same transaction type already exists).</p>
+                                        ${latePostingCount > 0 ? `<p><span class="badge bg-warning text-dark"><i class="fas fa-clock"></i> ${latePostingCount}</span> record(s) tagged as <strong>Late Posting</strong>.</p>` : ''}
+                                        <p><strong>${duplicateCount}</strong> duplicate reference(s) skipped.</p>
                                         ${errorCount > 0 ? `<p><strong>${errorCount}</strong> record(s) failed.</p>` : ''}
                                         ${duplicateRows ? `<hr><strong>Duplicate samples:</strong><ul>${duplicateRows}</ul>` : ''}
                                         ${errorRows ? `<hr><strong>Error samples:</strong><ul>${errorRows}</ul>` : ''}

@@ -171,6 +171,219 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_transaction_data') {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js"></script>
     <link rel="icon" href="../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="home.css?v=<?= time(); ?>">
+
+    <!-- ===================== STICKY NOTE STYLES ===================== -->
+    <style>
+        /* Shared sticky note base */
+        .sticky-note {
+            position: absolute;
+            top: 110px;
+            width: 450px;
+            min-width: 220px;
+            min-height: 100px;
+            max-width: 90vw;
+            max-height: 50vh;
+            background: #fff9c4;
+            border-radius: 2px 12px 12px 12px;
+            box-shadow: 3px 6px 18px rgba(0,0,0,0.22),
+                        0 0 0 1px rgba(0,0,0,0.05);
+            z-index: 1050;
+            cursor: grab;
+            user-select: none;
+            -webkit-user-select: none;
+            opacity: .9;
+            transition: box-shadow 0.2s,
+                        transform 0.15s,
+                        opacity 0.25s ease;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            resize: both; /* native resize handle (bottom-right) */
+        }
+
+        /* Distinct colors / default positions for stacking */
+        .sticky-note[data-note-id="1"] {
+            right: 40px;
+            top: 110px;
+            background: #fff9c4; /* classic yellow */
+            z-index: 1052;
+        }
+        .sticky-note[data-note-id="2"] {
+            right: 60px;
+            top: 140px;
+            background: #c8e6c9; /* soft green */
+            z-index: 1051;
+        }
+        .sticky-note[data-note-id="3"] {
+            right: 80px;
+            top: 170px;
+            background: #bbdefb; /* soft blue */
+            z-index: 1050;
+        }
+
+        .sticky-note:hover {
+            opacity: 1;
+        }
+
+        .sticky-note.dragging {
+            opacity: 1;
+            box-shadow: 6px 12px 28px rgba(0,0,0,0.3);
+            transform: scale(1.02) rotate(0.8deg);
+            z-index: 1100 !important;
+        }
+
+        .sticky-note:active {
+            cursor: grabbing;
+        }
+
+        /* Tape / pin effect at the top */
+        .sticky-note::before {
+            content: '';
+            position: absolute;
+            top: -8px;
+            left: 50%;
+            transform: translateX(-50%) rotate(-2deg);
+            width: 70px;
+            height: 18px;
+            background: rgba(255, 255, 255, 0.55);
+            border: 1px solid rgba(0,0,0,0.08);
+            border-radius: 2px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            pointer-events: none;
+        }
+
+        .sticky-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 12px 4px;
+            background: rgba(0, 0, 0, 0.06);
+            border-bottom: 1px dashed rgba(0,0,0,0.08);
+            flex-shrink: 0;
+            cursor: grab;
+        }
+
+        .sticky-title {
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: #5d4037;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+        }
+
+        .sticky-controls button {
+            background: none;
+            border: none;
+            color: #8d6e63;
+            font-size: 0.85rem;
+            padding: 0 4px;
+            line-height: 1;
+            opacity: 0.7;
+            transition: opacity 0.15s, color 0.15s;
+            cursor: pointer;
+        }
+        .sticky-controls button:hover {
+            opacity: 1;
+            color: #bf360c;
+        }
+
+        .sticky-body {
+            padding: 8px 14px 16px;
+            font-size: 0.92rem;
+            line-height: 1.45;
+            color: #3e2723;
+            white-space: pre-wrap;
+            overflow: auto;
+            flex: 1 1 auto;
+            min-height: 40px;
+        }
+
+        /* Allow selecting text and clicking links inside the body */
+        .sticky-body,
+        .sticky-body * {
+            user-select: text;
+            -webkit-user-select: text;
+        }
+
+        .sticky-body a {
+            cursor: pointer;
+            pointer-events: auto;
+            position: relative;
+            z-index: 10;
+        }
+
+        .sticky-body a:hover {
+            color: #003d99 !important;
+            text-decoration: underline !important;
+        }
+
+        /* Resize handle visual cue (bottom-right corner) */
+        .sticky-resize-handle {
+            position: absolute;
+            right: 2px;
+            bottom: 2px;
+            width: 16px;
+            height: 16px;
+            cursor: nwse-resize;
+            opacity: 0.45;
+            z-index: 5;
+            pointer-events: none; /* native resize handles the interaction */
+        }
+        .sticky-resize-handle::after {
+            content: '';
+            position: absolute;
+            right: 3px;
+            bottom: 3px;
+            width: 8px;
+            height: 8px;
+            border-right: 2px solid #5d4037;
+            border-bottom: 2px solid #5d4037;
+        }
+
+        /* Minimized state – just a small tab */
+        .sticky-note.minimized {
+            width: 52px !important;
+            height: 52px !important;
+            min-width: 52px !important;
+            min-height: 52px !important;
+            max-width: 52px !important;
+            max-height: 52px !important;
+            border-radius: 50%;
+            overflow: hidden;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 2px 4px 12px rgba(0,0,0,0.25);
+            opacity: 0.65;
+            resize: none;
+        }
+        .sticky-note.minimized:hover {
+            opacity: 1;
+            transform: scale(1.08);
+        }
+        .sticky-note.minimized .sticky-header,
+        .sticky-note.minimized .sticky-body,
+        .sticky-note.minimized .sticky-resize-handle {
+            display: none !important;
+        }
+        .sticky-note.minimized::after {
+            content: '\f0f3'; /* fa-bell */
+            font-family: 'Font Awesome 5 Free';
+            font-weight: 900;
+            font-size: 1.35rem;
+            color: #5d4037;
+        }
+        .sticky-note.minimized::before {
+            display: none;
+        }
+
+        /* Color accents for minimized dots */
+        .sticky-note[data-note-id="1"].minimized { background: #ffeb3b; }
+        .sticky-note[data-note-id="2"].minimized { background: #81c784; }
+        .sticky-note[data-note-id="3"].minimized { background: #64b5f6; }
+    </style>
 </head>
 
 <body>
@@ -181,7 +394,74 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_transaction_data') {
 
     <div class="container-fluid">
         <div class="row">
-            <div class="col-md-12">
+            <div class="col-md-12" style="position: relative;">
+
+                <!-- ================= STICKY NOTES (3 stackable + resizable) ================= -->
+                <!-- 
+                    Edit the content of each .sticky-body below.
+                    Notes can be dragged, resized (bottom-right corner), minimized, and stacked.
+                -->
+
+                <!-- Note 1 – Main reminders (yellow) -->
+                <div class="sticky-note" data-note-id="1" id="stickyNote1">
+                    <div class="sticky-header">
+                        <span class="sticky-title">Reminder</span>
+                        <div class="sticky-controls">
+                            <button type="button" class="sticky-minimize" title="Minimize / Flip aside">
+                                <i class="fas fa-minus"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="sticky-body">
+📌 Functioning Features
+• Import <b>daily</b> transactions.
+• Allow <b>importing again of same report date</b> to see any late posting (will be tagged as = <b>Late Posting</b>).
+• Settlement for current day <b>will include</b> the unsettled from other day <b>(e.g late posted transactions)</b>.
+• Added modules: <b>CAD Loggings</b> and <b>BP vs GLE Transactions</b> (for user testing, please ask for access).
+• For <b>CAD Loggings</b>, <b>new reasons are added</b> and logging of <b>cancelled transactions are already allowed</b>.
+
+                    </div>
+                    <div class="sticky-resize-handle" aria-hidden="true"></div>
+                </div>
+
+                <!-- Note 2 – Quick checklist (green) -->
+                <div class="sticky-note" data-note-id="2" id="stickyNote2">
+                    <div class="sticky-header">
+                        <span class="sticky-title">Checklist</span>
+                        <div class="sticky-controls">
+                            <button type="button" class="sticky-minimize" title="Minimize / Flip aside">
+                                <i class="fas fa-minus"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="sticky-body">
+📌
+<span style="text-decoration: line-through;"> • Please send sample regenerated data (e.g <b>late posting</b> as discussed) </span>
+• Check if system generated outputs are the <b>same/equal</b> to your manual works <b>(e.g volume report, settlement, SOA/invoice)</b>.
+• Update partner details if necessary (e.g <b>bank details</b>). Contact Masterdata administrator (<b>Joshua Ricablanca</b> for assistance in <b>adding/editing</b> partner details). Settlement <b>may not matched </b>due to bank and partner details not updated.
+• <a href="http://ho-cad-exactdb:8080/masterdata/HomeLogin/index.php" target="_blank" rel="noopener noreferrer" style="color: #0066cc; text-decoration: underline; font-weight: bold;"><i class="fa-solid fa-link"></i> Masterdata System</a>
+                    </div>
+                    <div class="sticky-resize-handle" aria-hidden="true"></div>
+                </div>
+
+                <!-- Note 3 – Notes / scratch pad (blue) -->
+                <div class="sticky-note" data-note-id="3" id="stickyNote3">
+                    <div class="sticky-header">
+                        <span class="sticky-title">Scratch Pad</span>
+                        <div class="sticky-controls">
+                            <button type="button" class="sticky-minimize" title="Minimize / Flip aside">
+                                <i class="fas fa-minus"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="sticky-body">
+📌
+• Contact admin for issues found while testing.
+• Feedbacks are appreciated.
+                    </div>
+                    <div class="sticky-resize-handle" aria-hidden="true"></div>
+                </div>
+                <!-- ============== /STICKY NOTES ============== -->
 
                 <!-- ================= CALENDAR CARD (READ-ONLY) ================= -->
                 <div class="card mb-3" style="margin-top: 20px;">
@@ -842,6 +1122,167 @@ $(document).ready(function() {
     }
 
     /* ============================================================
+       STICKY NOTES – DRAGGABLE + RESIZABLE + STACKABLE (3 notes)
+       ============================================================ */
+    (function initStickyNotes() {
+        const notes = document.querySelectorAll('.sticky-note');
+        if (!notes.length) return;
+
+        let topZ = 1060;
+
+        function bringToFront(note) {
+            topZ += 1;
+            note.style.zIndex = topZ;
+        }
+
+        notes.forEach(function(note) {
+            const noteId = note.getAttribute('data-note-id') || '1';
+            const storageKey = 'stickyNoteState_' + noteId;
+
+            // Restore position / size / minimized from localStorage
+            try {
+                const saved = localStorage.getItem(storageKey);
+                if (saved) {
+                    const state = JSON.parse(saved);
+                    if (state.left)  { note.style.left  = state.left;  note.style.right = 'auto'; }
+                    if (state.top)   { note.style.top   = state.top; }
+                    if (state.width) note.style.width  = state.width;
+                    if (state.height) note.style.height = state.height;
+                    if (state.minimized) {
+                        note.classList.add('minimized');
+                        const icon = note.querySelector('.sticky-minimize i');
+                        if (icon) {
+                            icon.classList.remove('fa-minus');
+                            icon.classList.add('fa-expand');
+                        }
+                        const btn = note.querySelector('.sticky-minimize');
+                        if (btn) btn.setAttribute('title', 'Expand note');
+                    }
+                }
+            } catch (e) {}
+
+            function saveState() {
+                try {
+                    localStorage.setItem(storageKey, JSON.stringify({
+                        left: note.style.left || null,
+                        top: note.style.top || null,
+                        width: note.style.width || null,
+                        height: note.style.height || null,
+                        minimized: note.classList.contains('minimized')
+                    }));
+                } catch (e) {}
+            }
+
+            // Persist size when user finishes resizing (native resize)
+            note.addEventListener('mouseup', function() {
+                // Capture current computed size after native resize
+                if (!note.classList.contains('minimized')) {
+                    const rect = note.getBoundingClientRect();
+                    note.style.width  = rect.width + 'px';
+                    note.style.height = rect.height + 'px';
+                    saveState();
+                }
+            });
+
+            // Drag
+            let isDragging = false;
+            let offsetX = 0, offsetY = 0;
+
+            note.addEventListener('mousedown', function(e) {
+                // Don't start drag on controls, links, or while resizing near bottom-right
+                if (e.target.closest('.sticky-controls') || e.target.closest('a')) return;
+                if (note.classList.contains('minimized')) return;
+
+                // Avoid starting drag if click is near the native resize corner
+                const rect = note.getBoundingClientRect();
+                const nearResize = (e.clientX > rect.right - 18) && (e.clientY > rect.bottom - 18);
+                if (nearResize) return;
+
+                isDragging = true;
+                note.classList.add('dragging');
+                bringToFront(note);
+
+                offsetX = e.clientX - rect.left;
+                offsetY = e.clientY - rect.top;
+
+                note.style.right = 'auto';
+                note.style.left  = rect.left + 'px';
+                note.style.top   = rect.top  + 'px';
+
+                e.preventDefault();
+            });
+
+            document.addEventListener('mousemove', function(e) {
+                if (!isDragging) return;
+                const x = e.clientX - offsetX;
+                const y = e.clientY - offsetY;
+                const maxX = window.innerWidth  - note.offsetWidth  - 8;
+                const maxY = window.innerHeight - note.offsetHeight - 8;
+                note.style.left = Math.max(8, Math.min(x, maxX)) + 'px';
+                note.style.top  = Math.max(8, Math.min(y, maxY)) + 'px';
+            });
+
+            document.addEventListener('mouseup', function() {
+                if (!isDragging) return;
+                isDragging = false;
+                note.classList.remove('dragging');
+                saveState();
+            });
+
+            // Bring to front on any click
+            note.addEventListener('mousedown', function() {
+                bringToFront(note);
+            });
+
+            // Minimize / Expand
+            const minBtn = note.querySelector('.sticky-minimize');
+            if (minBtn) {
+                minBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    note.classList.toggle('minimized');
+                    const icon = minBtn.querySelector('i');
+                    if (note.classList.contains('minimized')) {
+                        if (icon) { icon.classList.remove('fa-minus'); icon.classList.add('fa-expand'); }
+                        minBtn.setAttribute('title', 'Expand note');
+                    } else {
+                        if (icon) { icon.classList.remove('fa-expand'); icon.classList.add('fa-minus'); }
+                        minBtn.setAttribute('title', 'Minimize / Flip aside');
+                    }
+                    saveState();
+                });
+            }
+
+            // Click minimized circle to expand
+            note.addEventListener('click', function(e) {
+                if (note.classList.contains('minimized') && !e.target.closest('.sticky-controls')) {
+                    note.classList.remove('minimized');
+                    const icon = note.querySelector('.sticky-minimize i');
+                    if (icon) { icon.classList.remove('fa-expand'); icon.classList.add('fa-minus'); }
+                    const btn = note.querySelector('.sticky-minimize');
+                    if (btn) btn.setAttribute('title', 'Minimize / Flip aside');
+                    bringToFront(note);
+                    saveState();
+                }
+            });
+
+            // Open links safely
+            note.querySelectorAll('.sticky-body a').forEach(function(link) {
+                link.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const url = this.getAttribute('href');
+                    const target = this.getAttribute('target') || '_self';
+                    if (url && url !== '#') {
+                        window.open(url, target);
+                        e.preventDefault();
+                    }
+                });
+            });
+        });
+    })();
+
+    /* ============================================================
+       INIT
+       ============================================================ */    /* ============================================================
        INIT
        ============================================================ */
     renderCalendar();
