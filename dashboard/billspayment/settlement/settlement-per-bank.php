@@ -486,6 +486,8 @@ $selected_settlement_type = isset($_GET['settlement_type']) ? trim($_GET['settle
 $selected_date_from = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
 $selected_date_to = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
 $selected_rfp_no = isset($_GET['rfp_no']) ? trim($_GET['rfp_no']) : '';
+// include_lookback: '1' = include unsettled from prior 7 days, '0' = selected date only
+$include_lookback = isset($_GET['include_lookback']) ? trim($_GET['include_lookback']) : '';
 
 // Flag to check if filters are applied
 $has_filters = !empty(array_filter($_GET));
@@ -582,60 +584,13 @@ if (!empty($selected_date_to) && isMonday($selected_date_to)) {
 }
 
 // ============================================
-// RETRIEVE RFP NO. FROM DATABASE IF NOT PROVIDED
+// RFP NO. FILTER BEHAVIOUR
+// - Date only (no RFP): show ALL transactions for the date range
+//   (both Settled and Unsettled). Do NOT auto-fill RFP from DB —
+//   that previously forced an rfp_no filter and hid unsettled rows.
+// - Date + explicit RFP: show only transactions that already use
+//   that RFP (typically Settled ones).
 // ============================================
-if (empty($selected_rfp_no) && $has_filters) {
-    $rfp_query = "SELECT DISTINCT rfp_no FROM mldb.billspayment_transaction bt 
-                  LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
-                  WHERE 1=1";
-    
-    $rfp_params = [];
-    $rfp_types = "";
-    
-    if (!empty($selected_partner)) {
-        $rfp_query .= " AND bt.partner_id_kpx = ?";
-        $rfp_params[] = $selected_partner;
-        $rfp_types .= "s";
-    }
-    if (!empty($selected_bank)) {
-        $rfp_query .= " AND pm.bank = ?";
-        $rfp_params[] = $selected_bank;
-        $rfp_types .= "s";
-    }
-    if (!empty($selected_settlement_type)) {
-        $rfp_query .= " AND pm.settled_online_check = ?";
-        $rfp_params[] = $selected_settlement_type;
-        $rfp_types .= "s";
-    }
-    if (!empty($selected_date_from) && !empty($selected_date_to)) {
-        $rfp_query .= " AND bt.datetime BETWEEN ? AND ?";
-        $rfp_params[] = $selected_date_from . ' 00:00:00';
-        $rfp_params[] = $selected_date_to . ' 23:59:59';
-        $rfp_types .= "ss";
-    } elseif (!empty($selected_date_from)) {
-        $rfp_query .= " AND bt.datetime >= ?";
-        $rfp_params[] = $selected_date_from . ' 00:00:00';
-        $rfp_types .= "s";
-    } elseif (!empty($selected_date_to)) {
-        $rfp_query .= " AND bt.datetime <= ?";
-        $rfp_params[] = $selected_date_to . ' 23:59:59';
-        $rfp_types .= "s";
-    }
-    
-    $rfp_query .= " AND rfp_no IS NOT NULL AND rfp_no != '' LIMIT 1";
-    
-    $rfp_stmt = $conn->prepare($rfp_query);
-    if ($rfp_stmt && !empty($rfp_params)) {
-        $rfp_stmt->bind_param($rfp_types, ...$rfp_params);
-        $rfp_stmt->execute();
-        $rfp_result = $rfp_stmt->get_result();
-        if ($rfp_row = $rfp_result->fetch_assoc()) {
-            $selected_rfp_no = $rfp_row['rfp_no'];
-            $_GET['rfp_no'] = $selected_rfp_no;
-        }
-        $rfp_stmt->close();
-    }
-}
 
 // ============================================
 // AUTO-POPULATE DATE RANGE FROM RFP NO.
@@ -843,21 +798,23 @@ function getDailyBreakdown(mysqli $conn, string $partner_id, string $bank, strin
         $types_adjustment .= "s";
     }
     
-    // LATE POSTING LOOKBACK support (same rules as main query)
+    // LATE POSTING LOOKBACK — only when user chose include_lookback=1
     $is_single = (!empty($date_from) && !empty($date_to) && $date_from === $date_to);
     $lb_from = null;
     $lb_to   = null;
-    if ($is_single) {
+    $allow_lb = (isset($_GET['include_lookback']) && $_GET['include_lookback'] === '1');
+    if ($is_single && $allow_lb) {
         $lb_from = date('Y-m-d', strtotime($date_from . ' -7 days'));
         $lb_to   = date('Y-m-d', strtotime($date_from . ' -1 day'));
     }
 
-    if ($is_single && $lb_from && $lb_to) {
+    if ($is_single && $allow_lb && $lb_from && $lb_to) {
         $where_conditions_regular[] = "(
             (bt.datetime BETWEEN ? AND ?)
             OR
             (
                 bt.datetime BETWEEN ? AND ?
+                AND UPPER(TRIM(COALESCE(bt.import_status, ''))) = 'LATE POSTING'
                 AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
             )
         )";
@@ -1195,21 +1152,23 @@ function getPcsoLandbankPartners(
         $types_adjustment .= "s";
     }
 
-    // LATE POSTING LOOKBACK support (same rules as main query)
+    // LATE POSTING LOOKBACK — only when user chose include_lookback=1
     $is_single = (!empty($date_from) && !empty($date_to) && $date_from === $date_to);
     $lb_from = null;
     $lb_to   = null;
-    if ($is_single) {
+    $allow_lb = (isset($_GET['include_lookback']) && $_GET['include_lookback'] === '1');
+    if ($is_single && $allow_lb) {
         $lb_from = date('Y-m-d', strtotime($date_from . ' -7 days'));
         $lb_to   = date('Y-m-d', strtotime($date_from . ' -1 day'));
     }
 
-    if ($is_single && $lb_from && $lb_to) {
+    if ($is_single && $allow_lb && $lb_from && $lb_to) {
         $where_regular[] = "(
             (bt.datetime BETWEEN ? AND ?)
             OR
             (
                 bt.datetime BETWEEN ? AND ?
+                AND UPPER(TRIM(COALESCE(bt.import_status, ''))) = 'LATE POSTING'
                 AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
             )
         )";
@@ -1443,21 +1402,23 @@ function getPartnerTotalsByRegions(
         $types_adjustment .= "s";
     }
 
-    // LATE POSTING LOOKBACK support (same rules as main query)
+    // LATE POSTING LOOKBACK — only when user chose include_lookback=1
     $is_single = (!empty($date_from) && !empty($date_to) && $date_from === $date_to);
     $lb_from = null;
     $lb_to   = null;
-    if ($is_single) {
+    $allow_lb = (isset($_GET['include_lookback']) && $_GET['include_lookback'] === '1');
+    if ($is_single && $allow_lb) {
         $lb_from = date('Y-m-d', strtotime($date_from . ' -7 days'));
         $lb_to   = date('Y-m-d', strtotime($date_from . ' -1 day'));
     }
 
-    if ($is_single && $lb_from && $lb_to) {
+    if ($is_single && $allow_lb && $lb_from && $lb_to) {
         $where_regular[] = "(
             (bt.datetime BETWEEN ? AND ?)
             OR
             (
                 bt.datetime BETWEEN ? AND ?
+                AND UPPER(TRIM(COALESCE(bt.import_status, ''))) = 'LATE POSTING'
                 AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
             )
         )";
@@ -1780,6 +1741,7 @@ $reason_options = [
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="css/settlement_bank.css?v=<?= time(); ?>">
  
+
 </head>
 <body>
     <!-- Simple Loading Overlay - Solid opaque background -->
@@ -1879,6 +1841,9 @@ $reason_options = [
                            value="<?php echo htmlspecialchars($selected_rfp_no); ?>"
                            style="width: 100%; padding: 8px 12px; border: 1px solid #ced4da; border-radius: 4px;">
                 </div>
+
+                <!-- Late-posting lookback choice (set by prompt on single-day search) -->
+                <input type="hidden" id="include_lookback" name="include_lookback" value="<?php echo htmlspecialchars($include_lookback); ?>">
 
                 <!-- Action Buttons -->
                 <div class="filter-actions">
@@ -2093,20 +2058,23 @@ $reason_options = [
                 );
                 $lookback_from = null;
                 $lookback_to   = null;
-                if ($is_single_day_settlement) {
+                // Only apply lookback when user explicitly chose to include it (include_lookback=1)
+                $apply_lookback = ($is_single_day_settlement && $include_lookback === '1');
+                if ($apply_lookback) {
                     $lookback_from = date('Y-m-d', strtotime($effective_date_from . ' -7 days'));
                     $lookback_to   = date('Y-m-d', strtotime($effective_date_from . ' -1 day'));
                 }
                 
-                if ($is_single_day_settlement && $lookback_from && $lookback_to) {
+                if ($apply_lookback && $lookback_from && $lookback_to) {
                     // Include:
                     //  1) All transactions on the selected day (any settle status)
-                    //  2) Only UNSETTLED transactions from the 7-day lookback window
+                    //  2) Only LATE POSTING + still-unsettled rows from the 7-day lookback window
                     $where_conditions_regular[] = "(
                         (bt.datetime BETWEEN ? AND ?)
                         OR
                         (
                             bt.datetime BETWEEN ? AND ?
+                            AND UPPER(TRIM(COALESCE(bt.import_status, ''))) = 'LATE POSTING'
                             AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
                         )
                     )";
@@ -2194,7 +2162,7 @@ $reason_options = [
                          pm.charge_to, 
                          pm.charge_sched,
                          DATE(bt.datetime)
-                ORDER BY bt.partner_id_kpx, DATE(bt.datetime) ASC";
+                ORDER BY pm.partner_name ASC, bt.partner_id_kpx, DATE(bt.datetime) ASC";
                 
                 $adjustment_sql = "SELECT 
                                         bt.partner_id_kpx,
@@ -3179,6 +3147,16 @@ $reason_options = [
                     $groups = array_filter($groups, function($group) {
                         return !empty($group['rows']);
                     });
+
+                    // Sort each charge group by partner name ASC
+                    foreach ($groups as $gk => &$gdata) {
+                        if (!empty($gdata['rows'])) {
+                            usort($gdata['rows'], function ($a, $b) {
+                                return strcasecmp($a['partner_name'] ?? '', $b['partner_name'] ?? '');
+                            });
+                        }
+                    }
+                    unset($gdata);
                     
                     $has_uncategorized = isset($groups['UNCATEGORIZED']) && !empty($groups['UNCATEGORIZED']['rows']);
                     $has_both = false;
@@ -3305,7 +3283,7 @@ $reason_options = [
                         </div>
                         <?php endif; ?>
                         
-                        <?php if ($include_special_monday_partners): ?>
+                        <!-- <?php if ($include_special_monday_partners): ?>
                         <div class="alert-info-custom" style="background: #fff3cd; border-color: #ffc107; color: #856404;">
                             <i class="fas fa-calendar-week"></i>
                             <strong>Monday Settlement Notice:</strong> 
@@ -3323,7 +3301,7 @@ $reason_options = [
                             Transactions captured: <strong><?php echo date('M d, Y', strtotime($special_m2s_date_from)); ?></strong> 
                             (Monday) → <strong><?php echo date('M d, Y', strtotime($special_m2s_date_to)); ?></strong> (Sunday).
                         </div>
-                        <?php endif; ?>
+                        <?php endif; ?> -->
 
                         <?php if (!empty($selected_partner) && in_array($selected_partner, $weekend_partner_list, true) && isFridayToSundayRange($selected_date_from, $selected_date_to)): ?>
                         <div class="alert-info-custom" style="background: #d1ecf1; border-color: #bee5eb; color: #0c5460;">
@@ -3333,15 +3311,21 @@ $reason_options = [
                         </div>
                         <?php endif; ?>
 
-                        <?php if (!empty($is_single_day_settlement) && !empty($lookback_from) && !empty($lookback_to)): ?>
+                        <?php if (!empty($is_single_day_settlement) && $include_lookback === '1' && !empty($lookback_from) && !empty($lookback_to)): ?>
                         <div class="alert-info-custom" style="background: #e8f5e9; border-color: #81c784; color: #1b5e20;">
                             <i class="fas fa-clock"></i>
-                            <strong>Late Posting Lookback Active:</strong>
-                            Settlement date (<strong><?php echo date('M d, Y', strtotime($effective_date_from)); ?></strong>),
-                            any <strong>unsettled</strong> transactions from the previous 7 days
+                            <strong>Late Posting Lookback Included:</strong>
+                            Settlement date (<strong><?php echo date('M d, Y', strtotime($effective_date_from)); ?></strong>)
+                            plus unsettled rows with <strong>import_status = 'Late Posting'</strong> from the previous 7 days
                             (<strong><?php echo date('M d, Y', strtotime($lookback_from)); ?></strong>
-                            → <strong><?php echo date('M d, Y', strtotime($lookback_to)); ?></strong>)
-                            are automatically included.
+                            → <strong><?php echo date('M d, Y', strtotime($lookback_to)); ?></strong>).
+                        </div>
+                        <?php elseif (!empty($is_single_day_settlement) && $include_lookback === '0'): ?>
+                        <div class="alert-info-custom" style="background: #fff3cd; border-color: #ffc107; color: #856404;">
+                            <i class="fas fa-calendar-day"></i>
+                            <strong>Selected date only:</strong>
+                            Showing transactions for <strong><?php echo date('M d, Y', strtotime($effective_date_from)); ?></strong> only
+                            (Late Posting rows from the previous 7 days were not included).
                         </div>
                         <?php endif; ?>
                         
@@ -3768,36 +3752,15 @@ $reason_options = [
             }
         }, 10000);
 
-        $('#filterForm').on('submit', function(e) {
-            e.preventDefault();
-            
-            var hasFilters = false;
-            $(this).find('select, input[type="date"], input[name="rfp_no"]').each(function() {
-                var val = $(this).val();
-                if (val && val.trim() !== '' && val !== '0') {
-                    hasFilters = true;
-                    return false;
-                }
-            });
-            
-            if (!hasFilters) {
-                Swal.fire({
-                    icon: 'info',
-                    title: 'No Filters Selected',
-                    text: 'Please select at least one filter to search.',
-                    confirmButtonColor: '#007bff'
-                });
-                return;
-            }
-            
+        function runFilterAjax() {
             showLoadingModal();
             hideMainContent();
             resetAndStartTimer();
             
-            var formData = $(this).serialize();
+            var formData = $('#filterForm').serialize();
             
             $.ajax({
-                url: window.location.href,
+                url: window.location.pathname,
                 type: 'GET',
                 data: formData,
                 dataType: 'html',
@@ -3817,6 +3780,11 @@ $reason_options = [
                                 $('#resultsContainer').html(content.substring(start, end + 6));
                             }
                         }
+                    }
+                    
+                    // Keep URL in sync so refresh retains filters
+                    if (window.history && window.history.replaceState) {
+                        window.history.replaceState(null, '', window.location.pathname + '?' + formData);
                     }
                     
                     setTimeout(function() {
@@ -3840,6 +3808,80 @@ $reason_options = [
                     console.error('AJAX Error:', status, error);
                 }
             });
+        }
+
+        $('#filterForm').on('submit', function(e) {
+            e.preventDefault();
+            
+            var hasFilters = false;
+            $(this).find('select, input[type="date"], input[name="rfp_no"]').each(function() {
+                var val = $(this).val();
+                if (val && val.trim() !== '' && val !== '0') {
+                    hasFilters = true;
+                    return false;
+                }
+            });
+            
+            if (!hasFilters) {
+                Swal.fire({
+                    icon: 'info',
+                    title: 'No Filters Selected',
+                    text: 'Please select at least one filter to search.',
+                    confirmButtonColor: '#007bff'
+                });
+                return;
+            }
+
+            var dateFrom = ($('#date_from').val() || '').trim();
+            var dateTo   = ($('#date_to').val() || '').trim();
+            var isSingleDay = (dateFrom !== '' && dateTo !== '' && dateFrom === dateTo);
+
+            // Single-day search: ask whether to include unsettled from the past 7 days
+            if (isSingleDay) {
+                var lookbackFrom = new Date(dateFrom + 'T00:00:00');
+                lookbackFrom.setDate(lookbackFrom.getDate() - 7);
+                var lookbackTo = new Date(dateFrom + 'T00:00:00');
+                lookbackTo.setDate(lookbackTo.getDate() - 1);
+                var fmt = function(d) {
+                    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                };
+
+                Swal.fire({
+                    icon: 'question',
+                    title: 'Include Late Postings?',
+                    html: `
+                        <div style="text-align: left; font-size: 14px;">
+                            <p>You selected a <strong>single date</strong> (<strong>${fmt(new Date(dateFrom + 'T00:00:00'))}</strong>).</p>
+                            <p style="margin-top: 10px;">There may be transactions from the previous 7 days
+                            (<strong>${fmt(lookbackFrom)}</strong> → <strong>${fmt(lookbackTo)}</strong>)
+                            with <strong>import_status = 'Late Posting'</strong> that are still unsettled.</p>
+                            <p style="margin-top: 10px;">Do you want to <strong>include</strong> those Late Posting transactions, or show <strong>only</strong> the selected date?</p>
+                        </div>
+                    `,
+                    showDenyButton: true,
+                    showCancelButton: true,
+                    confirmButtonText: 'Include Late Postings',
+                    denyButtonText: 'Selected date only',
+                    cancelButtonText: 'Cancel',
+                    confirmButtonColor: '#28a745',
+                    denyButtonColor: '#6c757d',
+                    cancelButtonColor: '#dc3545'
+                }).then(function(result) {
+                    if (result.isConfirmed) {
+                        $('#include_lookback').val('1');
+                        runFilterAjax();
+                    } else if (result.isDenied) {
+                        $('#include_lookback').val('0');
+                        runFilterAjax();
+                    }
+                    // Cancel → do nothing
+                });
+                return;
+            }
+
+            // Multi-day or no dates: no lookback
+            $('#include_lookback').val('0');
+            runFilterAjax();
         });
     });
 
@@ -4689,6 +4731,7 @@ $reason_options = [
                     var settlementType = $('#settlement_type').val() || '';
                     var dateFrom = $('#date_from').val() || '';
                     var dateTo = $('#date_to').val() || '';
+                    var includeLookback = $('#include_lookback').val() || '0';
                     
                     var reasonDataStr = JSON.stringify(reasonData);
                     
@@ -4705,6 +4748,7 @@ $reason_options = [
                             settlement_type_filter: settlementType,
                             date_from: dateFrom,
                             date_to: dateTo,
+                            include_lookback: includeLookback,
                             reason_data: reasonDataStr
                         },
                         dataType: 'json',
@@ -4809,6 +4853,174 @@ $reason_options = [
             }
         });
     }
+</script>
+
+
+<!-- Floating Settlement Reminder: minimized bell by default -->
+<button type="button" id="settlementReminderBell" aria-label="Click to view note"
+        title="Click to view note">
+    <i class="fa-solid fa-bell" aria-hidden="true"></i>
+    <span class="sr-tooltip">Click to view note</span>
+</button>
+
+<section id="settlementReminderPanel" role="dialog" aria-label="Settlement reminder" aria-hidden="true">
+    <div id="settlementReminderHeader">
+        <div class="sr-heading"><i class="fa-solid fa-note-sticky" aria-hidden="true"></i> Settlement Reminder</div>
+        <div class="sr-actions">
+            <button type="button" id="settlementReminderMinimize" aria-label="Minimize note" title="Minimize"><i class="fa-solid fa-minus"></i></button>
+            <button type="button" id="settlementReminderClose" aria-label="Close note" title="Minimize"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+    </div>
+    <div id="settlementReminderContent">
+        <p class="sr-intro">Please review these reminders before processing settlement.</p>
+        <ul>
+            <li>Settlement for current day <b>will include</b> the unsettled from other day <b>(only those tagged as Late Posting)</b>.</li>
+            <li>Check output system if it <b>matches</b> your current manual settlement.</li>
+            <li>Update partner details if necessary (e.g. <b>bank details</b>). Contact Masterdata administrator (<b>Joshua Ricablanca</b> for assistance in <b>adding/editing</b> partner details). Settlement <b>may not matched</b> due to bank and partner <b>details not updated</b>.</li>
+            <li><a href="http://ho-cad-exactdb:8080/masterdata/HomeLogin/index.php" target="_blank" rel="noopener noreferrer"><i class="fa-solid fa-link" aria-hidden="true"></i> Masterdata System</a></li>
+        </ul>
+    </div>
+</section>
+
+<script>
+(function () {
+    'use strict';
+
+    const bell = document.getElementById('settlementReminderBell');
+    const panel = document.getElementById('settlementReminderPanel');
+    const header = document.getElementById('settlementReminderHeader');
+    const minimizeButtons = [
+        document.getElementById('settlementReminderMinimize'),
+        document.getElementById('settlementReminderClose')
+    ];
+    const storageKey = 'settlementReminderWidgetStateV1';
+    let drag = null;
+    let dragged = false;
+
+    function readState() {
+        try { return JSON.parse(localStorage.getItem(storageKey) || '{}'); }
+        catch (e) { return {}; }
+    }
+    function saveState() {
+        try {
+            const b = bell.getBoundingClientRect();
+            const previous = readState();
+            const panelVisible = panel.classList.contains('is-open');
+            const p = panelVisible ? panel.getBoundingClientRect() : null;
+            localStorage.setItem(storageKey, JSON.stringify({
+                bell: { left: Math.round(b.left), top: Math.round(b.top) },
+                panel: p ? {
+                    left: Math.round(p.left), top: Math.round(p.top),
+                    width: Math.round(p.width), height: Math.round(p.height)
+                } : (previous.panel || {})
+            }));
+        } catch (e) { /* Storage may be disabled; widget still works. */ }
+    }
+    function clampElement(el, left, top) {
+        const rect = el.getBoundingClientRect();
+        const maxLeft = Math.max(0, window.innerWidth - rect.width);
+        const maxTop = Math.max(0, window.innerHeight - rect.height);
+        el.style.left = Math.round(Math.min(maxLeft, Math.max(0, left))) + 'px';
+        el.style.top = Math.round(Math.min(maxTop, Math.max(0, top))) + 'px';
+        el.style.right = 'auto';
+        el.style.bottom = 'auto';
+    }
+    function openNote() {
+        panel.classList.add('is-open');
+        panel.setAttribute('aria-hidden', 'false');
+        bell.style.display = 'none';
+        const state = readState();
+        if (state.panel && Number.isFinite(state.panel.left) && Number.isFinite(state.panel.top)) {
+            clampElement(panel, state.panel.left, state.panel.top);
+        } else {
+            const r = panel.getBoundingClientRect();
+            clampElement(panel, window.innerWidth - r.width - 26, window.innerHeight - r.height - 26);
+        }
+        if (state.panel && state.panel.width && state.panel.height) {
+            panel.style.width = Math.min(state.panel.width, window.innerWidth - 16) + 'px';
+            panel.style.height = Math.min(state.panel.height, window.innerHeight - 16) + 'px';
+        }
+        saveState();
+    }
+    function minimizeNote() {
+        panel.classList.remove('is-open');
+        panel.setAttribute('aria-hidden', 'true');
+        bell.style.display = 'flex';
+        const state = readState();
+        if (state.bell && Number.isFinite(state.bell.left) && Number.isFinite(state.bell.top)) {
+            clampElement(bell, state.bell.left, state.bell.top);
+        }
+        saveState();
+    }
+
+    // Restore each component's last position and the note's last size.
+    const initialState = readState();
+    if (initialState.bell && Number.isFinite(initialState.bell.left) && Number.isFinite(initialState.bell.top)) {
+        clampElement(bell, initialState.bell.left, initialState.bell.top);
+    }
+    if (initialState.panel) {
+        if (initialState.panel.width) panel.style.width = initialState.panel.width + 'px';
+        if (initialState.panel.height) panel.style.height = initialState.panel.height + 'px';
+    }
+
+    bell.addEventListener('click', function () {
+        if (dragged) { dragged = false; return; }
+        openNote();
+    });
+    minimizeButtons.forEach(function (button) {
+        button.addEventListener('click', minimizeNote);
+        button.addEventListener('pointerdown', function (event) { event.stopPropagation(); });
+    });
+
+    function startDrag(event, el, allowedTarget) {
+        if (event.button !== undefined && event.button !== 0) return;
+        if (allowedTarget && event.target.closest('button')) return;
+        const rect = el.getBoundingClientRect();
+        drag = { el: el, startX: event.clientX, startY: event.clientY,
+                 left: rect.left, top: rect.top, moved: false };
+        if (el.setPointerCapture && event.pointerId !== undefined) {
+            try { el.setPointerCapture(event.pointerId); } catch (e) {}
+        }
+        event.preventDefault();
+    }
+    bell.addEventListener('pointerdown', function (event) { startDrag(event, bell, false); });
+    header.addEventListener('pointerdown', function (event) { startDrag(event, panel, true); });
+
+    document.addEventListener('pointermove', function (event) {
+        if (!drag) return;
+        const dx = event.clientX - drag.startX;
+        const dy = event.clientY - drag.startY;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
+        if (drag.moved) {
+            clampElement(drag.el, drag.left + dx, drag.top + dy);
+            dragged = true;
+        }
+    });
+    document.addEventListener('pointerup', function () {
+        if (!drag) return;
+        if (drag.moved) saveState();
+        drag = null;
+        // Keep the click following a drag from opening the note.
+        if (dragged) setTimeout(function () { dragged = false; }, 0);
+    });
+    document.addEventListener('pointercancel', function () { drag = null; });
+
+    if (window.ResizeObserver) {
+        new ResizeObserver(function () {
+            if (panel.classList.contains('is-open')) saveState();
+        }).observe(panel);
+    }
+    window.addEventListener('resize', function () {
+        if (panel.classList.contains('is-open')) {
+            const r = panel.getBoundingClientRect();
+            clampElement(panel, r.left, r.top);
+        } else {
+            const r = bell.getBoundingClientRect();
+            clampElement(bell, r.left, r.top);
+        }
+        saveState();
+    });
+})();
 </script>
 
 </body>

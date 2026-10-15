@@ -172,218 +172,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_transaction_data') {
     <link rel="icon" href="../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="home.css?v=<?= time(); ?>">
 
-    <!-- ===================== STICKY NOTE STYLES ===================== -->
-    <style>
-        /* Shared sticky note base */
-        .sticky-note {
-            position: absolute;
-            top: 110px;
-            width: 450px;
-            min-width: 220px;
-            min-height: 100px;
-            max-width: 90vw;
-            max-height: 50vh;
-            background: #fff9c4;
-            border-radius: 2px 12px 12px 12px;
-            box-shadow: 3px 6px 18px rgba(0,0,0,0.22),
-                        0 0 0 1px rgba(0,0,0,0.05);
-            z-index: 1050;
-            cursor: grab;
-            user-select: none;
-            -webkit-user-select: none;
-            opacity: .9;
-            transition: box-shadow 0.2s,
-                        transform 0.15s,
-                        opacity 0.25s ease;
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-            resize: both; /* native resize handle (bottom-right) */
-        }
-
-        /* Distinct colors / default positions for stacking */
-        .sticky-note[data-note-id="1"] {
-            right: 40px;
-            top: 110px;
-            background: #fff9c4; /* classic yellow */
-            z-index: 1052;
-        }
-        .sticky-note[data-note-id="2"] {
-            right: 60px;
-            top: 140px;
-            background: #c8e6c9; /* soft green */
-            z-index: 1051;
-        }
-        .sticky-note[data-note-id="3"] {
-            right: 80px;
-            top: 170px;
-            background: #bbdefb; /* soft blue */
-            z-index: 1050;
-        }
-
-        .sticky-note:hover {
-            opacity: 1;
-        }
-
-        .sticky-note.dragging {
-            opacity: 1;
-            box-shadow: 6px 12px 28px rgba(0,0,0,0.3);
-            transform: scale(1.02) rotate(0.8deg);
-            z-index: 1100 !important;
-        }
-
-        .sticky-note:active {
-            cursor: grabbing;
-        }
-
-        /* Tape / pin effect at the top */
-        .sticky-note::before {
-            content: '';
-            position: absolute;
-            top: -8px;
-            left: 50%;
-            transform: translateX(-50%) rotate(-2deg);
-            width: 70px;
-            height: 18px;
-            background: rgba(255, 255, 255, 0.55);
-            border: 1px solid rgba(0,0,0,0.08);
-            border-radius: 2px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            pointer-events: none;
-        }
-
-        .sticky-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 10px 12px 4px;
-            background: rgba(0, 0, 0, 0.06);
-            border-bottom: 1px dashed rgba(0,0,0,0.08);
-            flex-shrink: 0;
-            cursor: grab;
-        }
-
-        .sticky-title {
-            font-size: 0.78rem;
-            font-weight: 700;
-            color: #5d4037;
-            letter-spacing: 0.3px;
-            text-transform: uppercase;
-        }
-
-        .sticky-controls button {
-            background: none;
-            border: none;
-            color: #8d6e63;
-            font-size: 0.85rem;
-            padding: 0 4px;
-            line-height: 1;
-            opacity: 0.7;
-            transition: opacity 0.15s, color 0.15s;
-            cursor: pointer;
-        }
-        .sticky-controls button:hover {
-            opacity: 1;
-            color: #bf360c;
-        }
-
-        .sticky-body {
-            padding: 8px 14px 16px;
-            font-size: 0.92rem;
-            line-height: 1.45;
-            color: #3e2723;
-            white-space: pre-wrap;
-            overflow: auto;
-            flex: 1 1 auto;
-            min-height: 40px;
-        }
-
-        /* Allow selecting text and clicking links inside the body */
-        .sticky-body,
-        .sticky-body * {
-            user-select: text;
-            -webkit-user-select: text;
-        }
-
-        .sticky-body a {
-            cursor: pointer;
-            pointer-events: auto;
-            position: relative;
-            z-index: 10;
-        }
-
-        .sticky-body a:hover {
-            color: #003d99 !important;
-            text-decoration: underline !important;
-        }
-
-        /* Resize handle visual cue (bottom-right corner) */
-        .sticky-resize-handle {
-            position: absolute;
-            right: 2px;
-            bottom: 2px;
-            width: 16px;
-            height: 16px;
-            cursor: nwse-resize;
-            opacity: 0.45;
-            z-index: 5;
-            pointer-events: none; /* native resize handles the interaction */
-        }
-        .sticky-resize-handle::after {
-            content: '';
-            position: absolute;
-            right: 3px;
-            bottom: 3px;
-            width: 8px;
-            height: 8px;
-            border-right: 2px solid #5d4037;
-            border-bottom: 2px solid #5d4037;
-        }
-
-        /* Minimized state – just a small tab */
-        .sticky-note.minimized {
-            width: 52px !important;
-            height: 52px !important;
-            min-width: 52px !important;
-            min-height: 52px !important;
-            max-width: 52px !important;
-            max-height: 52px !important;
-            border-radius: 50%;
-            overflow: hidden;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-shadow: 2px 4px 12px rgba(0,0,0,0.25);
-            opacity: 0.65;
-            resize: none;
-        }
-        .sticky-note.minimized:hover {
-            opacity: 1;
-            transform: scale(1.08);
-        }
-        .sticky-note.minimized .sticky-header,
-        .sticky-note.minimized .sticky-body,
-        .sticky-note.minimized .sticky-resize-handle {
-            display: none !important;
-        }
-        .sticky-note.minimized::after {
-            content: '\f0f3'; /* fa-bell */
-            font-family: 'Font Awesome 5 Free';
-            font-weight: 900;
-            font-size: 1.35rem;
-            color: #5d4037;
-        }
-        .sticky-note.minimized::before {
-            display: none;
-        }
-
-        /* Color accents for minimized dots */
-        .sticky-note[data-note-id="1"].minimized { background: #ffeb3b; }
-        .sticky-note[data-note-id="2"].minimized { background: #81c784; }
-        .sticky-note[data-note-id="3"].minimized { background: #64b5f6; }
-    </style>
+    
 </head>
 
 <body>
@@ -416,7 +205,8 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_transaction_data') {
 📌 Functioning Features
 • Import <b>daily</b> transactions.
 • Allow <b>importing again of same report date</b> to see any late posting (will be tagged as = <b>Late Posting</b>).
-• Settlement for current day <b>will include</b> the unsettled from other day <b>(e.g late posted transactions)</b>.
+• Settlement for current day <b>will include</b> the unsettled from other day <b>(only those tagged as Late Posting)</b>.
+• SOA/Invoice will now <b>include the cancelled</b> transactions for that day.
 • Added modules: <b>CAD Loggings</b> and <b>BP vs GLE Transactions</b> (for user testing, please ask for access).
 • For <b>CAD Loggings</b>, <b>new reasons are added</b> and logging of <b>cancelled transactions are already allowed</b>.
 
@@ -1117,7 +907,6 @@ $(document).ready(function() {
         $('#modal-amount-paid').text(formatCurrency(transaction.amount_paid));
         $('#modal-charge-partner').text(formatCurrency(transaction.charge_to_partner));
         $('#modal-charge-customer').text(formatCurrency(transaction.charge_to_customer));
-
         $('#transactionModal').show();
     }
 
@@ -1184,40 +973,57 @@ $(document).ready(function() {
                 }
             });
 
-            // Drag
+            // Drag both full notes and minimized bell icons.
             let isDragging = false;
+            let didDrag = false;
+            let startX = 0, startY = 0;
             let offsetX = 0, offsetY = 0;
 
             note.addEventListener('mousedown', function(e) {
-                // Don't start drag on controls, links, or while resizing near bottom-right
+                // Do not drag from controls or links.
                 if (e.target.closest('.sticky-controls') || e.target.closest('a')) return;
-                if (note.classList.contains('minimized')) return;
 
-                // Avoid starting drag if click is near the native resize corner
                 const rect = note.getBoundingClientRect();
-                const nearResize = (e.clientX > rect.right - 18) && (e.clientY > rect.bottom - 18);
+                const isMinimized = note.classList.contains('minimized');
+
+                // Keep native resizing available for full-size notes.
+                const nearResize = !isMinimized &&
+                    (e.clientX > rect.right - 18) && (e.clientY > rect.bottom - 18);
                 if (nearResize) return;
 
                 isDragging = true;
-                note.classList.add('dragging');
-                bringToFront(note);
-
+                didDrag = false;
+                startX = e.clientX;
+                startY = e.clientY;
                 offsetX = e.clientX - rect.left;
                 offsetY = e.clientY - rect.top;
 
+                note.classList.add('dragging');
+                bringToFront(note);
+
+                // Convert viewport coordinates to the note's positioning container.
+                const parentRect = note.offsetParent.getBoundingClientRect();
                 note.style.right = 'auto';
-                note.style.left  = rect.left + 'px';
-                note.style.top   = rect.top  + 'px';
+                note.style.left = (rect.left - parentRect.left) + 'px';
+                note.style.top = (rect.top - parentRect.top) + 'px';
 
                 e.preventDefault();
             });
 
             document.addEventListener('mousemove', function(e) {
                 if (!isDragging) return;
-                const x = e.clientX - offsetX;
-                const y = e.clientY - offsetY;
-                const maxX = window.innerWidth  - note.offsetWidth  - 8;
-                const maxY = window.innerHeight - note.offsetHeight - 8;
+
+                if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) {
+                    didDrag = true;
+                }
+
+                const parent = note.offsetParent;
+                const parentRect = parent.getBoundingClientRect();
+                const x = e.clientX - offsetX - parentRect.left;
+                const y = e.clientY - offsetY - parentRect.top;
+                const maxX = Math.max(8, window.innerWidth - parentRect.left - note.offsetWidth - 8);
+                const maxY = Math.max(8, window.innerHeight - parentRect.top - note.offsetHeight - 8);
+
                 note.style.left = Math.max(8, Math.min(x, maxX)) + 'px';
                 note.style.top  = Math.max(8, Math.min(y, maxY)) + 'px';
             });
@@ -1229,7 +1035,7 @@ $(document).ready(function() {
                 saveState();
             });
 
-            // Bring to front on any click
+            // Bring to front on any click.
             note.addEventListener('mousedown', function() {
                 bringToFront(note);
             });
@@ -1252,8 +1058,15 @@ $(document).ready(function() {
                 });
             }
 
-            // Click minimized circle to expand
+            // A click expands a minimized bell; dragging it only moves it.
             note.addEventListener('click', function(e) {
+                if (didDrag) {
+                    didDrag = false;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
+
                 if (note.classList.contains('minimized') && !e.target.closest('.sticky-controls')) {
                     note.classList.remove('minimized');
                     const icon = note.querySelector('.sticky-minimize i');
@@ -1282,7 +1095,8 @@ $(document).ready(function() {
 
     /* ============================================================
        INIT
-       ============================================================ */    /* ============================================================
+       ============================================================ */ 
+    /* ============================================================
        INIT
        ============================================================ */
     renderCalendar();

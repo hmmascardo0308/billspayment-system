@@ -377,3 +377,41 @@
         justify-content: center;
     }
 }
+
+
+
+/* Partner name that came from billspayment_transaction (not in masterfile) */
+.partner-fallback {
+    color: #ff7300;                 /* same orange used for Late Posting */
+    font-style: italic;
+    font-weight: 500;
+}
+.partner-fallback::after {
+    content: " (fallback)";
+    font-size: 0.75em;
+    color: #fd1414;                 /* same orange used for Late Posting */
+
+    opacity: 0.8;
+    font-style: normal;
+    font-weight: 400;
+}
+
+
+
+        /* Late Posting badge (inline fallback if t-report.css is not updated yet) */
+        .badge-late-posting {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 10px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            background-color: #fd7e14;
+            color: #fff;
+            white-space: nowrap;
+        }
+        .badge-late-posting i {
+            margin-right: 3px;
+        }
+        .import-status-dash {
+            color: #adb5bd;
+        }

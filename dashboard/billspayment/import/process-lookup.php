@@ -221,6 +221,7 @@ function resolveBranch($conn, $row, $isKP7) {
 
 /**
  * Resolve partner for a row using the new logic.
+ * SPECIAL CASE: If partner name from Excel is BAYADCENTER → force partner_id_kpx = 9999 and partner_name = BAYADCENTER
  */
 function resolvePartner($conn, $row) {
     $excelPartnerId = '';
@@ -242,7 +243,48 @@ function resolvePartner($conn, $row) {
             $excelPartnerName = $candidate;
         }
     }
+
+    // ============================================================
+    // SPECIAL CASE: BAYADCENTER
+    // If partner name from Excel is BAYADCENTER, hardcode:
+    //   partner_id_kpx = 9999
+    //   partner_name   = BAYADCENTER
+    // regardless of the Partner ID / Partner ID KPX value coming from the Excel file.
+    // ============================================================
+    if (strtoupper($excelPartnerName) === 'BAYADCENTER') {
+        // Try to get real partner_id + gl_code from masterfile using 9999
+        $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
+                                FROM masterdata.partner_masterfile 
+                                WHERE partner_id_kpx = '9999' LIMIT 1");
+        if ($stmt) {
+            $stmt->execute();
+            $res = $stmt->get_result();
+            if ($pData = $res->fetch_assoc()) {
+                $stmt->close();
+                return [
+                    'partner_id'          => $pData['partner_id'],
+                    'partner_id_kpx'      => '9999',
+                    'partner_name'        => 'BAYADCENTER',
+                    'mpm_gl_code'         => $pData['gl_code'],
+                    'lookup_status'       => 'found',
+                    'original_partner_id' => $excelPartnerId !== '' ? $excelPartnerId : '9999'
+                ];
+            }
+            $stmt->close();
+        }
+
+        // Fallback if 9999 does not exist in masterfile – still force the required values
+        return [
+            'partner_id'          => null,
+            'partner_id_kpx'      => '9999',
+            'partner_name'        => 'BAYADCENTER',
+            'mpm_gl_code'         => null,
+            'lookup_status'       => 'found',
+            'original_partner_id' => $excelPartnerId !== '' ? $excelPartnerId : '9999'
+        ];
+    }
     
+    // ----- Normal lookup logic (unchanged) -----
     if ($excelPartnerId !== '' && $excelPartnerId !== 'Not Found') {
         $stmt = $conn->prepare("SELECT partner_id, partner_id_kpx, partner_name, gl_code 
                                 FROM masterdata.partner_masterfile 
@@ -392,10 +434,7 @@ if (isset($_POST['rows'])) {
         ];
 
         // ============================================
-        // LATE POSTING DETECTION (NEW)
-        // Rule: If any existing transaction already exists in the DB with the same
-        // report_date, then any NEW row (that is not a duplicate) is flagged as
-        // "Late Posting" — it belongs to a report batch that was already partially imported.
+        // LATE POSTING DETECTION
         // ============================================
         $batchReportDates = [];
         foreach ($rows as $row) {
@@ -432,7 +471,6 @@ if (isset($_POST['rows'])) {
 
         // ============================================
         // DUPLICATE CHECK
-        // Rule: same reference_no + same status + same cancellation_date state
         // ============================================
         $duplicateSql = "SELECT id FROM mldb.billspayment_transaction 
             WHERE reference_no = ? 
@@ -518,9 +556,7 @@ if (isset($_POST['rows'])) {
             }
 
             // ============================================
-            // LATE POSTING FLAG (NEW)
-            // If the row's report_date already has records in the DB, mark as Late Posting.
-            // This runs ONLY after duplicate check has passed (i.e. it's a genuinely new row).
+            // LATE POSTING FLAG
             // ============================================
             $importStatus = null;
             if ($reportDate !== null && isset($existingReportDates[$reportDate])) {

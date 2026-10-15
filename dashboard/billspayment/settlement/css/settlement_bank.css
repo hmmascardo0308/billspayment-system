@@ -922,3 +922,175 @@
             margin-left: 6px;
             font-style: normal;
         }
+
+
+
+
+
+    /* Floating settlement reminder */
+    #settlementReminderBell,
+    #settlementReminderPanel {
+        position: fixed;
+        z-index: 99999;
+        font-family: Arial, Helvetica, sans-serif;
+        box-sizing: border-box;
+    }
+    #settlementReminderBell *,
+    #settlementReminderPanel * { box-sizing: border-box; }
+    #settlementReminderBell {
+        right: 26px;
+        bottom: 26px;
+        width: 58px;
+        height: 58px;
+        border: 0;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: linear-gradient(145deg, #ffe600, #ac9500);
+        color: #fff;
+        box-shadow: 0 7px 22px rgba(110, 20, 20, .32);
+        cursor: grab;
+        user-select: none;
+        touch-action: none;
+        transition: box-shadow .2s, transform .2s;
+    }
+    #settlementReminderBell:hover {
+        box-shadow: 0 9px 26px rgba(110, 20, 20, .42);
+        transform: translateY(-2px);
+    }
+    #settlementReminderBell:active { cursor: grabbing; }
+    #settlementReminderBell i { font-size: 24px; pointer-events: none; }
+    #settlementReminderBell::after {
+        content: "";
+        position: absolute;
+        top: 10px;
+        right: 11px;
+        width: 8px;
+        height: 8px;
+        border: 2px solid #fff;
+        border-radius: 50%;
+        background: #ffc107;
+        pointer-events: none;
+    }
+    #settlementReminderBell .sr-tooltip {
+        position: absolute;
+        right: 0;
+        bottom: calc(100% + 12px);
+        width: max-content;
+        max-width: 220px;
+        padding: 8px 11px;
+        border-radius: 7px;
+        background: #222;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 600;
+        opacity: 0;
+        visibility: hidden;
+        transform: translateY(4px);
+        transition: .18s ease;
+        pointer-events: none;
+        box-shadow: 0 3px 10px rgba(0,0,0,.18);
+    }
+    #settlementReminderBell:hover .sr-tooltip {
+        opacity: 1;
+        visibility: visible;
+        transform: translateY(0);
+    }
+    #settlementReminderPanel {
+        display: none;
+        left: auto;
+        top: auto;
+        right: 26px;
+        bottom: 26px;
+        width: 410px;
+        height: 365px;
+        min-width: 300px;
+        min-height: 260px;
+        max-width: calc(100vw - 16px);
+        max-height: calc(100vh - 16px);
+        resize: both;
+        overflow: auto;
+        background: #fffdf5;
+        color: #292929;
+        border: 1px solid #e6d9b8;
+        border-radius: 13px;
+        box-shadow: 0 12px 36px rgba(35, 28, 14, .25);
+    }
+    #settlementReminderPanel.is-open { display: flex; flex-direction: column; }
+    #settlementReminderHeader {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 13px 14px;
+        color: #fff;
+        background: linear-gradient(120deg, #a91f24, #cf3434);
+        border-radius: 12px 12px 0 0;
+        cursor: grab;
+        user-select: none;
+        touch-action: none;
+    }
+    #settlementReminderHeader:active { cursor: grabbing; }
+    #settlementReminderHeader .sr-heading {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-width: 0;
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: .2px;
+    }
+    #settlementReminderHeader .sr-heading i { font-size: 17px; }
+    #settlementReminderHeader .sr-actions { display: flex; gap: 6px; }
+    #settlementReminderHeader button {
+        width: 29px;
+        height: 29px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        border-radius: 6px;
+        background: rgba(255,255,255,.16);
+        color: #fff;
+        cursor: pointer;
+        font-size: 14px;
+    }
+    #settlementReminderHeader button:hover { background: rgba(255,255,255,.3); }
+    #settlementReminderContent {
+        padding: 15px 17px 17px;
+        overflow: auto;
+        font-size: 13px;
+        line-height: 1.55;
+    }
+    #settlementReminderContent .sr-intro {
+        margin: 0 0 12px;
+        color: #685b42;
+        font-size: 12px;
+    }
+    #settlementReminderContent ul {
+        margin: 0;
+        padding-left: 19px;
+    }
+    #settlementReminderContent li { margin: 0 0 12px; padding-left: 2px; }
+    #settlementReminderContent li::marker { color: #b4232a; }
+    #settlementReminderContent a {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 2px;
+        color: #0066cc;
+        text-decoration: underline;
+        font-weight: 700;
+    }
+    #settlementReminderContent a:hover { color: #004a99; }
+    @media (max-width: 480px) {
+        #settlementReminderPanel {
+            width: calc(100vw - 20px);
+            min-width: 0;
+            max-width: calc(100vw - 20px);
+            height: min(430px, calc(100vh - 20px));
+        }
+        #settlementReminderContent { font-size: 12px; padding: 13px; }
+    }

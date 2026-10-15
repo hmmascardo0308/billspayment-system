@@ -151,15 +151,15 @@ if ($has_filters) {
             $normal_params = array_merge($normal_params, $common_params);
             $normal_types .= $common_types;
 
-            $union_parts[] = "(
-                SELECT bt.id, bt.status, bt.datetime, bt.cancellation_date, bt.reference_no,
-                       bt.branch_id, bt.outlet, bt.partner_id_kpx, bt.amount_paid,
-                       bt.charge_to_partner, bt.charge_to_customer, bt.billing_invoice,
-                       bt.settle_unsettle, bt.post_transaction, bt.import_status,
-                       'normal' AS row_type
-                FROM mldb.billspayment_transaction bt
-                WHERE " . ltrim($normal_where, " AND ") . $common_where . "
-            )";
+           $union_parts[] = "(
+    SELECT bt.id, bt.status, bt.datetime, bt.cancellation_date, bt.reference_no,
+           bt.branch_id, bt.outlet, bt.partner_id_kpx, bt.partner_name, bt.amount_paid,
+           bt.charge_to_partner, bt.charge_to_customer, bt.billing_invoice,
+           bt.settle_unsettle, bt.post_transaction, bt.import_status,
+           'normal' AS row_type
+    FROM mldb.billspayment_transaction bt
+    WHERE " . ltrim($normal_where, " AND ") . $common_where . "
+)";
             $union_params = array_merge($union_params, $normal_params);
             $union_types .= $normal_types;
         }
@@ -189,14 +189,14 @@ if ($has_filters) {
             $cancelled_types .= $common_types;
 
             $union_parts[] = "(
-                SELECT bt.id, bt.status, bt.datetime, bt.cancellation_date, bt.reference_no,
-                       bt.branch_id, bt.outlet, bt.partner_id_kpx, bt.amount_paid,
-                       bt.charge_to_partner, bt.charge_to_customer, bt.billing_invoice,
-                       bt.settle_unsettle, bt.post_transaction, bt.import_status,
-                       'cancelled' AS row_type
-                FROM mldb.billspayment_transaction bt
-                WHERE " . ltrim($cancelled_where, " AND ") . $common_where . "
-            )";
+    SELECT bt.id, bt.status, bt.datetime, bt.cancellation_date, bt.reference_no,
+           bt.branch_id, bt.outlet, bt.partner_id_kpx, bt.partner_name, bt.amount_paid,
+           bt.charge_to_partner, bt.charge_to_customer, bt.billing_invoice,
+           bt.settle_unsettle, bt.post_transaction, bt.import_status,
+           'cancelled' AS row_type
+    FROM mldb.billspayment_transaction bt
+    WHERE " . ltrim($cancelled_where, " AND ") . $common_where . "
+)";
             $union_params = array_merge($union_params, $cancelled_params);
             $union_types .= $cancelled_types;
         }
@@ -326,25 +326,7 @@ function build_page_url($page_num) {
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="css/t-report.css?v=<?= time(); ?>">
 
-    <style>
-        /* Late Posting badge (inline fallback if t-report.css is not updated yet) */
-        .badge-late-posting {
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 10px;
-            font-size: 0.72rem;
-            font-weight: 600;
-            background-color: #fd7e14;
-            color: #fff;
-            white-space: nowrap;
-        }
-        .badge-late-posting i {
-            margin-right: 3px;
-        }
-        .import-status-dash {
-            color: #adb5bd;
-        }
-    </style>
+
 </head>
 <body>
     <div class="main-container">
@@ -555,10 +537,20 @@ function build_page_url($page_num) {
                                                     $cadStatus = $transaction['post_transaction'] ?? '-';
                                                     $cadClass = (strtolower($cadStatus) === 'posted' || strtolower($cadStatus) === 'yes') ? 'badge-posted' : 'badge-unposted';
 
-                                                    // Resolve partner name from lookup (no JOIN needed)
-                                                    $partner_name = $partner_lookup[$transaction['partner_id_kpx'] ?? ''] ?? '-';
+                                                    // Resolve partner name from lookup; fall back to transaction's own partner_name
+                                                    $partner_id = $transaction['partner_id_kpx'] ?? '';
+                                                    $is_fallback = false;
 
-                                                    // Import Status (Late Posting flag)
+                                                    if (isset($partner_lookup[$partner_id])) {
+                                                        $partner_name = $partner_lookup[$partner_id];
+                                                    } elseif (!empty($transaction['partner_name'])) {
+                                                        $partner_name = $transaction['partner_name'];
+                                                        $is_fallback = true;
+                                                    } else {
+                                                        $partner_name = '-';
+                                                    }
+
+                                                             // Import Status (Late Posting flag)
                                                     $importStatus = trim((string)($transaction['import_status'] ?? ''));
                                                 ?>
                                                 <tr>
@@ -574,7 +566,9 @@ function build_page_url($page_num) {
                                                     <td><?php echo htmlspecialchars($transaction['branch_id'] ?? '-'); ?></td>
                                                     <td><?php echo htmlspecialchars($transaction['outlet'] ?? '-'); ?></td>
                                                     <td><?php echo htmlspecialchars($transaction['partner_id_kpx'] ?? '-'); ?></td>
-                                                    <td><?php echo htmlspecialchars($partner_name); ?></td>
+                                                    <td class="<?php echo $is_fallback ? 'partner-fallback' : ''; ?>">
+    <?php echo htmlspecialchars($partner_name); ?>
+</td>
                                                     <td class="text-end"><?php echo !empty($transaction['amount_paid']) ? number_format($transaction['amount_paid'], 2) : '0.00'; ?></td>
                                                     <td class="text-end"><?php echo !empty($transaction['charge_to_partner']) ? number_format($transaction['charge_to_partner'], 2) : '0.00'; ?></td>
                                                     <td class="text-end"><?php echo !empty($transaction['charge_to_customer']) ? number_format($transaction['charge_to_customer'], 2) : '0.00'; ?></td>

@@ -11,10 +11,8 @@ require_once __DIR__ . '/../../../vendor/autoload.php';
 session_start();
 @include_once __DIR__ . '/../../../templates/middleware.php';
 
-// Set timezone to Asia/Manila
 date_default_timezone_set('Asia/Manila');
 
-// Check authentication
 $id = resolve_user_identifier();
 if (empty($id)) {
     echo json_encode(['success' => false, 'message' => 'Unauthorized access.']);
@@ -26,7 +24,6 @@ if (!function_exists('has_any_permission') || !has_any_permission(['Settlement P
     exit;
 }
 
-// Get POST data
 $partner_ids = isset($_POST['partner_ids']) ? $_POST['partner_ids'] : [];
 $settled_by = isset($_POST['settled_by']) ? trim($_POST['settled_by']) : '';
 $rfp_no = isset($_POST['rfp_no']) ? trim($_POST['rfp_no']) : '';
@@ -36,9 +33,9 @@ $bank_filter = isset($_POST['bank_filter']) ? trim($_POST['bank_filter']) : '';
 $settlement_type_filter = isset($_POST['settlement_type_filter']) ? trim($_POST['settlement_type_filter']) : '';
 $date_from = isset($_POST['date_from']) ? trim($_POST['date_from']) : '';
 $date_to = isset($_POST['date_to']) ? trim($_POST['date_to']) : '';
+$include_lookback = isset($_POST['include_lookback']) ? trim($_POST['include_lookback']) : '0';
 $reason_data_json = isset($_POST['reason_data']) ? trim($_POST['reason_data']) : '';
 
-// Decode reason data for logging
 $reason_data = [];
 if (!empty($reason_data_json)) {
     $reason_data = json_decode($reason_data_json, true);
@@ -47,19 +44,16 @@ if (!empty($reason_data_json)) {
     }
 }
 
-// Validate
 if (empty($partner_ids) || !is_array($partner_ids)) {
     echo json_encode(['success' => false, 'message' => 'No partners selected for settlement.']);
     exit;
 }
 
-// Validate RFP No.
 if (empty($rfp_no)) {
     echo json_encode(['success' => false, 'message' => 'RFP No. is required for settlement.']);
     exit;
 }
 
-// Validate CAD No.
 if (empty($cad_no)) {
     echo json_encode(['success' => false, 'message' => 'CAD No. is required for settlement.']);
     exit;
@@ -79,31 +73,23 @@ if (empty($settled_by)) {
     }
 }
 
-// Log the settlement request
-error_log("Settlement Request - RFP: $rfp_no, CAD: $cad_no, Partners: " . implode(',', $partner_ids) . ", DateFrom: $date_from, DateTo: $date_to");
+error_log("Settlement Request - RFP: $rfp_no, CAD: $cad_no, Partners: " . implode(',', $partner_ids) . ", DateFrom: $date_from, DateTo: $date_to, IncludeLookback: $include_lookback");
 
-// ============================================================
-// LATE POSTING LOOKBACK (single-day settlement)
-// When date_from == date_to, also settle still-unsettled
-// transactions from the previous 7 days (late postings that
-// were uploaded after the previous day's settlement).
-// Already-settled volume from those prior days is never touched.
-// ============================================================
+// Late posting lookback only when user chose to include it
 $is_single_day = (!empty($date_from) && !empty($date_to) && $date_from === $date_to);
+$apply_lookback = ($is_single_day && $include_lookback === '1');
 $lookback_from = null;
 $lookback_to   = null;
-if ($is_single_day) {
+if ($apply_lookback) {
     $lookback_from = date('Y-m-d', strtotime($date_from . ' -7 days'));
     $lookback_to   = date('Y-m-d', strtotime($date_from . ' -1 day'));
     error_log("Settlement Lookback active: $lookback_from → $lookback_to (settlement day: $date_from)");
 }
 
-// Build WHERE clause for the update - ONLY unsettled records
 $where_conditions = [];
 $params = [];
 $types = "";
 
-// Partner filter - use partner_ids array
 if (!empty($partner_ids)) {
     $placeholders = implode(',', array_fill(0, count($partner_ids), '?'));
     $where_conditions[] = "bt.partner_id_kpx IN ($placeholders)";
@@ -113,30 +99,25 @@ if (!empty($partner_ids)) {
     }
 }
 
-// Bank filter
 if (!empty($bank_filter)) {
     $where_conditions[] = "pm.bank = ?";
     $params[] = $bank_filter;
     $types .= "s";
 }
 
-// Settlement type filter
 if (!empty($settlement_type_filter)) {
     $where_conditions[] = "pm.settled_online_check = ?";
     $params[] = $settlement_type_filter;
     $types .= "s";
 }
 
-// Date range filters (with late-posting lookback when single day)
-if ($is_single_day && $lookback_from && $lookback_to) {
-    // Include:
-    //  1) All matching transactions on the selected settlement day
-    //  2) Only still-unsettled transactions from the 7-day lookback window
+if ($apply_lookback && $lookback_from && $lookback_to) {
     $where_conditions[] = "(
         (bt.datetime BETWEEN ? AND ?)
         OR
         (
             bt.datetime BETWEEN ? AND ?
+            AND UPPER(TRIM(COALESCE(bt.import_status, ''))) = 'LATE POSTING'
             AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
         )
     )";
@@ -160,22 +141,17 @@ if ($is_single_day && $lookback_from && $lookback_to) {
     $types .= "s";
 }
 
-// CRITICAL: Only update records that are NOT settled
 $where_conditions[] = "(bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR bt.settle_unsettle != 'Settled')";
-// Also exclude cancelled/voided
 $where_conditions[] = "(bt.status IS NULL OR bt.status = '')";
 
 $where_clause = "WHERE " . implode(" AND ", $where_conditions);
 
-// Get settlement timestamp
 $settlement_date = date('Y-m-d H:i:s');
 $settlement_date_display = date('M d, Y H:i:s');
 
 try {
-    // Start transaction
     $conn->begin_transaction();
     
-    // First, get count and amount for confirmation (only unsettled)
     $count_sql = "SELECT 
                     COUNT(*) as total_transactions,
                     SUM(bt.amount_paid + bt.charge_to_customer + bt.charge_to_partner) as total_amount,
@@ -198,12 +174,11 @@ try {
         echo json_encode([
             'success' => false,
             'message' => 'No unsettled transactions found for the selected criteria' .
-                         ($is_single_day ? ' (including late postings from previous 7 days).' : '.')
+                         ($apply_lookback ? ' (including late postings from previous 7 days).' : '.')
         ]);
         exit;
     }
     
-    // Update ONLY unsettled transactions - set as Settled and clear reason_not_settled
     $update_sql = "UPDATE mldb.billspayment_transaction bt
                    LEFT JOIN masterdata.partner_masterfile pm ON bt.partner_id_kpx = pm.partner_id_kpx
                    SET 
@@ -215,7 +190,6 @@ try {
                        bt.reason_not_settled = NULL
                    " . $where_clause;
     
-    // Add settlement_date, settled_by, rfp_no, cad_no to params
     $update_params = array_merge([$settlement_date, $settled_by, $rfp_no, $cad_no], $params);
     $update_types = "ssss" . $types;
     
@@ -233,18 +207,15 @@ try {
         throw new Exception("Update failed: " . $conn->error);
     }
     
-    // Log the settlement action with RFP and CAD numbers
-    $lookback_note = $is_single_day
+    $lookback_note = $apply_lookback
         ? " | Lookback: $lookback_from → $lookback_to"
         : '';
     error_log("Settlement completed - RFP: $rfp_no, CAD: $cad_no, By: $settled_by, Date: $settlement_date, Affected rows: $affected_rows$lookback_note");
     
-    // Commit transaction
     $conn->commit();
     
-    // Return success response
     $message = "Successfully settled $affected_rows transaction(s) with RFP: $rfp_no and CAD: $cad_no.";
-    if ($is_single_day) {
+    if ($apply_lookback) {
         $message .= " (Late postings from previous 7 days that were still unsettled were also included.)";
     }
 
@@ -260,7 +231,7 @@ try {
             'affected_rows' => $affected_rows,
             'rfp_no' => $rfp_no,
             'cad_no' => $cad_no,
-            'lookback_applied' => $is_single_day,
+            'lookback_applied' => $apply_lookback,
             'lookback_from' => $lookback_from,
             'lookback_to' => $lookback_to
         ]

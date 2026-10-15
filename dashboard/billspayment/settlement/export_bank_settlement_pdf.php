@@ -590,7 +590,32 @@ function getPcsoLandbankPartners(
         $types_adjustment .= "s";
     }
 
-    if (!empty($date_from) && !empty($date_to)) {
+    // LATE POSTING LOOKBACK (same rules as settlement-per-bank.php)
+    // When settling a single day, also include unsettled txns from the previous 7 days
+    $is_single = (!empty($date_from) && !empty($date_to) && $date_from === $date_to);
+    $lb_from = null;
+    $lb_to   = null;
+    if ($is_single) {
+        $lb_from = date('Y-m-d', strtotime($date_from . ' -7 days'));
+        $lb_to   = date('Y-m-d', strtotime($date_from . ' -1 day'));
+    }
+
+    if ($is_single && $lb_from && $lb_to) {
+        $where_regular[] = "(
+            (bt.datetime BETWEEN ? AND ?)
+            OR
+            (
+                bt.datetime BETWEEN ? AND ?
+                AND UPPER(TRIM(COALESCE(bt.import_status, ''))) = 'LATE POSTING'
+                            AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
+            )
+        )";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $params_regular[] = $date_to   . ' 23:59:59';
+        $params_regular[] = $lb_from . ' 00:00:00';
+        $params_regular[] = $lb_to   . ' 23:59:59';
+        $types_regular .= "ssss";
+    } elseif (!empty($date_from) && !empty($date_to)) {
         $where_regular[] = "bt.datetime BETWEEN ? AND ?";
         $params_regular[] = $date_from . ' 00:00:00';
         $params_regular[] = $date_to . ' 23:59:59';
@@ -606,6 +631,7 @@ function getPcsoLandbankPartners(
     }
     $where_regular[] = "(bt.status IS NULL OR bt.status = '')";
 
+    // Adjustments remain on the exact settlement date(s)
     if (!empty($date_from) && !empty($date_to)) {
         $where_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
         $params_adjustment[] = $date_from . ' 00:00:00';
@@ -813,7 +839,32 @@ function getPartnerTotalsByRegions(
         $types_adjustment .= "s";
     }
 
-    if (!empty($date_from) && !empty($date_to)) {
+    // LATE POSTING LOOKBACK (same rules as settlement-per-bank.php)
+    // When settling a single day, also include unsettled txns from the previous 7 days
+    $is_single = (!empty($date_from) && !empty($date_to) && $date_from === $date_to);
+    $lb_from = null;
+    $lb_to   = null;
+    if ($is_single) {
+        $lb_from = date('Y-m-d', strtotime($date_from . ' -7 days'));
+        $lb_to   = date('Y-m-d', strtotime($date_from . ' -1 day'));
+    }
+
+    if ($is_single && $lb_from && $lb_to) {
+        $where_regular[] = "(
+            (bt.datetime BETWEEN ? AND ?)
+            OR
+            (
+                bt.datetime BETWEEN ? AND ?
+                AND UPPER(TRIM(COALESCE(bt.import_status, ''))) = 'LATE POSTING'
+                            AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
+            )
+        )";
+        $params_regular[] = $date_from . ' 00:00:00';
+        $params_regular[] = $date_to   . ' 23:59:59';
+        $params_regular[] = $lb_from . ' 00:00:00';
+        $params_regular[] = $lb_to   . ' 23:59:59';
+        $types_regular .= "ssss";
+    } elseif (!empty($date_from) && !empty($date_to)) {
         $where_regular[] = "bt.datetime BETWEEN ? AND ?";
         $params_regular[] = $date_from . ' 00:00:00';
         $params_regular[] = $date_to . ' 23:59:59';
@@ -829,6 +880,7 @@ function getPartnerTotalsByRegions(
     }
     $where_regular[] = "(bt.status IS NULL OR bt.status = '')";
 
+    // Adjustments remain on the exact settlement date(s)
     if (!empty($date_from) && !empty($date_to)) {
         $where_adjustment[] = "bt.cancellation_date BETWEEN ? AND ?";
         $params_adjustment[] = $date_from . ' 00:00:00';
@@ -1303,8 +1355,35 @@ try {
     
     // ============================================
     // REGULAR TRANSACTIONS: Based on datetime, NOT cancelled
+    // LATE POSTING LOOKBACK (same rules as settlement-per-bank.php)
     // ============================================
-    if (!empty($effective_date_from) && !empty($effective_date_to)) {
+    $is_single_day_settlement = (
+        !empty($effective_date_from) && !empty($effective_date_to)
+        && $effective_date_from === $effective_date_to
+    );
+    $lookback_from = null;
+    $lookback_to   = null;
+    if ($is_single_day_settlement) {
+        $lookback_from = date('Y-m-d', strtotime($effective_date_from . ' -7 days'));
+        $lookback_to   = date('Y-m-d', strtotime($effective_date_from . ' -1 day'));
+    }
+
+    if ($is_single_day_settlement && $lookback_from && $lookback_to) {
+        $where_conditions_regular[] = "(
+            (bt.datetime BETWEEN ? AND ?)
+            OR
+            (
+                bt.datetime BETWEEN ? AND ?
+                AND UPPER(TRIM(COALESCE(bt.import_status, ''))) = 'LATE POSTING'
+                            AND (bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR UPPER(TRIM(bt.settle_unsettle)) != 'SETTLED')
+            )
+        )";
+        $params_regular[] = $effective_date_from . ' 00:00:00';
+        $params_regular[] = $effective_date_to   . ' 23:59:59';
+        $params_regular[] = $lookback_from . ' 00:00:00';
+        $params_regular[] = $lookback_to   . ' 23:59:59';
+        $types_regular .= "ssss";
+    } elseif (!empty($effective_date_from) && !empty($effective_date_to)) {
         $where_conditions_regular[] = "bt.datetime BETWEEN ? AND ?";
         $params_regular[] = $effective_date_from . ' 00:00:00';
         $params_regular[] = $effective_date_to . ' 23:59:59';
@@ -1389,7 +1468,7 @@ try {
                          pm.charge_to, 
                          pm.charge_sched,
                          DATE(bt.datetime)
-                ORDER BY bt.partner_id_kpx, DATE(bt.datetime) ASC";
+                ORDER BY pm.partner_name ASC, bt.partner_id_kpx, DATE(bt.datetime) ASC";
     
     // ============================================
     // QUERY 2: Adjustments (cancelled transactions)
@@ -2285,6 +2364,16 @@ try {
     $groups = array_filter($groups, function($group) {
         return !empty($group['rows']);
     });
+
+    // Sort each charge group by partner name ASC
+    foreach ($groups as $gk => &$gdata) {
+        if (!empty($gdata['rows'])) {
+            usort($gdata['rows'], function ($a, $b) {
+                return strcasecmp($a['partner_name'] ?? '', $b['partner_name'] ?? '');
+            });
+        }
+    }
+    unset($gdata);
 
     // CHECK FOR UNSETTLED TRANSACTIONS
     $has_unsettled = false;
