@@ -60,8 +60,10 @@ function column_exists($conn, $db, $table, $column) {
 
 /**
  * Build a date-range WHERE clause that considers BOTH `datetime` and (optionally) `report_date`.
- * Cancelled transactions are intentionally INCLUDED so their negative amounts subtract from totals.
- * The transaction_count only counts non-cancelled rows.
+ * Cancelled transactions are intentionally INCLUDED:
+ *   - their negative amounts subtract from the principal / service-charge totals
+ *   - they also contribute -1 to transaction_count (so 520 normal + 1 cancelled = 519)
+ * If the status column does not exist, a plain COUNT(*) is used instead.
  *
  * @param mysqli $conn
  * @param string $partnerFilterSql  e.g. "partner_id_kpx = '28'" OR "partner_name = 'ASIALINK...'"
@@ -81,10 +83,12 @@ function buildTransactionSummaryQuery($conn, $partnerFilterSql, $fromDate, $toDa
     }
     $dateFilter .= ")";
 
-    // Count only non-cancelled transactions.
-    // Cancelled rows (status = '*' or 'CANCELLED' etc.) still contribute their negative amounts.
+    // Cancelled rows subtract 1 from the count — mirroring how their negative
+    // amounts already subtract from total_amount_paid / total_charge.
+    // Result: 520 normal + 1 cancelled => 520 - 1 = 519
+    // If no status column exists, fall back to a plain COUNT(*).
     if ($hasStatus) {
-        $countExpr = "COUNT(*)";
+        $countExpr = "SUM(CASE WHEN UPPER(TRIM(`status`)) IN ('CANCELLED', '*') THEN -1 ELSE 1 END)";
     } else {
         $countExpr = "COUNT(*)";
     }
@@ -193,6 +197,21 @@ function calculateNextDates($last_to_date, $service_charge, $partner_id = '', $l
     ];
 }
 
+/**
+ * SPECIAL CASE: For partner 737, transactions should be fetched using partner_id_kpx = 736
+ * but all partner information should come from partner 737.
+ * 
+ * @param string $partner_id The actual partner ID selected
+ * @return string The partner ID to use for transaction queries
+ */
+function getTransactionPartnerId($partner_id) {
+    // Special case: partner 737 uses transactions from 736
+    if ($partner_id === '737') {
+        return '736';
+    }
+    return $partner_id;
+}
+
 // Handle AJAX requests
 if (isset($_GET['action'])) {
     header('Content-Type: application/json');
@@ -232,6 +251,15 @@ if (isset($_GET['action'])) {
             // Get the partner name for use in other queries
             $partner_name = $partner_data['partner_name'];
             $abbreviation = trim($partner_data['abbreviation'] ?? '');
+            
+            // SPECIAL CASE: Determine the transaction partner ID
+            // For partner 737, transactions come from 736
+            $transaction_partner_id = getTransactionPartnerId($partner_id);
+            $is_special_737 = ($partner_id === '737');
+            
+            if ($is_special_737) {
+                error_log("SPECIAL CASE: Partner 737 detected. Transactions will use partner_id_kpx = 736");
+            }
             
             // Generate control number based on existing reference numbers in soa_transaction
             // Reference number is ALWAYS incremented regardless of status
@@ -351,15 +379,19 @@ if (isset($_GET['action'])) {
                         //  - Cancelled transactions are INCLUDED (their negative amounts
                         //    naturally subtract from the totals)
                         //  - transaction_count only counts non-cancelled rows
+                        //  - SPECIAL CASE: partner 737 uses 736's transactions
                         // -------------------------------------------------------------
                         $trans_query = buildTransactionSummaryQuery(
                             $conn,
-                            "partner_id_kpx = '$partner_id'",
+                            "partner_id_kpx = '$transaction_partner_id'",
                             $from_date,
                             $to_date
                         );
                         
-                        error_log("Transaction Query: " . $trans_query);
+                        error_log("Transaction Query (partner_id_kpx = $transaction_partner_id): " . $trans_query);
+                        if ($is_special_737) {
+                            error_log("SPECIAL CASE 737: Using transaction_partner_id = 736 instead of 737");
+                        }
                         
                         $trans_result = mysqli_query($conn, $trans_query);
                         
@@ -444,6 +476,8 @@ if (isset($_GET['action'])) {
                 'po_year_error' => $po_year_error,
                 'from_date' => $from_date,
                 'to_date' => $to_date,
+                'is_special_737' => $is_special_737,
+                'transaction_partner_id' => $transaction_partner_id,
                 'debug_info' => [
                     'partner_id' => $partner_id,
                     'partner_name' => $partner_name,
@@ -453,7 +487,9 @@ if (isset($_GET['action'])) {
                     'column_exists' => isset($column_exists) ? $column_exists : false,
                     'soa_table_exists' => isset($soa_table_exists) ? $soa_table_exists : false,
                     'partner_name_column_exists' => isset($partner_name_column_exists) ? $partner_name_column_exists : false,
-                    'ref_column_exists' => isset($ref_column_exists) ? $ref_column_exists : false
+                    'ref_column_exists' => isset($ref_column_exists) ? $ref_column_exists : false,
+                    'transaction_partner_id' => $transaction_partner_id,
+                    'is_special_737' => $is_special_737
                 ]
             ]);
             
@@ -665,6 +701,7 @@ if (isset($_GET['action'])) {
                 'from_date' => $from_date,
                 'to_date' => $to_date,
                 'has_partner_id' => false,
+                'is_special_737' => false,
                 'debug_info' => [
                     'partner_name' => $partner_name,
                     'abbreviation' => $abbreviation,
@@ -1246,6 +1283,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             display: inline-block;
             margin-left: 8px;
         }
+        
+        /* Special 737 indicator */
+        .special-737-info {
+            background: #e8f4fd;
+            border: 1px solid #b8daff;
+            color: #004085;
+            padding: 12px 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            display: none;
+        }
+        .special-737-info.active {
+            display: block;
+        }
+        .special-737-info i {
+            color: #0069d9;
+            margin-right: 8px;
+        }
     </style>
 </head>
 <body>
@@ -1292,6 +1347,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             <div class="cancelled-soa-info" id="cancelledSoaInfo">
                 <i class="fa-solid fa-rotate-left"></i>
                 <span id="cancelledSoaMessage">Previous SOA was cancelled. Re-using the same date range.</span>
+            </div>
+            
+            <!-- Special 737 Info -->
+            <div class="special-737-info" id="special737Info">
+                <i class="fa-solid fa-circle-info"></i>
+                <span id="special737Message">Partner 737 is configured to use transaction data from partner 736. All partner information shown is from partner 737.</span>
             </div>
             
             <!-- Date Restriction Info -->
@@ -1633,6 +1694,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     var isDisabled = $element.prop('disabled');
                     var soaStatus = $element.data('soa-status') || '';
                     var hasId = $element.data('has-id') === true || $element.data('has-id') === 'true';
+                    var partnerIdKpx = $element.data('partner-id-kpx') || '';
                     
                     if (isDisabled) {
                         return $('<span style="color: #999; background-color: #f5f5f5; padding: 4px 8px; border-radius: 3px; display: block;">' + 
@@ -1648,14 +1710,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                         badgeHtml = ' <span class="no-id-badge" style="color: #e67e22; font-size: 11px; background: #fef9e7; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #f39c12;">Without ID</span>';
                     }
                     
+                    // Special indicator for partner 737
+                    var special737Badge = '';
+                    if (partnerIdKpx === '737') {
+                        special737Badge = ' <span style="color: #0069d9; font-size: 11px; background: #e8f4fd; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #0069d9;">Uses 736 Txns</span>';
+                    }
+                    
                     if (soaStatus === 'WITH SOA') {
                         return $('<span>' + 
                             data.text + 
                             ' <span style="color: #27ae60; font-size: 12px; font-weight: 600;">✓</span>' + 
                             badgeHtml +
+                            special737Badge +
                             '</span>');
                     }
-                    return $('<span>' + data.text + badgeHtml + '</span>');
+                    return $('<span>' + data.text + badgeHtml + special737Badge + '</span>');
                 }
                 return data.text;
             },
@@ -2055,12 +2124,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             _datesAutoPopulated = false;
                             _rangeReusedFromCancelled = false;
                             $('#cancelledSoaInfo').removeClass('active');
+                            $('#special737Info').removeClass('active');
                         } else {
                             showAlert('Could not auto-populate dates. Please contact administrator.', 'warning');
                             setDateFields('', '');
                             _datesAutoPopulated = false;
                             _rangeReusedFromCancelled = false;
                             $('#cancelledSoaInfo').removeClass('active');
+                            $('#special737Info').removeClass('active');
                         }
                     } catch (e) {
                         hideLoadingModal();
@@ -2070,6 +2141,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                         _datesAutoPopulated = false;
                         _rangeReusedFromCancelled = false;
                         $('#cancelledSoaInfo').removeClass('active');
+                        $('#special737Info').removeClass('active');
                     }
                 },
                 error: function(xhr, status, error) {
@@ -2080,6 +2152,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     _datesAutoPopulated = false;
                     _rangeReusedFromCancelled = false;
                     $('#cancelledSoaInfo').removeClass('active');
+                    $('#special737Info').removeClass('active');
                 }
             });
         }
@@ -2103,12 +2176,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 
                 window._currentPartnerName = partnerName;
                 
+                // Show/hide special 737 info
+                if (partnerId === '737') {
+                    $('#special737Message').html(
+                        'Partner <strong>737</strong> is configured to use transaction data from partner <strong>736</strong>. ' +
+                        'All partner information shown is from partner <strong>737</strong>.'
+                    );
+                    $('#special737Info').addClass('active');
+                } else {
+                    $('#special737Info').removeClass('active');
+                }
+                
                 autoPopulateDates(partnerId, partnerName, hasId);
             } else {
                 clearForm();
                 $('#dateRestrictionInfo').removeClass('active');
                 $('#soaExistsWarning').hide();
                 $('#cancelledSoaInfo').removeClass('active');
+                $('#special737Info').removeClass('active');
                 window._currentPartnerName = '';
                 _datesAutoPopulated = false;
                 _rangeReusedFromCancelled = false;
@@ -2605,6 +2690,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             showAlert('Error: ' + response.error, 'error');
                             return;
                         }
+                        
+                        // Show special 737 info if applicable
+                        if (response.is_special_737) {
+                            $('#special737Message').html(
+                                'Partner <strong>737</strong> is configured to use transaction data from partner <strong>736</strong>. ' +
+                                'All partner information shown is from partner <strong>737</strong>.'
+                            );
+                            $('#special737Info').addClass('active');
+                        }
+                        
                         populateForm(response);
                         updateDateRestrictionInfo();
                         validateDateRange();
@@ -2721,6 +2816,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $('#fromDateDisplay, #toDateDisplay').css('border-color', '#bdc3c7');
             $('#soaExistsWarning').hide();
             $('#cancelledSoaInfo').removeClass('active');
+            $('#special737Info').removeClass('active');
             currentInvoiceData = null;
             window._currentPartnerName = '';
             _datesAutoPopulated = false;

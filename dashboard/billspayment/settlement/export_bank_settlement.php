@@ -2468,24 +2468,24 @@ foreach ($groups as $group_key => $group_data) {
         $row++;
     }
     
-    // Group subtotal
-    $sheet->mergeCells('A' . $row . ':C' . $row);
-    $sheet->setCellValue('A' . $row, 'Subtotal - ' . $group_data['display_name']);
-    $sheet->getStyle('A' . $row . ':D' . $row)->getFont()->setBold(true);
-    $sheet->setCellValue('D' . $row, $group_data['totals']['settlement']);
-    $sheet->getStyle('D' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
+    // // Group subtotal
+    // $sheet->mergeCells('A' . $row . ':C' . $row);
+    // $sheet->setCellValue('A' . $row, 'Subtotal - ' . $group_data['display_name']);
+    // $sheet->getStyle('A' . $row . ':D' . $row)->getFont()->setBold(true);
+    // $sheet->setCellValue('D' . $row, $group_data['totals']['settlement']);
+    // $sheet->getStyle('D' . $row)->getNumberFormat()->setFormatCode('#,##0.00');
     
-    if ($is_uncategorized) {
-        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFF3CD');
-    } elseif ($is_both) {
-        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFFFFF');
-    } else {
-        $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFFFFF');
-    }
+    // if ($is_uncategorized) {
+    //     $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFF3CD');
+    // } elseif ($is_both) {
+    //     $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFFFFF');
+    // } else {
+    //     $sheet->getStyle('A' . $row . ':D' . $row)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFFFFF');
+    // }
     
-    $sheet->getStyle('A' . $row . ':D' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
-    $row++;
-    $row++; // blank row between groups
+    // $sheet->getStyle('A' . $row . ':D' . $row)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
+    // $row++;
+    // $row++; // blank row between groups
 }
 
 // Grand Total

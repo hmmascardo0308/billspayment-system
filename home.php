@@ -1,3 +1,4 @@
+<!-- home.php -->
 <!DOCTYPE html>
 <html lang="en">
 
@@ -340,7 +341,7 @@
                      <h1>ML Bills Payment</h1>
                      <h2>Billing, Collection and Settlement System</h2>
                      <p>A structured platform that facilitates accurate billing, efficient collection, and timely settlement of financial transactions between parties.</p>
-                     <a href="login_form.php" class="cta-button">Login</a>
+                     <a href="login_form.php?login=1" class="cta-button">Login</a>
                   </div>
                   <div class="hero-visual fade-in">
                      <!-- Uncommented GIF here -->

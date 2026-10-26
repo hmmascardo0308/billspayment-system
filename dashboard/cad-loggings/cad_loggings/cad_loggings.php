@@ -714,6 +714,8 @@ try {
                         <option value=""></option>
                         <option value="PARTNER ALLOWED CANCELLATION">Partner Allowed Cancellation</option>
                         <option value="PARTNER NOT ALLOWED CANCELLATION">Partner Not Allowed Cancellation</option>
+                        <option value="FOR APPROVAL">For Approval</option>
+
                     </select>
                 </div>
 

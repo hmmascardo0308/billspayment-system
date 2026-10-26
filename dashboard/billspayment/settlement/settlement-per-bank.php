@@ -3541,7 +3541,7 @@ $reason_options = [
                                         <?php endif; ?>
                                     <?php endforeach; ?>
                                     
-                                    <tr class="group-subtotal-row <?php echo $is_uncategorized ? 'uncategorized-subtotal' : ''; ?> <?php echo $is_both ? 'both-subtotal' : ''; ?>" data-group="<?php echo $group_key; ?>">
+                                    <!-- <tr class="group-subtotal-row <?php echo $is_uncategorized ? 'uncategorized-subtotal' : ''; ?> <?php echo $is_both ? 'both-subtotal' : ''; ?>" data-group="<?php echo $group_key; ?>">
                                         <td colspan="5" style="text-align: right;">
                                             <strong>Subtotal - <?php echo htmlspecialchars($group_data['display_name']); ?></strong>
                                         </td>
@@ -3570,7 +3570,7 @@ $reason_options = [
                                             <?php endif; ?>
                                         </td>
                                         <td class="center group-reason"></td>
-                                    </tr>
+                                    </tr> -->
                                     
                                     <?php if (!$is_last_group): ?>
                                         <tr style="height: 8px; background: transparent;">

@@ -14,11 +14,20 @@ session_start();
 if (!ob_get_level()) ob_start();
 
 // Handle password change success/error messages FIRST before redirect check
-if(isset($_SESSION['success_message']) || isset($_SESSION['error_message'])){
-   // Don't redirect to dashboard if we have messages to show
-} else {
-   // Only check for redirect if there are no messages to show
-   if(isset($_SESSION['user_type'])){
+// if(isset($_SESSION['success_message']) || isset($_SESSION['error_message'])){
+//    // Don't redirect to dashboard if we have messages to show
+// } else {
+//    // Only check for redirect if there are no messages to show
+//    if(isset($_SESSION['user_type'])){
+//       header('location: dashboard/');
+//       exit();
+//    }
+// }
+
+
+if(empty($_SESSION['success_message']) && empty($_SESSION['error_message'])){
+   // Only auto-redirect if user explicitly did NOT ask to see the login form
+   if(isset($_SESSION['user_type']) && !isset($_GET['login'])){
       header('location: dashboard/');
       exit();
    }
