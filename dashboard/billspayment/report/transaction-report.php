@@ -151,7 +151,7 @@ if ($has_filters) {
             $normal_params = array_merge($normal_params, $common_params);
             $normal_types .= $common_types;
 
-           $union_parts[] = "(
+            $union_parts[] = "(
     SELECT bt.id, bt.status, bt.datetime, bt.cancellation_date, bt.reference_no,
            bt.branch_id, bt.outlet, bt.partner_id_kpx, bt.partner_name, bt.amount_paid,
            bt.charge_to_partner, bt.charge_to_customer, bt.billing_invoice,
@@ -263,9 +263,21 @@ if ($has_filters) {
             }
 
             // ============================================
-            // DATA QUERY (paginated)
+            // DATA QUERY (paginated) — PRIORITY SORT
+            // 0 = ANY Late Posting (Active or Cancelled)
+            // 1 = Cancelled (other)
+            // 2 = Normal / Active
+            // Within each group: datetime ASC
             // ============================================
-            $data_sql = $union_sql . " ORDER BY datetime ASC LIMIT ? OFFSET ?";
+            $data_sql = $union_sql . "
+                ORDER BY
+                    CASE
+                        WHEN TRIM(COALESCE(import_status, '')) = 'Late Posting' THEN 0
+                        WHEN row_type = 'cancelled' THEN 1
+                        ELSE 2
+                    END ASC,
+                    datetime ASC
+                LIMIT ? OFFSET ?";
             $data_stmt = $conn->prepare($data_sql);
             $data_params = $union_params;
             $data_types  = $union_types . "ii";
@@ -325,8 +337,6 @@ function build_page_url($page_num) {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js"></script>
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
     <link rel="stylesheet" href="css/t-report.css?v=<?= time(); ?>">
-
-
 </head>
 <body>
     <div class="main-container">
@@ -550,10 +560,13 @@ function build_page_url($page_num) {
                                                         $partner_name = '-';
                                                     }
 
-                                                             // Import Status (Late Posting flag)
+                                                    // Import Status (Late Posting flag)
                                                     $importStatus = trim((string)($transaction['import_status'] ?? ''));
+
+                                                    // Priority highlight: ANY Late Posting (Active or Cancelled)
+                                                    $isLatePosting = (strcasecmp($importStatus, 'Late Posting') === 0);
                                                 ?>
-                                                <tr>
+                                                <tr class="<?php echo $isLatePosting ? 'row-late-posting-priority' : ''; ?>">
                                                     <td class="counter-column"><?php echo $counter++; ?></td>
                                                     <td>
                                                         <span class="badge-status <?php echo $statusClass; ?>">
@@ -567,8 +580,8 @@ function build_page_url($page_num) {
                                                     <td><?php echo htmlspecialchars($transaction['outlet'] ?? '-'); ?></td>
                                                     <td><?php echo htmlspecialchars($transaction['partner_id_kpx'] ?? '-'); ?></td>
                                                     <td class="<?php echo $is_fallback ? 'partner-fallback' : ''; ?>">
-    <?php echo htmlspecialchars($partner_name); ?>
-</td>
+                                                        <?php echo htmlspecialchars($partner_name); ?>
+                                                    </td>
                                                     <td class="text-end"><?php echo !empty($transaction['amount_paid']) ? number_format($transaction['amount_paid'], 2) : '0.00'; ?></td>
                                                     <td class="text-end"><?php echo !empty($transaction['charge_to_partner']) ? number_format($transaction['charge_to_partner'], 2) : '0.00'; ?></td>
                                                     <td class="text-end"><?php echo !empty($transaction['charge_to_customer']) ? number_format($transaction['charge_to_customer'], 2) : '0.00'; ?></td>
@@ -626,9 +639,9 @@ function build_page_url($page_num) {
                                                     <a class="page-link" href="<?php echo ($page >= $total_pages) ? '#' : htmlspecialchars(build_page_url($total_pages)); ?>">Last</a>
                                                 </li>
                                             </ul>
-                                            <p class="text-center text-muted small">
+                                            <!-- <p class="text-center text-muted small">
                                                 Page <?php echo $page; ?> of <?php echo $total_pages; ?> — showing <?php echo count($transactions); ?> of <?php echo number_format($total_records); ?> records
-                                            </p>
+                                            </p> -->
                                         </nav>
                                     <?php endif; ?>
                                 </div>

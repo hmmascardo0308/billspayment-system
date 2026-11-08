@@ -1,4 +1,6 @@
 <?php
+
+// get_transaction_details.php
 require_once __DIR__ . '/../../../config/config.php';
 session_start();
 @include_once __DIR__ . '/../../../templates/middleware.php';

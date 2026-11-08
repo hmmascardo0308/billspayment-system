@@ -730,3 +730,6 @@ Stack trace:
 [15-Oct-2026 15:45:37 Asia/Manila] Total rows to import: 5
 [15-Oct-2026 15:45:37 Asia/Manila] Late-posting check: 1 report_date(s) already exist in DB.
 [15-Oct-2026 15:45:37 Asia/Manila] Import completed. Inserted: 5 (Late Posting: 5), Duplicates: 0, Errors: 0
+[30-Oct-2026 09:21:00 Asia/Manila] === STARTING LOOKUP ===
+[30-Oct-2026 09:21:00 Asia/Manila] Total rows to lookup: 21
+[30-Oct-2026 09:21:00 Asia/Manila] Lookup completed. Processed: 21 rows

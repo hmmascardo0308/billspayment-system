@@ -36,6 +36,25 @@ $date_to = isset($_POST['date_to']) ? trim($_POST['date_to']) : '';
 $include_lookback = isset($_POST['include_lookback']) ? trim($_POST['include_lookback']) : '0';
 $reason_data_json = isset($_POST['reason_data']) ? trim($_POST['reason_data']) : '';
 
+// ========== ROBUST PARSING OF excluded_references ==========
+$excluded_references = [];
+if (isset($_POST['excluded_references'])) {
+    $raw = $_POST['excluded_references'];
+    if (is_array($raw)) {
+        $excluded_references = $raw;
+    } else {
+        $decoded = json_decode(trim((string)$raw), true);
+        if (is_array($decoded)) {
+            $excluded_references = $decoded;
+        }
+    }
+}
+$excluded_references = array_values(array_filter(
+    array_map('strval', $excluded_references),
+    function ($v) { return $v !== ''; }
+));
+// ==========================================================
+
 $reason_data = [];
 if (!empty($reason_data_json)) {
     $reason_data = json_decode($reason_data_json, true);
@@ -73,9 +92,8 @@ if (empty($settled_by)) {
     }
 }
 
-error_log("Settlement Request - RFP: $rfp_no, CAD: $cad_no, Partners: " . implode(',', $partner_ids) . ", DateFrom: $date_from, DateTo: $date_to, IncludeLookback: $include_lookback");
+error_log("Settlement Request - RFP: $rfp_no, CAD: $cad_no, Partners: " . implode(',', $partner_ids) . ", DateFrom: $date_from, DateTo: $date_to, IncludeLookback: $include_lookback, ExcludedRefs: " . count($excluded_references) . " (" . implode(',', $excluded_references) . ")");
 
-// Late posting lookback only when user chose to include it
 $is_single_day = (!empty($date_from) && !empty($date_to) && $date_from === $date_to);
 $apply_lookback = ($is_single_day && $include_lookback === '1');
 $lookback_from = null;
@@ -139,6 +157,15 @@ if ($apply_lookback && $lookback_from && $lookback_to) {
     $where_conditions[] = "bt.datetime <= ?";
     $params[] = $date_to . ' 23:59:59';
     $types .= "s";
+}
+
+if (!empty($excluded_references)) {
+    $ref_placeholders = implode(',', array_fill(0, count($excluded_references), '?'));
+    $where_conditions[] = "bt.reference_no NOT IN ($ref_placeholders)";
+    foreach ($excluded_references as $ref) {
+        $params[] = $ref;
+        $types .= "s";
+    }
 }
 
 $where_conditions[] = "(bt.settle_unsettle IS NULL OR bt.settle_unsettle = '' OR bt.settle_unsettle != 'Settled')";
@@ -207,9 +234,7 @@ try {
         throw new Exception("Update failed: " . $conn->error);
     }
     
-    $lookback_note = $apply_lookback
-        ? " | Lookback: $lookback_from → $lookback_to"
-        : '';
+    $lookback_note = $apply_lookback ? " | Lookback: $lookback_from → $lookback_to" : '';
     error_log("Settlement completed - RFP: $rfp_no, CAD: $cad_no, By: $settled_by, Date: $settlement_date, Affected rows: $affected_rows$lookback_note");
     
     $conn->commit();
@@ -217,6 +242,9 @@ try {
     $message = "Successfully settled $affected_rows transaction(s) with RFP: $rfp_no and CAD: $cad_no.";
     if ($apply_lookback) {
         $message .= " (Late postings from previous 7 days that were still unsettled were also included.)";
+    }
+    if (count($excluded_references) > 0) {
+        $message .= " " . count($excluded_references) . " excluded reference(s) were skipped.";
     }
 
     echo json_encode([

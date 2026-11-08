@@ -1024,6 +1024,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             border-color: #e67e22 !important;
             background-color: #fef5e7 !important;
         }
+        /* NEW: manual mode styling */
+        .date-display-input.manual-mode {
+            background-color: #fff !important;
+            color: #2c3e50 !important;
+            font-weight: 600 !important;
+            cursor: text !important;
+            border: 2px solid #e67e22 !important;
+        }
         .date-helper-text {
             font-size: 12px;
             color: #7f8c8d;
@@ -1032,6 +1040,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
         .date-helper-text i {
             color: #3498db;
+        }
+        .date-helper-text.manual-mode {
+            color: #e67e22;
+            font-weight: 600;
+        }
+        .date-helper-text.manual-mode i {
+            color: #e67e22;
         }
         .soa-info-badge {
             background: #d4edda;
@@ -1074,6 +1089,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             font-size: 11px;
             font-weight: 600;
             border: 1px solid #d2b4de;
+            display: inline-block;
+            margin-left: 8px;
+        }
+        .manual-date-badge {
+            background: #fdebd0;
+            color: #a04000;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            border: 1px solid #f5b041;
             display: inline-block;
             margin-left: 8px;
         }
@@ -1179,14 +1205,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     <label for="fromDateDisplay"><i class="fa-solid fa-calendar-day"></i> Transaction Date From <span style="color: red;">*</span></label>
                     <input type="text" id="fromDateDisplay" readonly class="date-display-input" placeholder="Auto-populated base from the latest SOA">
                     <input type="hidden" id="fromDate" name="from_date" value="">
-                    <span class="date-helper-text"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
+                    <span class="date-helper-text" id="fromDateHelper"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
                 </div>
                 
                 <div class="form-group">
                     <label for="toDateDisplay"><i class="fa-solid fa-calendar-day"></i> Transaction Date To <span style="color: red;">*</span></label>
                     <input type="text" id="toDateDisplay" readonly class="date-display-input" placeholder="Auto-populated base from the latest SOA">
                     <input type="hidden" id="toDate" name="to_date" value="">
-                    <span class="date-helper-text"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
+                    <span class="date-helper-text" id="toDateHelper"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
                 </div>
                 
                 <div class="form-group">
@@ -1375,8 +1401,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
         let _datesAutoPopulated = false;
         let _rangeReusedFromCancelled = false;
-        // NEW: track whether the user answered "No" and advanced the period
+        // track whether the user answered "No" and advanced the period
         let _rangeAdvancedByUser = false;
+        // NEW: track manual date-entry mode (no previous SOA found)
+        let _manualDateMode = false;
 
         function formatDateDisplay(dateStr) {
             if (!dateStr) return '';
@@ -1406,6 +1434,79 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
         }
 
+        // =============================================
+        // NEW: Manual date-entry mode helpers
+        // =============================================
+        function enableManualDateMode() {
+            _manualDateMode = true;
+
+            // Unlock the visible inputs and switch to native date pickers
+            $('#fromDateDisplay, #toDateDisplay')
+                .prop('readonly', false)
+                .removeClass('date-display-input has-value reused-range')
+                .addClass('manual-mode')
+                .attr('type', 'date')
+                .val('');
+
+            // Clear hidden values
+            $('#fromDate, #toDate').val('');
+
+            // Update helper text
+            $('#fromDateHelper, #toDateHelper')
+                .addClass('manual-mode')
+                .html('<i class="fa-solid fa-pen"></i> Manual entry enabled (no previous SOA found).');
+
+            // Highlight info banner
+            $('#dateRestrictionInfo').addClass('active');
+            $('#dateRestrictionMessage').html(
+                '<i class="fa-solid fa-pen-to-square"></i> <strong>Manual date entry</strong> — no previous SOA found for this partner. Please select the From and To dates.'
+            );
+
+            // Clear any "exists" warning
+            updateCreateInvoiceButton(false);
+        }
+
+        function disableManualDateMode() {
+            _manualDateMode = false;
+
+            $('#fromDateDisplay, #toDateDisplay')
+                .prop('readonly', true)
+                .removeClass('manual-mode')
+                .addClass('date-display-input')
+                .attr('type', 'text')
+                .attr('placeholder', 'Auto-populated base from the latest SOA')
+                .css('border-color', '')
+                .val('');
+
+            $('#fromDate, #toDate').val('');
+
+            $('#fromDateHelper, #toDateHelper')
+                .removeClass('manual-mode')
+                .html('<i class="fa-solid fa-info-circle"></i> Uneditable.');
+        }
+
+        // Sync manually typed dates into hidden fields
+        $(document).on('input change', '#fromDateDisplay, #toDateDisplay', function() {
+            if (!_manualDateMode) return;
+
+            var field = this.id === 'fromDateDisplay' ? 'fromDate' : 'toDate';
+            var val = $(this).val(); // 'YYYY-MM-DD' from <input type=date>
+
+            $('#' + field).val(val || '');
+
+            // Basic ordering check
+            var f = $('#fromDate').val();
+            var t = $('#toDate').val();
+            if (f && t && f > t) {
+                showAlert('"From" date cannot be later than "To" date.', 'warning');
+                $(this).css('border-color', '#e74c3c');
+            } else {
+                $('#fromDateDisplay, #toDateDisplay').css('border-color', '#e67e22');
+            }
+
+            updateDateRestrictionInfo();
+        });
+
         function formatNumberWithCommas(number) {
             if (number === null || number === undefined || isNaN(number) || number === '') {
                 return '0';
@@ -1426,9 +1527,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             return Math.round(num * 100) / 100;
         }
 
-        // =============================================
-        // NEW: Advance one service-charge period (mirrors PHP calculateNextDates)
-        // =============================================
+        // Advance one service-charge period (mirrors PHP calculateNextDates)
         function advanceOnePeriod(fromDate, toDate, serviceCharge, isSpecial) {
             var from = new Date(fromDate + 'T00:00:00');
             var to   = new Date(toDate   + 'T00:00:00');
@@ -1476,9 +1575,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             return { from_date: fmt(nextFrom), to_date: fmt(nextTo) };
         }
 
-        // =============================================
-        // NEW: Apply auto-fetched (or advanced) dates + alerts
-        // =============================================
+        // Apply auto-fetched (or advanced) dates + alerts
         function applyDates(fromDate, toDate, reusedFromCancelled, advanced) {
             setDateFields(fromDate, toDate, reusedFromCancelled);
             _datesAutoPopulated = true;
@@ -1611,6 +1708,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 if (_rangeAdvancedByUser) {
                     extraInfo += ' <span class="advanced-badge"><i class="fa-solid fa-forward"></i> Advanced (no transactions in previous range)</span>';
                 }
+                if (_manualDateMode) {
+                    extraInfo += ' <span class="manual-date-badge"><i class="fa-solid fa-pen"></i> Manual entry</span>';
+                }
                 
                 $('#dateRestrictionMessage').html(
                     '<i class="fa-regular fa-calendar"></i> Date range: ' + 
@@ -1622,7 +1722,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 );
                 $('#dateRestrictionInfo').addClass('active');
             } else {
-                $('#dateRestrictionInfo').removeClass('active');
+                if (_manualDateMode) {
+                    $('#dateRestrictionMessage').html(
+                        '<i class="fa-solid fa-pen-to-square"></i> <strong>Manual date entry</strong> — no previous SOA found for this partner. Please select the From and To dates.'
+                    );
+                    $('#dateRestrictionInfo').addClass('active');
+                } else {
+                    $('#dateRestrictionInfo').removeClass('active');
+                }
             }
         }
         
@@ -1727,9 +1834,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
         }
         
-        // =============================================
         // AUTO-POPULATE DATES (with availability prompt)
-        // =============================================
         function autoPopulateDates(partnerId, partnerName, hasId) {
             showLoadingModal('Loading Dates', 'Fetching latest SOA dates for this partner...');
             
@@ -1766,7 +1871,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                         if (response.has_previous && response.next_from_date && response.next_to_date) {
                             _rangeReusedFromCancelled = (response.previous_cancelled === true);
                             
-                            // Show cancelled banner if applicable (but don't return, we want to prompt the user)
                             if (_rangeReusedFromCancelled) {
                                 var cancelMsg = 'Previous SOA <strong>' + (response.latest_reference_number || '') + '</strong> ' +
                                     'was <strong>Cancelled</strong>. Re-using the same date range: ' +
@@ -1778,7 +1882,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 $('#cancelledSoaInfo').removeClass('active');
                             }
                             
-                            // ============ ASK THE USER ============
+                            // ASK THE USER
                             var svc = response.serviceCharge || $('#serviceCharge').val() || '';
                             var isSpecial = window._isSpecialSemiMonthly === true;
                             var autoFrom = response.next_from_date;
@@ -1804,10 +1908,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                     // NO — advance one period and re-check
                                     var adv = advanceOnePeriod(autoFrom, autoTo, svc, isSpecial);
                                     
-                                    // Clear the cancelled state since we are moving forward
                                     applyDates(adv.from_date, adv.to_date, false, true);
                                     
-                                    // Re-check existing SOA for the new range
                                     showLoadingModal('Checking...', 'Verifying if SOA already exists for the advanced range.');
                                     checkExistingSOA(
                                         $('#partnerSelect').val(),
@@ -1832,12 +1934,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 }
                             });
                         } else {
-                            showAlert('No previous SOA found for this partner. Please contact administrator.', 'warning');
-                            setDateFields('', '');
+                            // NEW: No previous SOA — allow manual date entry
                             _datesAutoPopulated = false;
                             _rangeReusedFromCancelled = false;
                             _rangeAdvancedByUser = false;
                             $('#cancelledSoaInfo').removeClass('active');
+
+                            enableManualDateMode();
+
+                            showAlert(
+                                'No previous SOA found for this partner. You may now enter the <strong>From</strong> and <strong>To</strong> dates manually.',
+                                'warning'
+                            );
                         }
                     } catch (e) {
                         hideLoadingModal();
@@ -1879,6 +1987,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 window._currentPartnerName = partnerName;
                 window._isSpecialSemiMonthly = isSpecial;
                 
+                // Reset manual mode before re-fetching
+                disableManualDateMode();
+
                 clearManualInputs();
                 _rangeAdvancedByUser = false;
                 autoPopulateDates(partnerId, partnerName, hasId);
@@ -1892,6 +2003,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 _datesAutoPopulated = false;
                 _rangeReusedFromCancelled = false;
                 _rangeAdvancedByUser = false;
+                disableManualDateMode();
                 setDateFields('', '');
                 updateCreateInvoiceButton(false);
                 clearManualInputs();
@@ -1955,7 +2067,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const toDate = $('#toDate').val();
             
             if (!fromDate || !toDate) {
+                if (_manualDateMode) {
+                    // In manual mode, allow fetching partner details without dates
+                    showAlert('Please enter the From and To dates manually, then click Create Invoice.', 'warning');
+                    if (partnerId.startsWith('no-id-')) {
+                        fetchPartnerByName(window._currentPartnerName);
+                    } else {
+                        fetchPartnerDetails(partnerId);
+                    }
+                    return;
+                }
                 showAlert('No date range available. Please select a partner with existing SOA to auto-populate dates.', 'warning');
+                return;
+            }
+            
+            if (fromDate > toDate) {
+                showAlert('"From" date cannot be later than "To" date.', 'warning');
                 return;
             }
             
@@ -2215,6 +2342,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             _datesAutoPopulated = false;
             _rangeReusedFromCancelled = false;
             _rangeAdvancedByUser = false;
+            disableManualDateMode();
             updateCreateInvoiceButton(false);
             clearManualInputs();
             setDateFields('', '');
@@ -2255,7 +2383,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const fromDate = $('#fromDate').val();
             const toDate = $('#toDate').val();
             if (!fromDate || !toDate) {
-                showAlert('No date range available. Please select a partner with existing SOA.', 'warning');
+                showAlert(
+                    _manualDateMode
+                        ? 'Please select both From and To dates before creating the invoice.'
+                        : 'No date range available. Please select a partner with existing SOA.',
+                    'warning'
+                );
+                return;
+            }
+            
+            if (fromDate > toDate) {
+                showAlert('"From" date cannot be later than "To" date.', 'warning');
                 return;
             }
             
@@ -2287,7 +2425,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
             
             if (partnerId.startsWith('no-id-')) {
-                generateInvoicePreview();
+                // Still check existence for no-id partners before generating preview
+                var selectedOption = $('#partnerSelect').find('option:selected');
+                var partnerName = selectedOption.data('partner-name') || window._currentPartnerName || '';
+                try {
+                    showLoadingModal('Checking...', 'Verifying if SOA already exists for this partner and date range.');
+                    const result = await checkExistingSOA(null, fromDate, toDate, partnerName);
+                    hideLoadingModal();
+                    if (result.exists) {
+                        updateCreateInvoiceButton(true);
+                        $('#soaExistsMessage').html(
+                            'SOA <strong>' + result.reference_number + '</strong> already exists for this partner (' + 
+                            result.from_date + ' to ' + result.to_date + ').'
+                        );
+                        Swal.fire({
+                            icon: 'warning',
+                            title: 'SOA Already Exists',
+                            html: `
+                                <div style="text-align: left;">
+                                    <p><strong>An SOA has already been created for this partner and date range.</strong></p>
+                                    <hr>
+                                    <p><strong>Reference Number:</strong> ${result.reference_number}</p>
+                                    <p><strong>Existing Period:</strong> ${result.from_date} to ${result.to_date}</p>
+                                    <p style="color: #e74c3c; margin-top: 10px;"><i class="fa-solid fa-ban"></i> Please refresh page and select a different date range or partner.</p>
+                                </div>
+                            `,
+                            confirmButtonColor: '#d33',
+                            confirmButtonText: 'OK',
+                            allowOutsideClick: false
+                        });
+                        return;
+                    }
+                    updateCreateInvoiceButton(false);
+                    generateInvoicePreview();
+                } catch (error) {
+                    hideLoadingModal();
+                    console.error('Error checking existing SOA:', error);
+                    showAlert('Error checking for existing SOA. Please try again.', 'error');
+                }
                 return;
             }
             
@@ -2532,6 +2707,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
                         <span style="color: #6c3483; font-weight: 600;"><i class="fa-solid fa-forward"></i> Note:</span>
                         <span style="font-weight: bold; color: #6c3483;">Advanced range (no transactions in previous period)</span>
+                    </div>`;
+            }
+
+            if (_manualDateMode) {
+                leftColumnParticulars += `
+                    <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                        <span style="color: #a04000; font-weight: 600;"><i class="fa-solid fa-pen"></i> Note:</span>
+                        <span style="font-weight: bold; color: #a04000;">Manual date entry (no previous SOA)</span>
                     </div>`;
             }
             

@@ -946,12 +946,12 @@ if (!empty($row['partner_id_kpx']) && empty($row['partner_name'])) {
                                 <strong>Unregistered Partner IDs detected (<?php echo count($unregistered_partner_ids); ?>):</strong>
                                 The following Partner IDs exist in <code>Bills Payment Transaction</code> but are <strong>not registered</strong> in <code>Masterdata Partner Masterfile</code>. The report shows the name from the transaction record as a fallback. Please register these IDs in the Partner Masterfile.
                                 <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px;">
-    <?php foreach ($unregistered_partner_ids as $pid => $pname): ?>
-        <span class="partner-id-chip" title="<?php echo htmlspecialchars($pname, ENT_QUOTES, 'UTF-8'); ?>">
-            <?php echo htmlspecialchars($pid); ?>
-        </span>
-    <?php endforeach; ?>
-</div>
+                            <?php foreach ($unregistered_partner_ids as $pid => $pname): ?>
+                                <span class="partner-id-chip" title="<?php echo htmlspecialchars($pname, ENT_QUOTES, 'UTF-8'); ?>">
+                                    <?php echo htmlspecialchars($pid); ?>
+                                </span>
+                            <?php endforeach; ?>
+                        </div>
                             </div>
                         </div>
                     </div>

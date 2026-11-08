@@ -1,5 +1,5 @@
 <?php
-// Connect to the database
+// Connect to the database adjustment-entry-per-branch.php
 require_once __DIR__ . '/../../../config/config.php';
 require_once __DIR__ . '/../../../vendor/autoload.php';
 // Start the session
@@ -39,7 +39,7 @@ if (isset($_SESSION['user_type'])) {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js" defer></script>
     <script src="../../../assets/js/sweetalert2.all.min.js" defer></script>
     <link rel="stylesheet" href="css/adjustment.css?v=<?= time(); ?>">
-    
+
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
 
     <style>
@@ -88,7 +88,7 @@ if (isset($_SESSION['user_type'])) {
     <div class="main-container">
         <?php include '../../../templates/header_ui.php'; ?>
         <?php include '../../../templates/sidebar.php'; ?>
-        
+
         <div class="bp-section-header" role="region" aria-label="Page title">
             <div class="bp-section-title">
                 <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
@@ -117,12 +117,12 @@ if (isset($_SESSION['user_type'])) {
                                 while ($partner = mysqli_fetch_assoc($partnerResult)) {
                                     $selected = (isset($_GET['partner_id_kpx']) && $_GET['partner_id_kpx'] == $partner['partner_id_kpx']) ? 'selected' : '';
                                     echo "<option value='" . htmlspecialchars($partner['partner_id_kpx']) . "' $selected>" 
-                                        . htmlspecialchars($partner['partner_name']) . " (" . htmlspecialchars($partner['partner_id_kpx']) . ")</option>";
+                                        . htmlspecialchars($partner['partner_name']) . " (Partner ID: " . htmlspecialchars($partner['partner_id_kpx']) . ")</option>";
                                 }
                                 ?>
                             </select>
                         </div>
-                        
+
                         <div class="col-md-5">
                             <label for="reference_no" class="form-label">Reference No <span class="text-danger">*</span></label>
                             <input type="text" name="reference_no" id="reference_no" 
@@ -131,7 +131,7 @@ if (isset($_SESSION['user_type'])) {
                                    placeholder="Enter Reference Number"
                                    <?php echo empty($_GET['partner_id_kpx']) ? 'disabled' : ''; ?>  required >
                         </div>
-                        
+
                         <div class="col-md-2 d-flex align-items-end">
                             <button type="submit" class="btn btn-danger w-100" id="searchBtn" <?php echo empty($_GET['partner_id_kpx']) ? 'disabled' : ''; ?>>
                                 <i class="fas fa-search"></i> Search
@@ -147,7 +147,7 @@ if (isset($_SESSION['user_type'])) {
             // Only query if partner is selected and show loading indicator
             $showResults = !empty($_GET['partner_id_kpx']);
             $result = null;
-            
+
             if ($showResults) {
                 $whereClauses = [];
                 $params = [];
@@ -167,23 +167,25 @@ if (isset($_SESSION['user_type'])) {
 
                 // Optimized query with all requested fields
                 $sql = "SELECT 
-                            id,
-                            partner_id_kpx,
-                            partner_name,
-                            settle_unsettle,
-                            status,
-                            datetime,
-                            cancellation_date,
-                            reference_no,
-                            control_no,
-                            amount_paid,
-                            charge_to_customer,
-                            charge_to_partner,
-                            other_details,
-                            branch_id,
-                            report_date,
-                            outlet
-                        FROM mldb.billspayment_transaction";
+            id,
+            partner_id_kpx,
+            partner_name,
+            settle_unsettle,
+            status,
+            datetime,
+            cancellation_date,
+            reference_no,
+            control_no,
+            amount_paid,
+            charge_to_customer,
+            charge_to_partner,
+            other_details,
+            branch_id,
+            report_date,
+            outlet,
+            import_status,
+            imported_date
+        FROM mldb.billspayment_transaction";
                 if (!empty($whereClauses)) {
                     $sql .= " WHERE " . implode(" AND ", $whereClauses);
                 }
@@ -216,8 +218,9 @@ if (isset($_SESSION['user_type'])) {
                                     <th class="col-date">Cancellation Date</th>
                                     <th class="col-details">Other Details</th>
                                     <th>Branch ID</th>
-                                    <th>Outlet</th>
-                                    <th>Report Date</th>
+<th>Outlet</th>
+<th>Import Status</th>
+<th>Report Date</th>
                                     <th class="col-action">Action</th>
                                 </tr>
                             </thead>
@@ -228,22 +231,22 @@ if (isset($_SESSION['user_type'])) {
                                     // Check transaction statuses
                                     $status = $row['status'] ?? '';
                                     $settleStatus = strtolower($row['settle_unsettle'] ?? '');
-                                    
+
                                     // Check if cancelled
                                     $isCancelled = (strpos($status, '*') !== false) || 
                                                    (strtolower($status) === 'cancelled') ||
                                                    ($settleStatus === 'cancelled');
-                                    
+
                                     // Check if settled
                                     $isSettled = ($settleStatus === 'settled');
-                                    
+
                                     // Combined condition - disable if cancelled OR settled
                                     $disableAdjustment = $isCancelled || $isSettled;
-                                    
+
                                     if ($disableAdjustment) {
                                         $hasDisabledTransactions = true;
                                     }
-                                    
+
                                     // Determine row styling
                                     $rowClass = '';
                                     if ($isCancelled) {
@@ -255,6 +258,7 @@ if (isset($_SESSION['user_type'])) {
                                     <tr class="<?php echo $rowClass; ?>"
                                         data-id="<?php echo $row['id']; ?>"
                                         data-datetime="<?php echo $row['datetime']; ?>"
+                                        data-imported-date="<?php echo htmlspecialchars($row['imported_date'] ?? ''); ?>"
                                         data-amount="<?php echo $row['amount_paid']; ?>"
                                         data-ref="<?php echo htmlspecialchars($row['reference_no']); ?>"
                                         title="Double-click to view full details">
@@ -342,6 +346,24 @@ if (isset($_SESSION['user_type'])) {
                                         <td>
                                             <?php echo htmlspecialchars($row['outlet'] ?? '—'); ?>
                                         </td>
+                                      <td>
+                                        <?php 
+                                        $importStatus = strtolower(trim($row['import_status'] ?? ''));
+                                        $importBadge = 'status-unsettled';
+                                        if ($importStatus === 'imported' || $importStatus === 'success' || $importStatus === 'completed') {
+                                            $importBadge = 'status-settled';
+                                        } elseif ($importStatus === 'failed' || $importStatus === 'error') {
+                                            $importBadge = 'status-cancelled';
+                                        }
+                                        ?>
+                                        <?php if (!empty($importStatus)): ?>
+                                            <span class="status-badge <?php echo $importBadge; ?>">
+                                                <?php echo htmlspecialchars($row['import_status']); ?>
+                                            </span>
+                                        <?php else: ?>
+                                            —
+                                        <?php endif; ?>
+                                    </td>
                                         <td>
                                             <?php echo htmlspecialchars($row['report_date'] ?? '—'); ?>
                                         </td>
@@ -361,7 +383,8 @@ if (isset($_SESSION['user_type'])) {
                                                         data-control="<?php echo htmlspecialchars($row['control_no'] ?? ''); ?>"
                                                         data-amount="<?php echo $row['amount_paid']; ?>"
                                                         data-partner="<?php echo htmlspecialchars($row['partner_name']); ?>"
-                                                        data-datetime="<?php echo $row['datetime']; ?>">
+                                                        data-datetime="<?php echo $row['datetime']; ?>"
+                                                        data-imported-date="<?php echo htmlspecialchars($row['imported_date'] ?? ''); ?>">
                                                     <i class="fas fa-edit"></i> Reason For Adjustment
                                                 </button>
                                             <?php endif; ?>
@@ -370,7 +393,7 @@ if (isset($_SESSION['user_type'])) {
                                 <?php endwhile; ?>
                             </tbody>
                         </table>
-                        
+
                         <!-- Legend and record count -->
                         <div class="d-flex justify-content-between align-items-center flex-wrap mt-2">
                             <div class="text-muted small">
@@ -419,7 +442,7 @@ if (isset($_SESSION['user_type'])) {
                 const hasPartner = $(this).val() !== '';
                 const referenceInput = $('#reference_no');
                 const searchBtn = $('#searchBtn');
-                
+
                 if (hasPartner) {
                     referenceInput.prop('disabled', false).removeClass('reference-disabled');
                     searchBtn.prop('disabled', false);
@@ -443,7 +466,7 @@ if (isset($_SESSION['user_type'])) {
                     });
                     return false;
                 }
-                
+
                 // Show loading overlay
                 $('#loadingOverlay').addClass('active');
             });
@@ -457,7 +480,7 @@ if (isset($_SESSION['user_type'])) {
             function toggleConditionalFields(reason) {
                 // Hide all conditional groups first
                 $('.conditional-field-group').removeClass('active');
-                
+
                 // Show the relevant group
                 if (reason && reason !== '') {
                     const targetGroup = $('#conditionalFields-' + reason);
@@ -465,6 +488,24 @@ if (isset($_SESSION['user_type'])) {
                         targetGroup.addClass('active');
                     }
                 }
+            }
+
+            // Helper to convert a datetime string into datetime-local input format (YYYY-MM-DDTHH:MM)
+            function toDateTimeLocal(val) {
+                if (!val) return '';
+                try {
+                    const d = new Date(val.replace(' ', 'T'));
+                    if (isNaN(d.getTime())) return '';
+                    const pad = n => String(n).padStart(2, '0');
+                    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                } catch (e) { return ''; }
+            }
+
+            // Helper to get today's datetime-local string
+            function todayDateTimeLocal() {
+                const d = new Date();
+                const pad = n => String(n).padStart(2, '0');
+                return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
             }
 
             // Settlement action - only for non-cancelled AND non-settled transactions
@@ -476,11 +517,12 @@ if (isset($_SESSION['user_type'])) {
                 const amount = $(this).data('amount');
                 const partner = $(this).data('partner');
                 const datetime = $(this).data('datetime');
-                
+                const importedDate = $(this).data('imported-date');
+
                 // Check if already settled - additional client-side check
                 const row = $(this).closest('tr');
                 const settleStatus = row.find('.col-status:first .status-badge').text().trim().toLowerCase();
-                
+
                 if (settleStatus === 'settled') {
                     Swal.fire({
                         icon: 'warning',
@@ -490,7 +532,12 @@ if (isset($_SESSION['user_type'])) {
                     });
                     return;
                 }
-                
+
+                // Precompute datetime-local strings
+                const dtLocal      = toDateTimeLocal(datetime);
+                const importedLocal = toDateTimeLocal(importedDate);
+                const todayLocal   = todayDateTimeLocal();
+
                 // Build the HTML for the modal
                 let modalHtml = `
                     <div class="text-start">
@@ -517,24 +564,18 @@ if (isset($_SESSION['user_type'])) {
                         </div>
                 `;
 
-                // Late Posting Fields - Set Posting Date as datetime (readonly)
-                const formattedDatetime = datetime ? new Date(datetime).toISOString().split('T')[0] : '';
-                
+                // Late Posting Fields — REVISED
                 modalHtml += `
                     <div class="conditional-field-group" id="conditionalFields-late_posting">
                         <h6 class="text-primary"><i class="fas fa-clock"></i> Late Posting Details</h6>
                         <div class="row">
                             <div class="col-md-6 mb-2">
-                                <label class="field-label">Original Payment Date <span class="required-asterisk">*</span></label>
-                                <input type="date" class="form-control" id="late_original_date">
+                                <label class="field-label">Payment Date <span class="required-asterisk">*</span></label>
+                                <input type="datetime-local" class="form-control" id="late_original_date" value="${dtLocal}">
                             </div>
                             <div class="col-md-6 mb-2">
-                                <label class="field-label">Posting Date <span class="required-asterisk">*</span></label>
-                                <input type="date" class="form-control" id="late_posting_date" value="${formattedDatetime}" readonly style="background-color: #e9ecef;">
-                            </div>
-                            <div class="col-md-6 mb-2">
-                                <label class="field-label">Grace Period End Date</label>
-                                <input type="date" class="form-control" id="late_grace_period">
+                                <label class="field-label">Imported Date <span class="required-asterisk">*</span></label>
+                                <input type="datetime-local" class="form-control" id="late_imported_date" value="${importedLocal}" readonly style="background-color: #e9ecef;">
                             </div>
                             <div class="col-md-6 mb-2">
                                 <label class="field-label">Late Fee Reversal Requested</label>
@@ -594,7 +635,7 @@ if (isset($_SESSION['user_type'])) {
                     $partnerOptions .= "<option value='" . htmlspecialchars($partnerRow['partner_name']) . "'>" . htmlspecialchars($partnerRow['partner_name']) . "</option>";
                 }
                 ?>
-                
+
                 modalHtml += `
                     <div class="conditional-field-group" id="conditionalFields-wrong_biller">
                         <h6 class="text-primary"><i class="fas fa-building"></i> Wrong Biller Details</h6>
@@ -629,7 +670,7 @@ if (isset($_SESSION['user_type'])) {
                     </div>
                 `;
 
-                // Duplicate Entry Fields - Set Original Reference No. as reference_no
+                // Duplicate Entry Fields — REVISED
                 modalHtml += `
                     <div class="conditional-field-group" id="conditionalFields-duplicate_entry">
                         <h6 class="text-primary"><i class="fas fa-copy"></i> Duplicate Entry Details</h6>
@@ -643,14 +684,18 @@ if (isset($_SESSION['user_type'])) {
                                 <input type="text" class="form-control" id="dup_duplicate_id" placeholder="Enter duplicate reference">
                             </div>
                             <div class="col-md-6 mb-2">
-                                <label class="field-label">Transaction Date <span class="required-asterisk">*</span></label>
-                                <input type="date" class="form-control" id="dup_transaction_date">
+                                <label class="field-label">Original Transaction Date <span class="required-asterisk">*</span></label>
+                                <input type="datetime-local" class="form-control" id="dup_original_transaction_date" value="${dtLocal}" readonly style="background-color: #e9ecef;">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="field-label">Duplicate Transaction Date <span class="required-asterisk">*</span></label>
+                                <input type="datetime-local" class="form-control" id="dup_duplicate_transaction_date">
                             </div>
                             <div class="col-md-6 mb-2">
                                 <label class="field-label">Amount of Duplicate <span class="required-asterisk">*</span></label>
                                 <input type="number" class="form-control" id="dup_amount" step="0.01" placeholder="0.00">
                             </div>
-                            <div class="col-12 mb-2">
+                            <div class="col-md-6 mb-2">
                                 <label class="field-label">Action to Take <span class="required-asterisk">*</span></label>
                                 <select class="form-control" id="dup_action">
                                     <option value="void">Void Duplicate</option>
@@ -724,14 +769,14 @@ if (isset($_SESSION['user_type'])) {
                     </div>
                 `;
 
-                // No Payment Fields
+                // No Payment Fields — REVISED (Payment Record Date as datetime)
                 modalHtml += `
                     <div class="conditional-field-group" id="conditionalFields-no_payment">
                         <h6 class="text-primary"><i class="fas fa-times-circle"></i> No Payment Details</h6>
                         <div class="row">
                             <div class="col-md-6 mb-2">
                                 <label class="field-label">Payment Record Date <span class="required-asterisk">*</span></label>
-                                <input type="date" class="form-control" id="nopay_record_date">
+                                <input type="datetime-local" class="form-control" id="nopay_record_date" value="${dtLocal}">
                             </div>
                             <div class="col-md-6 mb-2">
                                 <label class="field-label">Actual Payment Status <span class="required-asterisk">*</span></label>
@@ -769,13 +814,13 @@ if (isset($_SESSION['user_type'])) {
                     </div>
                 `;
 
-                // Common fields for all adjustments - Set Reviewed by as $display_name
+                // Common fields for all adjustments — Effective Date default = today's datetime
                 modalHtml += `
                         <div class="mt-3">
                             <div class="row">
                                 <div class="col-md-6 mb-2">
                                     <label class="field-label">Adjustment Effective Date <span class="required-asterisk">*</span></label>
-                                    <input type="date" class="form-control" id="common_effective_date">
+                                    <input type="datetime-local" class="form-control" id="common_effective_date" value="${todayLocal}">
                                 </div>
                                 <div class="col-md-6 mb-2">
                                     <label class="field-label">Reviewed by:</label>
@@ -829,14 +874,14 @@ if (isset($_SESSION['user_type'])) {
                         let reasonData = {};
                         let allFields = {};
 
-                        // Late Posting
+                        // Late Posting — REVISED field IDs
                         if (reason === 'late_posting') {
-                            const fields = ['late_original_date', 'late_posting_date', 'late_grace_period', 'late_fee_reversal', 'late_justification'];
+                            const fields = ['late_original_date', 'late_imported_date', 'late_fee_reversal', 'late_justification'];
                             fields.forEach(f => {
                                 const el = document.getElementById(f);
                                 if (el) reasonData[f] = el.value;
                             });
-                            if (!reasonData.late_original_date || !reasonData.late_posting_date || !reasonData.late_justification) {
+                            if (!reasonData.late_original_date || !reasonData.late_justification) {
                                 Swal.showValidationMessage('Please fill in all required fields for Late Posting');
                                 return false;
                             }
@@ -857,7 +902,7 @@ if (isset($_SESSION['user_type'])) {
 
                         // Wrong Biller
                         if (reason === 'wrong_biller') {
-                            const fields = ['wrong_current_biller', 'wrong_correct_biller'];
+                            const fields = ['wrong_current_biller', 'wrong_correct_biller', 'wrong_invoice', 'wrong_action'];
                             fields.forEach(f => {
                                 const el = document.getElementById(f);
                                 if (el) reasonData[f] = el.value;
@@ -868,14 +913,14 @@ if (isset($_SESSION['user_type'])) {
                             }
                         }
 
-                        // Duplicate Entry
+                        // Duplicate Entry — REVISED field IDs
                         if (reason === 'duplicate_entry') {
-                            const fields = ['dup_original_id', 'dup_duplicate_id', 'dup_transaction_date', 'dup_amount', 'dup_action'];
+                            const fields = ['dup_original_id', 'dup_duplicate_id', 'dup_original_transaction_date', 'dup_duplicate_transaction_date', 'dup_amount', 'dup_action'];
                             fields.forEach(f => {
                                 const el = document.getElementById(f);
                                 if (el) reasonData[f] = el.value;
                             });
-                            if (!reasonData.dup_original_id || !reasonData.dup_duplicate_id || !reasonData.dup_transaction_date || !reasonData.dup_amount || !reasonData.dup_action) {
+                            if (!reasonData.dup_original_id || !reasonData.dup_duplicate_id || !reasonData.dup_duplicate_transaction_date || !reasonData.dup_amount || !reasonData.dup_action) {
                                 Swal.showValidationMessage('Please fill in all required fields for Duplicate Entry');
                                 return false;
                             }
@@ -883,11 +928,12 @@ if (isset($_SESSION['user_type'])) {
 
                         // Customer Request
                         if (reason === 'customer_request') {
-                            const fields = ['cust_authorization', 'cust_reason'];
+                            const fields = ['cust_authorization', 'cust_auth_ref', 'cust_reason'];
                             fields.forEach(f => {
                                 const el = document.getElementById(f);
                                 if (el) reasonData[f] = el.value;
                             });
+                            reasonData.cust_consent = document.getElementById('cust_consent')?.checked ? 1 : 0;
                             if (!reasonData.cust_authorization || !reasonData.cust_reason) {
                                 Swal.showValidationMessage('Please fill in all required fields for Customer Request');
                                 return false;
@@ -896,7 +942,7 @@ if (isset($_SESSION['user_type'])) {
 
                         // System Error
                         if (reason === 'system_error') {
-                            const fields = ['sys_module', 'sys_error_datetime', 'sys_root_cause'];
+                            const fields = ['sys_module', 'sys_error_code', 'sys_error_datetime', 'sys_ticket', 'sys_root_cause'];
                             fields.forEach(f => {
                                 const el = document.getElementById(f);
                                 if (el) reasonData[f] = el.value;
@@ -907,7 +953,7 @@ if (isset($_SESSION['user_type'])) {
                             }
                         }
 
-                        // No Payment
+                        // No Payment — REVISED field IDs
                         if (reason === 'no_payment') {
                             const fields = ['nopay_record_date', 'nopay_status', 'nopay_method', 'nopay_action'];
                             fields.forEach(f => {
@@ -932,39 +978,51 @@ if (isset($_SESSION['user_type'])) {
                         return allFields;
                     }
                 }).then((result) => {
-                    if (result.isConfirmed) {
-                        const data = result.value;
-                        // Here you would send the data to your backend
-                        console.log('Adjustment submitted:', data);
-                        
-                        // Display success message with details
-                        let detailsHtml = `
-                            <div class="text-start">
-                                <p><strong>Reference:</strong> ${data.reference}</p>
-                                <p><strong>Control No:</strong> ${data.control_no || '—'}</p>
-                                <p><strong>Reason:</strong> ${data.reason.replace('_', ' ').toUpperCase()}</p>
-                                <hr>
-                                <p><strong>Adjustment Effective Date:</strong> ${data.common.effective_date || 'Not set'}</p>
-                                <p><strong>Reviewed by:</strong> ${data.common.approver || 'Not specified'}</p>
-                                ${data.common.internal_notes ? `<p><strong>Internal Notes:</strong> ${data.common.internal_notes}</p>` : ''}
-                                ${data.common.customer_comments ? `<p><strong>Customer Comments:</strong> ${data.common.customer_comments}</p>` : ''}
-                            </div>
-                        `;
+                    if (!result.isConfirmed) return;
+                    const data = result.value;
 
-                        Swal.fire({
-                            icon: 'success',
-                            title: 'Adjustment Submitted',
-                            html: detailsHtml,
-                            confirmButtonColor: '#198754',
-                            confirmButtonText: 'OK'
-                        });
-                    }
+                    // Build FormData so file inputs are actually uploaded
+                    const fd = new FormData();
+                    fd.append('payload', JSON.stringify({
+                        id: data.id,
+                        reason: data.reason,
+                        reason_data: data.reason_data,
+                        common: data.common
+                    }));
+
+                    // Append raw file objects
+                    ['incorrect_document', 'nopay_proof', 'common_attachments'].forEach(key => {
+                        const el = document.getElementById(key);
+                        if (el && el.files && el.files[0]) {
+                            fd.append(key, el.files[0]);
+                        }
+                    });
+
+                    Swal.fire({ title: 'Saving adjustment…', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+
+                    fetch('save_adjustment.php', { method: 'POST', body: fd })
+                        .then(r => r.json())
+                        .then(resp => {
+                            if (!resp.success) throw new Error(resp.message || 'Save failed');
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Adjustment Submitted',
+                                html: `<div class="text-start">
+                                        <p><strong>Reference:</strong> ${data.reference}</p>
+                                        <p><strong>Reason:</strong> ${data.reason.replace('_',' ').toUpperCase()}</p>
+                                        <p><strong>New Adjustment ID:</strong> ${resp.new_id}</p>
+                                        <p><strong>Effective:</strong> ${data.common.effective_date || 'today'}</p>
+                                       </div>`,
+                                confirmButtonColor: '#198754'
+                            }).then(() => location.reload());
+                        })
+                        .catch(err => Swal.fire({ icon: 'error', title: 'Error', text: err.message }));
                 });
 
                 // Event listener for reason selection change
                 $(document).on('change', '#adjustmentReason', function() {
                     toggleConditionalFields($(this).val());
-                    
+
                     // Auto-calculate difference for incorrect amount
                     if ($(this).val() === 'incorrect_amount') {
                         calculateDifference();
@@ -1110,6 +1168,7 @@ if (isset($_SESSION['user_type'])) {
                                 <div class="row detail-row mb-2">
                                     <div class="col-6"><strong>Imported By:</strong> ${formatVal(d.imported_by)}</div>
                                     <div class="col-6"><strong>Imported Date:</strong> ${formatVal(d.imported_date)}</div>
+                                    <div class="col-6"><strong>Import Status:</strong> ${formatVal(d.import_status)}</div>
                                 </div>
                             </div>
                         `;
@@ -1133,7 +1192,7 @@ if (isset($_SESSION['user_type'])) {
             });
         });
     </script>
-    
+
     <?php include '../../../templates/footer.php'; ?>
 </body>
 </html>

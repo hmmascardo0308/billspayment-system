@@ -6,7 +6,8 @@
         .table thead tr:first-child th {
             position: sticky;
             top: 0;
-            background-color: #e9ecef;
+            color:#ffffff;
+            background-color: #b10000;
             z-index: 20;
             border-bottom: 2px solid #dee2e6;
             text-align: center;
@@ -14,7 +15,9 @@
         .table thead tr:last-child th {
             position: sticky;
             top: 34px; /* Height of the first header row */
-            background-color: #f8f9fa;
+            background-color: #b10000;
+            color:#ffffff;
+
             z-index: 15;
             border-bottom: 2px solid #dee2e6;
             text-align: center;
@@ -415,3 +418,14 @@
         .import-status-dash {
             color: #adb5bd;
         }
+
+
+        /* Priority highlight: Cancelled + Late Posting rows */
+.row-late-posting-priority {
+    background-color: #fff3cd !important;
+    border-left: 4px solid #ffc107;
+}
+
+.row-late-posting-priority:hover {
+    background-color: #ffe8a1 !important;
+}

@@ -1,0 +1,2879 @@
+<?php
+// billing-service-charge.php
+// Connect to the database
+require_once __DIR__ . '/../../../config/config.php';
+require_once __DIR__ . '/../../../vendor/autoload.php';
+
+// Start the session
+session_start();
+$current_user_email = $_SESSION['admin_email'] ?? $_SESSION['user_email'] ?? '';
+
+// Enable error logging and display
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/../../../logs/php_errors.log');
+
+// Resolve current user id and fetch signature blob (if any)
+include '../../../templates/middleware.php';
+$current_user_id = resolve_user_identifier();
+if (empty($current_user_id)) { header('Location: ../../../login_form.php'); exit; }
+if (!function_exists('has_any_permission') || !has_any_permission(['Billing Service Charge','Bills Payment'])) { header('Location: ../../home.php'); exit; }
+$prepared_sig_blob = null;
+$sig_blob = null;
+
+// Resolve the display name/email early so both the AJAX handlers (save_invoice)
+// and the HTML below can use it.
+$display_name = 'GUEST';
+$display_email = '';
+if (isset($_SESSION['user_type'])) {
+    if ($_SESSION['user_type'] === 'admin') {
+        $display_name = $_SESSION['admin_name'] ?? 'ADMIN';
+        $display_email = $_SESSION['admin_email'] ?? '';
+    } elseif ($_SESSION['user_type'] === 'user') {
+        $display_name = $_SESSION['user_name'] ?? 'USER';
+        $display_email = $_SESSION['user_email'] ?? '';
+    }
+}
+
+// Fetch partners for dropdown - show all partners with soa_status = 'WITH SOA'
+$partners_query = "SELECT DISTINCT partner_id_kpx, partner_name, soa_status, abbreviation, series_number, 
+                   partner_accName, partnerTin, address, businessStyle, serviceCharge, inc_exc, withheld 
+                   FROM masterdata.partner_masterfile 
+                   WHERE partner_name IS NOT NULL AND partner_name != '' 
+                   AND TRIM(UPPER(soa_status)) = 'WITH SOA'
+                   ORDER BY partner_name ASC";
+$partners_result = mysqli_query($conn, $partners_query);
+
+// Define special partners for semi-monthly (LDS Special)
+$SPECIAL_SEMI_MONTHLY_PARTNERS = ['457', '458', '459', '460'];
+
+/**
+ * Calculate the next date range based on service charge type
+ */
+function calculateNextDates($last_to_date, $service_charge, $partner_id = '', $last_from_date = null, $last_status = '') {
+    $last_to = new DateTime($last_to_date);
+    $next_from = clone $last_to;
+    $next_to = clone $last_to;
+    
+    $service_charge_upper = strtoupper(trim($service_charge));
+    $status_upper = strtoupper(trim($last_status));
+    
+    if ($status_upper === 'CANCELLED' && !empty($last_from_date)) {
+        return [
+            'from_date' => (new DateTime($last_from_date))->format('Y-m-d'),
+            'to_date'   => (new DateTime($last_to_date))->format('Y-m-d')
+        ];
+    }
+    
+    $special_semi_monthly_partners = ['457', '458', '459', '460'];
+    $is_special_partner = in_array($partner_id, $special_semi_monthly_partners);
+    
+    switch ($service_charge_upper) {
+        case 'WEEKLY':
+            $next_from->modify('+1 day');
+            $next_to->modify('+7 days');
+            break;
+        case 'MONTHLY':
+            $next_from->modify('first day of next month');
+            $next_to->modify('last day of next month');
+            break;
+        case 'SEMI-MONTHLY':
+            if ($is_special_partner) {
+                $next_from->modify('+1 day');
+                $next_to->modify('+14 days');
+            } else {
+                $last_day = clone $last_to;
+                $last_day->modify('last day of this month');
+                $last_day_of_month = $last_day->format('d');
+                $last_to_day = $last_to->format('d');
+                
+                if ($last_to_day == 15) {
+                    $next_from->modify('+1 day');
+                    $next_to->modify('last day of this month');
+                } elseif ($last_to_day == $last_day_of_month) {
+                    $next_from->modify('first day of next month');
+                    $next_to->modify('+14 days');
+                    $next_to->setDate($next_to->format('Y'), $next_to->format('m'), 15);
+                } else {
+                    $next_from->modify('first day of next month');
+                    $next_to->modify('+14 days');
+                    $next_to->setDate($next_to->format('Y'), $next_to->format('m'), 15);
+                }
+            }
+            break;
+        case 'DAILY':
+            $next_from->modify('+1 day');
+            $next_to->modify('+1 day');
+            break;
+        default:
+            $next_from->modify('+1 day');
+            $next_to->modify('+7 days');
+            break;
+    }
+    
+    return [
+        'from_date' => $next_from->format('Y-m-d'),
+        'to_date' => $next_to->format('Y-m-d')
+    ];
+}
+
+// Handle AJAX requests
+if (isset($_GET['action'])) {
+    header('Content-Type: application/json');
+    
+    if ($_GET['action'] == 'get_partner_details') {
+        try {
+            $partner_id = mysqli_real_escape_string($conn, $_GET['partner_id']);
+            
+            error_log("Fetching partner details for ID: " . $partner_id);
+            
+            $partner_query = "SELECT partner_id_kpx, partner_name, soa_status, abbreviation, series_number, 
+                              partner_accName, partnerTin, address, businessStyle, serviceCharge, inc_exc, withheld 
+                              FROM masterdata.partner_masterfile 
+                              WHERE partner_id_kpx = '$partner_id'";
+            
+            error_log("Partner Query: " . $partner_query);
+            
+            $partner_result = mysqli_query($conn, $partner_query);
+            
+            if (!$partner_result) {
+                error_log("MySQL Error: " . mysqli_error($conn));
+                echo json_encode(['error' => 'Database error: ' . mysqli_error($conn)]);
+                exit;
+            }
+            
+            if (mysqli_num_rows($partner_result) == 0) {
+                error_log("Partner not found: " . $partner_id);
+                echo json_encode(['error' => 'Partner not found']);
+                exit;
+            }
+            
+            $partner_data = mysqli_fetch_assoc($partner_result);
+            error_log("Partner Data: " . print_r($partner_data, true));
+            
+            $partner_name = $partner_data['partner_name'];
+            $abbreviation = trim($partner_data['abbreviation'] ?? '');
+            $service_charge = trim($partner_data['serviceCharge'] ?? '');
+            
+            $control_number = '';
+            $next_series = 1;
+            
+            if (!empty($abbreviation)) {
+                $check_soa_table = "SHOW TABLES LIKE 'soa_transaction'";
+                $check_soa_result = mysqli_query($conn, $check_soa_table);
+                $soa_table_exists = mysqli_num_rows($check_soa_result) > 0;
+                
+                if ($soa_table_exists) {
+                    $check_ref_column = "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'reference_number'";
+                    $check_ref_result = mysqli_query($conn, $check_ref_column);
+                    $ref_column_exists = mysqli_num_rows($check_ref_result) > 0;
+                    
+                    if ($ref_column_exists) {
+                        $ref_query = "SELECT reference_number 
+                                      FROM mldb.soa_transaction 
+                                      WHERE reference_number LIKE '$abbreviation-%' 
+                                      ORDER BY id DESC LIMIT 1";
+                        
+                        error_log("Reference Number Query: " . $ref_query);
+                        
+                        $ref_result = mysqli_query($conn, $ref_query);
+                        
+                        if ($ref_result && mysqli_num_rows($ref_result) > 0) {
+                            $ref_data = mysqli_fetch_assoc($ref_result);
+                            $latest_ref = $ref_data['reference_number'];
+                            
+                            $parts = explode('-', $latest_ref);
+                            if (count($parts) == 2) {
+                                $latest_series = intval($parts[1]);
+                                $next_series = $latest_series + 1;
+                            }
+                            
+                            error_log("Latest reference: $latest_ref, Next series: $next_series");
+                        } else {
+                            $next_series = 1;
+                            error_log("No existing reference number found for abbreviation: $abbreviation. Starting from 1.");
+                        }
+                    } else {
+                        error_log("Column 'reference_number' does not exist in soa_transaction table");
+                        $series_number = intval($partner_data['series_number'] ?? 0);
+                        $next_series = $series_number + 1;
+                    }
+                } else {
+                    error_log("Table 'soa_transaction' does not exist in database 'mldb'");
+                    $series_number = intval($partner_data['series_number'] ?? 0);
+                    $next_series = $series_number + 1;
+                }
+                
+                $control_number = $abbreviation . '-' . $next_series;
+            } else {
+                $series_number = intval($partner_data['series_number'] ?? 0);
+                $control_number = 'SC-' . $partner_id . '-' . ($series_number + 1);
+                error_log("Warning: Abbreviation missing for partner " . $partner_id . ". Using fallback control number: " . $control_number);
+            }
+            
+            $inc_exc_value = trim($partner_data['inc_exc'] ?? '');
+            if (empty($inc_exc_value) && strtoupper(trim($partner_data['soa_status'] ?? '')) == 'WITH SOA') {
+                $inc_exc_value = 'NON-VAT';
+            }
+            
+            $is_partner_434 = ($partner_id == '434');
+            $po_number = '';
+            $po_year_error = '';
+            
+            if ($is_partner_434) {
+                $check_soa_table = "SHOW TABLES LIKE 'soa_transaction'";
+                $check_soa_result = mysqli_query($conn, $check_soa_table);
+                $soa_table_exists = mysqli_num_rows($check_soa_result) > 0;
+                
+                if ($soa_table_exists) {
+                    $check_partner_name_column = "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'partner_Name'";
+                    $check_partner_name_result = mysqli_query($conn, $check_partner_name_column);
+                    $partner_name_column_exists = mysqli_num_rows($check_partner_name_result) > 0;
+                    
+                    if (!$partner_name_column_exists) {
+                        error_log("Column 'partner_Name' does not exist in soa_transaction table");
+                        $po_number = '';
+                    } else {
+                        $po_query = "SELECT po_number, from_date 
+                                     FROM mldb.soa_transaction 
+                                     WHERE partner_Name = '$partner_name' 
+                                     ORDER BY id DESC LIMIT 1";
+                        
+                        error_log("PO Query: " . $po_query);
+                        
+                        $po_result = mysqli_query($conn, $po_query);
+                        if ($po_result && $po_data = mysqli_fetch_assoc($po_result)) {
+                            $po_number = $po_data['po_number'] ?? '';
+                            if (!empty($po_data['from_date'])) {
+                                $po_year = date('Y', strtotime($po_data['from_date']));
+                                $current_year = date('Y');
+                                if ($po_year < $current_year) {
+                                    $po_year_error = 'Previous year PO not allowed. Please input updated/this year`s PO.';
+                                }
+                            }
+                        } else {
+                            error_log("PO Query Error: " . mysqli_error($conn));
+                        }
+                    }
+                } else {
+                    error_log("Table 'soa_transaction' does not exist in database 'mldb'");
+                }
+            }
+            
+            global $SPECIAL_SEMI_MONTHLY_PARTNERS;
+            $is_special_semi_monthly = in_array($partner_id, $SPECIAL_SEMI_MONTHLY_PARTNERS);
+            
+            $latest_from_date = null;
+            $latest_to_date = null;
+            $latest_status = '';
+            $next_from_date = null;
+            $next_to_date = null;
+            $has_previous = false;
+            $previous_cancelled = false;
+            
+            if (!empty($abbreviation)) {
+                $check_soa_table = "SHOW TABLES LIKE 'soa_transaction'";
+                $check_soa_result = mysqli_query($conn, $check_soa_table);
+                $soa_table_exists = mysqli_num_rows($check_soa_result) > 0;
+                
+                if ($soa_table_exists) {
+                    $latest_query = "SELECT from_date, to_date, reference_number, status 
+                                     FROM mldb.soa_transaction 
+                                     WHERE reference_number LIKE '$abbreviation-%' 
+                                     ORDER BY id DESC LIMIT 1";
+                    
+                    error_log("Latest SOA Query: " . $latest_query);
+                    
+                    $latest_result = mysqli_query($conn, $latest_query);
+                    
+                    if ($latest_result && mysqli_num_rows($latest_result) > 0) {
+                        $latest_data = mysqli_fetch_assoc($latest_result);
+                        $latest_from_date = $latest_data['from_date'];
+                        $latest_to_date = $latest_data['to_date'];
+                        $latest_status = $latest_data['status'] ?? '';
+                        $has_previous = true;
+                        
+                        if (strtoupper(trim($latest_status)) === 'CANCELLED') {
+                            $previous_cancelled = true;
+                        }
+                        
+                        $next_dates = calculateNextDates(
+                            $latest_to_date,
+                            $service_charge,
+                            $partner_id,
+                            $latest_from_date,
+                            $latest_status
+                        );
+                        $next_from_date = $next_dates['from_date'];
+                        $next_to_date = $next_dates['to_date'];
+                        
+                        error_log("Latest SOA: From: $latest_from_date, To: $latest_to_date, Status: $latest_status");
+                        error_log("Next SOA: From: $next_from_date, To: $next_to_date");
+                    } else {
+                        error_log("No previous SOA found for abbreviation: $abbreviation");
+                    }
+                }
+            }
+            
+            $response = array_merge($partner_data, [
+                'control_number' => $control_number,
+                'next_series' => $next_series,
+                'inc_exc_display' => $inc_exc_value,
+                'is_partner_434' => $is_partner_434,
+                'is_special_semi_monthly' => $is_special_semi_monthly,
+                'po_number' => $po_number,
+                'po_year_error' => $po_year_error,
+                'has_previous' => $has_previous,
+                'latest_from_date' => $latest_from_date,
+                'latest_to_date' => $latest_to_date,
+                'latest_status' => $latest_status,
+                'previous_cancelled' => $previous_cancelled,
+                'next_from_date' => $next_from_date,
+                'next_to_date' => $next_to_date,
+                'debug_info' => [
+                    'partner_id' => $partner_id,
+                    'partner_name' => $partner_name,
+                    'abbreviation' => $abbreviation,
+                    'next_series' => $next_series,
+                    'soa_table_exists' => isset($soa_table_exists) ? $soa_table_exists : false,
+                    'partner_name_column_exists' => isset($partner_name_column_exists) ? $partner_name_column_exists : false,
+                    'ref_column_exists' => isset($ref_column_exists) ? $ref_column_exists : false,
+                    'is_special_semi_monthly' => $is_special_semi_monthly,
+                    'has_previous' => $has_previous,
+                    'previous_cancelled' => $previous_cancelled
+                ]
+            ]);
+            
+            error_log("Final Response: " . json_encode($response));
+            
+            echo json_encode($response);
+            exit;
+            
+        } catch (Exception $e) {
+            error_log("Exception caught: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
+            echo json_encode(['error' => 'An error occurred: ' . $e->getMessage()]);
+            exit;
+        }
+    }
+    
+    if ($_GET['action'] == 'get_partner_by_name') {
+        try {
+            $partner_name = mysqli_real_escape_string($conn, $_GET['partner_name'] ?? '');
+            
+            if (empty($partner_name)) {
+                echo json_encode(['error' => 'Partner name is required']);
+                exit;
+            }
+            
+            error_log("Fetching partner by name: " . $partner_name);
+            
+            $partner_query = "SELECT partner_id_kpx, partner_name, soa_status, abbreviation, series_number, 
+                              partner_accName, partnerTin, address, businessStyle, serviceCharge, inc_exc, withheld 
+                              FROM masterdata.partner_masterfile 
+                              WHERE partner_name = '$partner_name'";
+            
+            error_log("Partner Query (by name): " . $partner_query);
+            
+            $partner_result = mysqli_query($conn, $partner_query);
+            
+            if (!$partner_result) {
+                error_log("MySQL Error (by name): " . mysqli_error($conn));
+                echo json_encode(['error' => 'Database error: ' . mysqli_error($conn)]);
+                exit;
+            }
+            
+            if (mysqli_num_rows($partner_result) == 0) {
+                error_log("Partner not found by name: " . $partner_name);
+                echo json_encode(['error' => 'Partner not found']);
+                exit;
+            }
+            
+            $partner_data = mysqli_fetch_assoc($partner_result);
+            error_log("Partner Data (by name): " . print_r($partner_data, true));
+            
+            $abbreviation = trim($partner_data['abbreviation'] ?? '');
+            $service_charge = trim($partner_data['serviceCharge'] ?? '');
+            
+            $control_number = '';
+            $next_series = 1;
+            
+            if (!empty($abbreviation)) {
+                $check_soa_table = "SHOW TABLES LIKE 'soa_transaction'";
+                $check_soa_result = mysqli_query($conn, $check_soa_table);
+                $soa_table_exists = mysqli_num_rows($check_soa_result) > 0;
+                
+                if ($soa_table_exists) {
+                    $check_ref_column = "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'reference_number'";
+                    $check_ref_result = mysqli_query($conn, $check_ref_column);
+                    $ref_column_exists = mysqli_num_rows($check_ref_result) > 0;
+                    
+                    if ($ref_column_exists) {
+                        $ref_query = "SELECT reference_number 
+                                      FROM mldb.soa_transaction 
+                                      WHERE reference_number LIKE '$abbreviation-%' 
+                                      ORDER BY id DESC LIMIT 1";
+                        
+                        error_log("Reference Number Query (by name): " . $ref_query);
+                        
+                        $ref_result = mysqli_query($conn, $ref_query);
+                        
+                        if ($ref_result && mysqli_num_rows($ref_result) > 0) {
+                            $ref_data = mysqli_fetch_assoc($ref_result);
+                            $latest_ref = $ref_data['reference_number'];
+                            
+                            $parts = explode('-', $latest_ref);
+                            if (count($parts) == 2) {
+                                $latest_series = intval($parts[1]);
+                                $next_series = $latest_series + 1;
+                            }
+                            
+                            error_log("Latest reference: $latest_ref, Next series: $next_series");
+                        } else {
+                            $next_series = 1;
+                            error_log("No existing reference number found for abbreviation: $abbreviation. Starting from 1.");
+                        }
+                    } else {
+                        error_log("Column 'reference_number' does not exist in soa_transaction table");
+                        $series_number = intval($partner_data['series_number'] ?? 0);
+                        $next_series = $series_number + 1;
+                    }
+                } else {
+                    error_log("Table 'soa_transaction' does not exist in database 'mldb'");
+                    $series_number = intval($partner_data['series_number'] ?? 0);
+                    $next_series = $series_number + 1;
+                }
+                
+                $control_number = $abbreviation . '-' . $next_series;
+            } else {
+                $control_number = 'SC-' . md5($partner_name) . '-1';
+                error_log("Warning: Abbreviation missing for partner $partner_name. Using fallback control number: " . $control_number);
+            }
+            
+            $inc_exc_value = trim($partner_data['inc_exc'] ?? '');
+            if (empty($inc_exc_value) && strtoupper(trim($partner_data['soa_status'] ?? '')) == 'WITH SOA') {
+                $inc_exc_value = 'NON-VAT';
+            }
+            
+            $is_partner_434 = false;
+            $po_number = '';
+            $po_year_error = '';
+            $is_special_semi_monthly = false;
+            
+            $latest_from_date = null;
+            $latest_to_date = null;
+            $latest_status = '';
+            $next_from_date = null;
+            $next_to_date = null;
+            $has_previous = false;
+            $previous_cancelled = false;
+            
+            if (!empty($abbreviation)) {
+                $check_soa_table = "SHOW TABLES LIKE 'soa_transaction'";
+                $check_soa_result = mysqli_query($conn, $check_soa_table);
+                $soa_table_exists = mysqli_num_rows($check_soa_result) > 0;
+                
+                if ($soa_table_exists) {
+                    $latest_query = "SELECT from_date, to_date, reference_number, status 
+                                     FROM mldb.soa_transaction 
+                                     WHERE reference_number LIKE '$abbreviation-%' 
+                                     ORDER BY id DESC LIMIT 1";
+                    
+                    error_log("Latest SOA Query (by name): " . $latest_query);
+                    
+                    $latest_result = mysqli_query($conn, $latest_query);
+                    
+                    if ($latest_result && mysqli_num_rows($latest_result) > 0) {
+                        $latest_data = mysqli_fetch_assoc($latest_result);
+                        $latest_from_date = $latest_data['from_date'];
+                        $latest_to_date = $latest_data['to_date'];
+                        $latest_status = $latest_data['status'] ?? '';
+                        $has_previous = true;
+                        
+                        if (strtoupper(trim($latest_status)) === 'CANCELLED') {
+                            $previous_cancelled = true;
+                        }
+                        
+                        $next_dates = calculateNextDates(
+                            $latest_to_date,
+                            $service_charge,
+                            '',
+                            $latest_from_date,
+                            $latest_status
+                        );
+                        $next_from_date = $next_dates['from_date'];
+                        $next_to_date = $next_dates['to_date'];
+                        
+                        error_log("Latest SOA: From: $latest_from_date, To: $latest_to_date, Status: $latest_status");
+                        error_log("Next SOA: From: $next_from_date, To: $next_to_date");
+                    } else {
+                        error_log("No previous SOA found for abbreviation: $abbreviation");
+                    }
+                }
+            }
+            
+            $response = array_merge($partner_data, [
+                'control_number' => $control_number,
+                'next_series' => $next_series,
+                'inc_exc_display' => $inc_exc_value,
+                'is_partner_434' => $is_partner_434,
+                'is_special_semi_monthly' => $is_special_semi_monthly,
+                'po_number' => $po_number,
+                'po_year_error' => $po_year_error,
+                'has_partner_id' => false,
+                'has_previous' => $has_previous,
+                'latest_from_date' => $latest_from_date,
+                'latest_to_date' => $latest_to_date,
+                'latest_status' => $latest_status,
+                'previous_cancelled' => $previous_cancelled,
+                'next_from_date' => $next_from_date,
+                'next_to_date' => $next_to_date,
+                'debug_info' => [
+                    'partner_name' => $partner_name,
+                    'abbreviation' => $abbreviation,
+                    'next_series' => $next_series,
+                    'fetched_by' => 'name',
+                    'is_special_semi_monthly' => $is_special_semi_monthly,
+                    'has_previous' => $has_previous,
+                    'previous_cancelled' => $previous_cancelled
+                ]
+            ]);
+            
+            error_log("Final Response (by name): " . json_encode($response));
+            
+            echo json_encode($response);
+            exit;
+            
+        } catch (Exception $e) {
+            error_log("Exception in get_partner_by_name: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
+            echo json_encode(['error' => 'An error occurred: ' . $e->getMessage()]);
+            exit;
+        }
+    }
+    
+    if ($_GET['action'] == 'check_existing_soa') {
+        try {
+            $partner_id   = mysqli_real_escape_string($conn, $_GET['partner_id'] ?? '');
+            $partner_name = mysqli_real_escape_string($conn, $_GET['partner_name'] ?? '');
+            $from_date    = mysqli_real_escape_string($conn, $_GET['from_date'] ?? '');
+            $to_date      = mysqli_real_escape_string($conn, $_GET['to_date'] ?? '');
+
+            error_log("Checking existing SOA - Partner ID: $partner_id, Name: $partner_name, From: $from_date, To: $to_date");
+
+            $abbreviation = '';
+            if (!empty($partner_id) && !str_starts_with($partner_id, 'no-id-')) {
+                $abbrev_query = "SELECT abbreviation FROM masterdata.partner_masterfile WHERE partner_id_kpx = '$partner_id'";
+                $abbrev_result = mysqli_query($conn, $abbrev_query);
+                if ($abbrev_result && mysqli_num_rows($abbrev_result) > 0) {
+                    $abbrev_data = mysqli_fetch_assoc($abbrev_result);
+                    $abbreviation = trim($abbrev_data['abbreviation'] ?? '');
+                }
+            }
+            if (empty($abbreviation) && !empty($partner_name)) {
+                $abbrev_query = "SELECT abbreviation FROM masterdata.partner_masterfile WHERE partner_name = '$partner_name'";
+                $abbrev_result = mysqli_query($conn, $abbrev_query);
+                if ($abbrev_result && mysqli_num_rows($abbrev_result) > 0) {
+                    $abbrev_data = mysqli_fetch_assoc($abbrev_result);
+                    $abbreviation = trim($abbrev_data['abbreviation'] ?? '');
+                }
+            }
+
+            if (empty($abbreviation)) {
+                echo json_encode(['exists' => false, 'error' => 'No abbreviation found for this partner']);
+                exit;
+            }
+
+            $check_soa_table = "SHOW TABLES LIKE 'soa_transaction'";
+            $soa_table_exists = mysqli_num_rows(mysqli_query($conn, $check_soa_table)) > 0;
+
+            if (!$soa_table_exists) {
+                echo json_encode(['exists' => false]);
+                exit;
+            }
+
+            $ref_column_exists = mysqli_num_rows(mysqli_query($conn, "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'reference_number'")) > 0;
+            $from_column_exists = mysqli_num_rows(mysqli_query($conn, "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'from_date'")) > 0;
+            $to_column_exists = mysqli_num_rows(mysqli_query($conn, "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'to_date'")) > 0;
+            $status_column_exists = mysqli_num_rows(mysqli_query($conn, "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'status'")) > 0;
+
+            if (!$ref_column_exists || !$from_column_exists || !$to_column_exists) {
+                echo json_encode(['exists' => false]);
+                exit;
+            }
+
+            $status_filter = $status_column_exists ? " AND UPPER(TRIM(status)) != 'CANCELLED' " : "";
+
+            $check_query = "SELECT id, reference_number, from_date, to_date, partner_Name 
+                            FROM mldb.soa_transaction 
+                            WHERE reference_number LIKE '$abbreviation-%' 
+                            $status_filter
+                            AND (
+                                (from_date <= '$to_date' AND to_date >= '$from_date')
+                                OR (from_date >= '$from_date' AND to_date <= '$to_date')
+                                OR (from_date <= '$from_date' AND to_date >= '$to_date')
+                            )
+                            ORDER BY id DESC LIMIT 1";
+
+            error_log("Check existing SOA query: " . $check_query);
+
+            $check_result = mysqli_query($conn, $check_query);
+
+            if (!$check_result) {
+                error_log("Check SOA Query Error: " . mysqli_error($conn));
+                echo json_encode(['exists' => false, 'error' => 'Database error']);
+                exit;
+            }
+
+            if (mysqli_num_rows($check_result) > 0) {
+                $existing = mysqli_fetch_assoc($check_result);
+                echo json_encode([
+                    'exists' => true,
+                    'reference_number' => $existing['reference_number'],
+                    'from_date' => $existing['from_date'],
+                    'to_date' => $existing['to_date'],
+                    'partner_Name' => $existing['partner_Name'] ?? ''
+                ]);
+            } else {
+                echo json_encode(['exists' => false]);
+            }
+            exit;
+
+        } catch (Exception $e) {
+            error_log("Exception in check_existing_soa: " . $e->getMessage());
+            echo json_encode(['exists' => false, 'error' => $e->getMessage()]);
+            exit;
+        }
+    }
+    
+    if ($_GET['action'] == 'generate_invoice') {
+        $partner_id = mysqli_real_escape_string($conn, $_GET['partner_id'] ?? '');
+        $from_date = mysqli_real_escape_string($conn, $_GET['from_date'] ?? '');
+        $to_date = mysqli_real_escape_string($conn, $_GET['to_date'] ?? '');
+        
+        if (empty($partner_id) || empty($from_date) || empty($to_date)) {
+            echo json_encode(['success' => false, 'message' => 'Missing required parameters']);
+            exit;
+        }
+        
+        $abbrev_query = "SELECT abbreviation FROM masterdata.partner_masterfile WHERE partner_id_kpx = '$partner_id'";
+        $abbrev_result = mysqli_query($conn, $abbrev_query);
+        $abbrev_data = mysqli_fetch_assoc($abbrev_result);
+        $abbreviation = trim($abbrev_data['abbreviation'] ?? '');
+        
+        if (empty($abbreviation)) {
+            echo json_encode(['success' => false, 'message' => 'No abbreviation found for this partner']);
+            exit;
+        }
+        
+        $status_column_exists = mysqli_num_rows(mysqli_query($conn, "SHOW COLUMNS FROM mldb.soa_transaction LIKE 'status'")) > 0;
+        $status_filter = $status_column_exists ? " AND UPPER(TRIM(status)) != 'CANCELLED' " : "";
+        
+        $check_query = "SELECT id, reference_number, from_date, to_date 
+                        FROM mldb.soa_transaction 
+                        WHERE reference_number LIKE '$abbreviation-%' 
+                        $status_filter
+                        AND (
+                            (from_date <= '$to_date' AND to_date >= '$from_date')
+                            OR (from_date >= '$from_date' AND to_date <= '$to_date')
+                            OR (from_date <= '$from_date' AND to_date >= '$to_date')
+                        )
+                        LIMIT 1";
+        
+        $check_result = mysqli_query($conn, $check_query);
+        
+        if (mysqli_num_rows($check_result) > 0) {
+            $existing = mysqli_fetch_assoc($check_result);
+            echo json_encode([
+                'success' => false, 
+                'exists' => true,
+                'message' => 'SOA already exists for this partner and date range.',
+                'reference_number' => $existing['reference_number'],
+                'existing_from' => $existing['from_date'],
+                'existing_to' => $existing['to_date']
+            ]);
+            exit;
+        }
+        
+        echo json_encode(['success' => false, 'message' => 'SOA generation is currently disabled (Development Mode)']);
+        exit;
+    }
+}
+
+// Handle Save Invoice (POST)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_invoice') {
+    header('Content-Type: application/json');
+
+    try {
+        $partner_id       = mysqli_real_escape_string($conn, $_POST['partner_id'] ?? '');
+        $invoice_date_raw = $_POST['invoice_date'] ?? '';
+        $control_number   = mysqli_real_escape_string($conn, $_POST['control_number'] ?? '');
+        $partner_acc_name = mysqli_real_escape_string($conn, $_POST['partner_acc_name'] ?? '');
+        $billing_period   = null;
+        $partner_tin      = mysqli_real_escape_string($conn, $_POST['partner_tin'] ?? '');
+        $address          = mysqli_real_escape_string($conn, $_POST['address'] ?? '');
+        $business_style   = mysqli_real_escape_string($conn, $_POST['business_style'] ?? '');
+        $service_charge   = mysqli_real_escape_string($conn, $_POST['service_charge'] ?? '');
+        $from_date        = mysqli_real_escape_string($conn, $_POST['from_date'] ?? '');
+        $to_date          = mysqli_real_escape_string($conn, $_POST['to_date'] ?? '');
+        $po_number        = mysqli_real_escape_string($conn, $_POST['po_number'] ?? '');
+        $transaction_count = intval($_POST['transaction_count'] ?? 0);
+
+        $amount           = floatval(str_replace(',', '', $_POST['amount'] ?? 0));
+        $add_amount       = mysqli_real_escape_string($conn, $_POST['add_amount'] ?? '');
+        $amount_add       = mysqli_real_escape_string($conn, $_POST['amount_add'] ?? '');
+        $number_of_days   = mysqli_real_escape_string($conn, $_POST['number_of_days'] ?? '');
+        $formula          = mysqli_real_escape_string($conn, $_POST['formula'] ?? '');
+        $formula_withheld = mysqli_real_escape_string($conn, $_POST['formula_withheld'] ?? '');
+        $formula_inc_exc  = mysqli_real_escape_string($conn, $_POST['formula_calc_text'] ?? '');
+
+        $vat_amount       = mysqli_real_escape_string($conn, $_POST['vat_amount'] ?? '');
+        $net_of_vat       = mysqli_real_escape_string($conn, $_POST['net_of_vat'] ?? '');
+        $withholding_tax  = mysqli_real_escape_string($conn, $_POST['withholding_tax'] ?? '');
+        $total_amount_due = mysqli_real_escape_string($conn, $_POST['total_amount_due'] ?? '');
+        $net_amount_due   = mysqli_real_escape_string($conn, $_POST['net_amount_due'] ?? '');
+
+        if (empty($partner_id) || empty($control_number) || empty($from_date) || empty($to_date) || empty($invoice_date_raw)) {
+            echo json_encode(['success' => false, 'message' => 'Missing required fields for saving the invoice.']);
+            exit;
+        }
+
+        if (!strtotime($invoice_date_raw) || !strtotime($from_date) || !strtotime($to_date)) {
+            echo json_encode(['success' => false, 'message' => 'Invalid date format.']);
+            exit;
+        }
+
+        $invoice_date = date('Y-m-d', strtotime($invoice_date_raw));
+        $prepared_date_signature = date('m-d-Y', strtotime($invoice_date_raw));
+
+        $prepared_by = $display_name;
+        $prepared_signature = mysqli_real_escape_string($conn, $_SESSION['id_number'] ?? '');
+        $status = 'Prepared';
+
+        $series_part = 0;
+        $cn_parts = explode('-', $control_number);
+        if (count($cn_parts) >= 2) {
+            $series_part = intval(end($cn_parts));
+        }
+        $next_series_to_store = $series_part + 1;
+
+        $dup_check_query = "SELECT id FROM mldb.soa_transaction 
+                             WHERE reference_number = '$control_number' 
+                             LIMIT 1";
+        $dup_check_result = mysqli_query($conn, $dup_check_query);
+        if ($dup_check_result && mysqli_num_rows($dup_check_result) > 0) {
+            echo json_encode(['success' => false, 'message' => 'This control number has already been saved. Please refresh and try again.']);
+            exit;
+        }
+
+        $vat_amount_sql       = ($vat_amount !== '') ? "'$vat_amount'" : "NULL";
+        $net_of_vat_sql       = ($net_of_vat !== '') ? "'$net_of_vat'" : "NULL";
+        $withholding_tax_sql  = ($withholding_tax !== '') ? "'$withholding_tax'" : "NULL";
+        $total_amount_due_sql = ($total_amount_due !== '') ? "'$total_amount_due'" : "NULL";
+        $net_amount_due_sql   = ($net_amount_due !== '') ? "'$net_amount_due'" : "NULL";
+        $add_amount_sql       = ($add_amount !== '') ? "'$add_amount'" : "NULL";
+        $amount_add_sql       = ($amount_add !== '') ? "'$amount_add'" : "NULL";
+        $number_of_days_sql   = ($number_of_days !== '') ? "'$number_of_days'" : "NULL";
+
+        mysqli_begin_transaction($conn);
+
+        $insert_query = "INSERT INTO mldb.soa_transaction (
+                            `date`, reference_number, partner_Name, billing_period, partner_Tin, address, 
+                            business_style, service_charge, from_date, to_date, po_number, 
+                            number_of_transactions, amount, add_amount, amount_add, numberOf_days, 
+                            formula, formula_withheld, formulaInc_Exc, vat_amount, net_of_vat, 
+                            withholding_tax, totalAmountDue, net_amount_due, prepared_by, 
+                            preparedDate_signature, prepared_signature, status
+                         ) VALUES (
+                            '$invoice_date', '$control_number', '$partner_acc_name', " . ($billing_period === null ? "NULL" : "'$billing_period'") . ", '$partner_tin', '$address',
+                            '$business_style', '$service_charge', '$from_date', '$to_date', '$po_number',
+                            $transaction_count, $amount, $add_amount_sql, $amount_add_sql, $number_of_days_sql,
+                            '$formula', '$formula_withheld', '$formula_inc_exc', $vat_amount_sql, $net_of_vat_sql,
+                            $withholding_tax_sql, $total_amount_due_sql, $net_amount_due_sql, '" . mysqli_real_escape_string($conn, $prepared_by) . "',
+                            '$prepared_date_signature', '$prepared_signature', '$status'
+                         )";
+
+        if (!mysqli_query($conn, $insert_query)) {
+            $insert_error = mysqli_error($conn);
+            error_log("Save Invoice - Insert Error: " . $insert_error . " | Query: " . $insert_query);
+            mysqli_rollback($conn);
+            echo json_encode(['success' => false, 'message' => 'Failed to save invoice: ' . $insert_error]);
+            exit;
+        }
+
+        $new_id = mysqli_insert_id($conn);
+
+        if (str_starts_with($partner_id, 'no-id-')) {
+            $partner_name_clean = mysqli_real_escape_string($conn, $partner_acc_name);
+            $update_series_query = "UPDATE masterdata.partner_masterfile 
+                                     SET series_number = $next_series_to_store 
+                                     WHERE partner_accName = '$partner_name_clean'";
+            
+            error_log("Save Invoice - Series Update by Name: " . $update_series_query);
+            
+            if (!mysqli_query($conn, $update_series_query)) {
+                $series_error = mysqli_error($conn);
+                error_log("Save Invoice - Series Update Error (by name): " . $series_error);
+            }
+        } else {
+            $update_series_query = "UPDATE masterdata.partner_masterfile 
+                                     SET series_number = $next_series_to_store 
+                                     WHERE partner_id_kpx = '$partner_id'";
+            
+            error_log("Save Invoice - Series Update Query: " . $update_series_query);
+            
+            if (!mysqli_query($conn, $update_series_query)) {
+                $series_error = mysqli_error($conn);
+                error_log("Save Invoice - Series Update Error: " . $series_error);
+                mysqli_rollback($conn);
+                echo json_encode(['success' => false, 'message' => 'Failed to update series number: ' . $series_error]);
+                exit;
+            }
+        }
+
+        mysqli_commit($conn);
+
+        error_log("Save Invoice - Saved successfully. ID: $new_id, Control Number: $control_number, New series_number: $next_series_to_store");
+
+        echo json_encode([
+            'success' => true,
+            'message' => 'Invoice saved successfully.',
+            'id' => $new_id,
+            'reference_number' => $control_number,
+            'series_number' => $next_series_to_store
+        ]);
+        exit;
+
+    } catch (Exception $e) {
+        mysqli_rollback($conn);
+        error_log("Save Invoice - Exception: " . $e->getMessage());
+        echo json_encode(['success' => false, 'message' => 'An error occurred: ' . $e->getMessage()]);
+        exit;
+    }
+}
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create Billing (Manual) | <?php if($_SESSION['user_type'] === 'admin' || $_SESSION['user_type'] === 'user') echo ucfirst($_SESSION['user_type']); else echo "Guest";?></title>
+    <link rel="stylesheet" href="../../../assets/css/templates/style.css?v=<?php echo time(); ?>">
+    <script src="https://kit.fontawesome.com/30b908cc5a.js" crossorigin="anonymous"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="../../../assets/js/sweetalert2.all.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js"></script>
+    <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
+    <link rel="stylesheet" href="css/bi_sc_auto.css?v=<?= time(); ?>">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/css/select2.min.css" rel="stylesheet" />
+    
+    <style>
+        .btn-success.disabled-btn {
+            background-color: #95a5a6 !important;
+            cursor: not-allowed !important;
+            opacity: 0.7;
+        }
+        .soa-exists-warning {
+            background-color: #fff3cd;
+            border: 1px solid #ffeeba;
+            color: #856404;
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            display: none;
+        }
+        .soa-exists-warning i {
+            margin-right: 10px;
+        }
+        .partner-no-id {
+            color: #666;
+            font-style: italic;
+        }
+        .partner-no-id .no-id-badge {
+            color: #e67e22;
+            font-size: 11px;
+            background: #fef9e7;
+            padding: 1px 6px;
+            border-radius: 3px;
+            margin-left: 5px;
+            border: 1px solid #f39c12;
+        }
+        .select2-results__option .no-id-badge {
+            color: #e67e22;
+            font-size: 11px;
+            background: #fef9e7;
+            padding: 1px 6px;
+            border-radius: 3px;
+            margin-left: 5px;
+            border: 1px solid #f39c12;
+        }
+        .select2-results__option .with-id-badge {
+            color: #27ae60;
+            font-size: 11px;
+            background: #eafaf1;
+            padding: 1px 6px;
+            border-radius: 3px;
+            margin-left: 5px;
+            border: 1px solid #27ae60;
+        }
+        .manual-input-section {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+        .manual-input-section .section-title {
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #3498db;
+        }
+        .manual-input-section .form-group {
+            margin-bottom: 12px;
+        }
+        .manual-input-section .form-group label {
+            font-weight: 500;
+            color: #34495e;
+        }
+        .manual-input-section .form-group input {
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            padding: 8px 12px;
+            width: 100%;
+            transition: border-color 0.3s;
+        }
+        .manual-input-section .form-group input:focus {
+            border-color: #3498db;
+            outline: none;
+            box-shadow: 0 0 0 0.2rem rgba(52, 152, 219, 0.25);
+        }
+        .manual-input-section .form-group input.readonly-field {
+            background-color: #e9ecef;
+        }
+        .manual-badge {
+            background: #ff6b6b;
+            color: white;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        .date-restriction-info {
+            background: #e8f4fd;
+            border: 1px solid #b8d4e3;
+            color: #2c3e50;
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            display: none;
+        }
+        .date-restriction-info.active {
+            display: block;
+        }
+        .date-restriction-info .info-text {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .date-restriction-info .info-text i {
+            color: #3498db;
+            font-size: 18px;
+        }
+        .special-partner-badge {
+            background: #8e44ad;
+            color: white;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: 600;
+            margin-left: 8px;
+            display: inline-block;
+        }
+        .cancelled-soa-info {
+            background: #fdecea;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            display: none;
+        }
+        .cancelled-soa-info.active {
+            display: block;
+        }
+        .cancelled-soa-info i {
+            color: #e74c3c;
+            margin-right: 8px;
+        }
+        .date-display-input {
+            background-color: #e9ecef !important;
+            color: #2c3e50 !important;
+            font-weight: 600 !important;
+            cursor: default !important;
+        }
+        .date-display-input.has-value {
+            border-color: #27ae60 !important;
+        }
+        .date-display-input.reused-range {
+            border-color: #e67e22 !important;
+            background-color: #fef5e7 !important;
+        }
+        .date-helper-text {
+            font-size: 12px;
+            color: #7f8c8d;
+            display: block;
+            margin-top: 4px;
+        }
+        .date-helper-text i {
+            color: #3498db;
+        }
+        .soa-info-badge {
+            background: #d4edda;
+            color: #155724;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            border: 1px solid #c3e6cb;
+            display: inline-block;
+            margin-left: 8px;
+        }
+        .no-soa-badge {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            border: 1px solid #f5c6cb;
+            display: inline-block;
+            margin-left: 8px;
+        }
+        .reused-badge {
+            background: #fff3cd;
+            color: #856404;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            border: 1px solid #ffeeba;
+            display: inline-block;
+            margin-left: 8px;
+        }
+        .advanced-badge {
+            background: #e8daef;
+            color: #6c3483;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            border: 1px solid #d2b4de;
+            display: inline-block;
+            margin-left: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="main-container">
+        <?php include '../../../templates/header_ui.php'; ?>
+        <?php include '../../../templates/sidebar.php'; ?>
+        
+        <div id="loading-overlay">
+            <div class="loading-spinner"></div>
+        </div>
+        
+        <div class="bp-section-header" role="region" aria-label="Page title">
+            <div class="bp-section-title">
+                <i class="fa-solid fa-file-invoice" aria-hidden="true"></i>
+                <div>
+                    <h2>Billing Invoice - Service Charge <span class="manual-badge">MANUAL</span></h2>
+                    <p class="bp-section-sub">Manual billing Invoice generation - Enter transaction details manually</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="invoice-container">
+            <div class="invoice-header">
+                <div class="invoice-title">
+                    <i class="fa-solid fa-plus-circle" style="color: #3498db;"></i>
+                    Create New Invoice (Manual)
+                </div>
+                <div>
+                    <span class="badge" style="background: #ff1111; color: white; padding: 8px 15px; border-radius: 20px;">
+                        <i class="fa-regular fa-calendar"></i> <?php echo date('F d, Y'); ?>
+                    </span>
+                </div>
+            </div>
+            
+            <div id="alert-container"></div>
+            
+            <div class="soa-exists-warning" id="soaExistsWarning">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+                <span id="soaExistsMessage">SOA already exists for this partner and date range.</span>
+            </div>
+            
+            <div class="cancelled-soa-info" id="cancelledSoaInfo">
+                <i class="fa-solid fa-rotate-left"></i>
+                <span id="cancelledSoaMessage">Previous SOA was cancelled. Re-using the same date range.</span>
+            </div>
+            
+            <div class="date-restriction-info" id="dateRestrictionInfo">
+                <div class="info-text">
+                    <i class="fa-regular fa-calendar-circle-plus"></i> 
+                    <span id="dateRestrictionMessage">Please select a partner to auto-populate dates.</span>
+                </div>
+            </div>
+            
+            <form id="invoiceForm" class="invoice-form">
+
+                <div class="form-group">
+                    <label for="partnerSelect"><i class="fa-solid fa-handshake-angle"></i> Partner <span style="color: red;">*</span></label>
+                    <select id="partnerSelect" name="partner_id" style="width: 100%;" required>
+                        <option value="">Search by Partner ID, Name, or Account Name...</option>
+                        <?php 
+                            $partners_data = [];
+                            while($partner = mysqli_fetch_assoc($partners_result)): 
+                                $partners_data[] = $partner;
+                                $partner_id_kpx = trim($partner['partner_id_kpx'] ?? '');
+                                $partner_name = htmlspecialchars($partner['partner_name'] ?? '');
+                                $partner_accName = htmlspecialchars($partner['partner_accName'] ?? '');
+                                
+                                if (!empty($partner_id_kpx)) {
+                                    $display_text = $partner_id_kpx . ' - ' . $partner_name . ' - ' . $partner_accName;
+                                    $has_id = true;
+                                } else {
+                                    $display_text = $partner_name . ' - ' . $partner_accName;
+                                    $has_id = false;
+                                }
+                                
+                                $is_special = in_array($partner_id_kpx, ['457', '458', '459', '460']);
+                                $data_has_id = $has_id ? 'true' : 'false';
+                            ?>
+                                <option value="<?php echo htmlspecialchars($partner_id_kpx ?: 'no-id-' . md5($partner_name)); ?>"
+                                        data-soa-status="<?php echo htmlspecialchars(strtoupper(trim($partner['soa_status'] ?? ''))); ?>"
+                                        data-partner-name="<?php echo htmlspecialchars($partner['partner_name']); ?>"
+                                        data-partner-accname="<?php echo htmlspecialchars($partner['partner_accName'] ?? ''); ?>"
+                                        data-service-charge="<?php echo htmlspecialchars($partner['serviceCharge'] ?? ''); ?>"
+                                        data-abbreviation="<?php echo htmlspecialchars($partner['abbreviation'] ?? ''); ?>"
+                                        data-has-id="<?php echo $data_has_id; ?>"
+                                        data-partner-id-kpx="<?php echo htmlspecialchars($partner_id_kpx); ?>"
+                                        data-is-special="<?php echo $is_special ? 'true' : 'false'; ?>">
+                                    <?php echo $display_text; ?>
+                                </option>
+                            <?php endwhile; ?>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="controlNumber"><i class="fa-solid fa-hashtag"></i> Control Number</label>
+                    <input type="text" id="controlNumber" readonly placeholder="Select partner to generate">
+                </div>
+                
+                <div class="form-group">
+                    <label for="fromDateDisplay"><i class="fa-solid fa-calendar-day"></i> Transaction Date From <span style="color: red;">*</span></label>
+                    <input type="text" id="fromDateDisplay" readonly class="date-display-input" placeholder="Auto-populated base from the latest SOA">
+                    <input type="hidden" id="fromDate" name="from_date" value="">
+                    <span class="date-helper-text"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
+                </div>
+                
+                <div class="form-group">
+                    <label for="toDateDisplay"><i class="fa-solid fa-calendar-day"></i> Transaction Date To <span style="color: red;">*</span></label>
+                    <input type="text" id="toDateDisplay" readonly class="date-display-input" placeholder="Auto-populated base from the latest SOA">
+                    <input type="hidden" id="toDate" name="to_date" value="">
+                    <span class="date-helper-text"><i class="fa-solid fa-info-circle"></i> Uneditable.</span>
+                </div>
+                
+                <div class="form-group">
+                    <label for="invoiceDate"><i class="fa-solid fa-calendar-check"></i> Invoice Date</label>
+                    <input type="date" id="invoiceDate" value="<?php echo date('Y-m-d'); ?>" readonly>
+                </div>
+                
+                <div class="form-group">
+                    <label for="partnerAccName"><i class="fa-solid fa-address-card"></i> Partner Account Name</label>
+                    <input type="text" id="partnerAccName" readonly placeholder="Auto-fetched based on partner.">
+                </div>
+                
+                <div class="form-group">
+                    <label for="partnerTin"><i class="fa-solid fa-credit-card"></i> Partner TIN</label>
+                    <input type="text" id="partnerTin" readonly placeholder="Auto-fetched based on partner.">
+                </div>
+
+                <div class="form-group">
+                    <label for="partnerAbbreviation"><i class="fa-solid fa-shortcode"></i><i class="fa-solid fa-receipt"></i> Abbreviation</label>
+                    <input type="text" id="partnerAbbreviation" readonly placeholder="Auto-fetched based on partner.">
+                </div>
+                
+                <div class="form-group full-width">
+                    <label for="address"><i class="fa-solid fa-location-dot"></i> Address</label>
+                    <textarea id="address" readonly rows="2" placeholder="Auto-fetched based on partner."></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label for="businessStyle"><i class="fa-brands fa-hubspot"></i> Business Style</label>
+                    <input type="text" id="businessStyle" readonly placeholder="Auto-fetched based on partner.">
+                </div>
+                
+                <div class="form-group">
+                    <label for="serviceCharge"><i class="fa-solid fa-business-time"></i> Service Charge</label>
+                    <input type="text" id="serviceCharge" readonly placeholder="Auto-fetched based on partner.">
+                </div>
+                
+                <div class="form-group">
+                    <label for="incExc"><i class="fa-solid fa-circle-notch"></i> VAT (Inclusive / Exclusive)</label>
+                    <input type="text" id="incExc" readonly placeholder="Auto-fetched based on partner.">
+                </div>
+                
+                <div class="form-group">
+                    <label for="withholdingTax"><i class="fa-solid fa-percent"></i> Withholding Tax</label>
+                    <input type="text" id="withholdingTax" readonly placeholder="Auto-fetched based on partner.">
+                </div>
+                
+                <div class="manual-input-section">
+                    <div class="section-title">
+                        <i class="fa-solid fa-pen-to-square"></i> Manual Transaction Details
+                        <span style="font-size: 12px; color: #e74c3c; font-weight: normal; margin-left: 10px;">(Enter values manually)</span>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="numberOfTransactions"><i class="fa-solid fa-list-ol"></i> Number of Transactions <span style="color: red;">*</span></label>
+                        <input type="text" id="numberOfTransactions" name="number_of_transactions" min="0" step="1" placeholder="Enter number of transactions">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="totalPrincipal"><i class="fa-solid fa-peso-sign"></i> Total Principal <span style="color: #7f8c8d; font-size: 12px;">(optional)</span></label>
+                        <input type="text" id="totalPrincipal" name="total_principal" min="0" step="0.01" placeholder="Enter total principal amount (optional)">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="serviceChargeAmount"><i class="fa-solid fa-money-bill-transfer"></i> Service Charge Amount <span style="color: red;">*</span></label>
+                        <input type="text" id="serviceChargeAmount" name="service_charge_amount" min="0" step="0.01" placeholder="Enter service charge amount">
+                    </div>
+                    
+                    <div class="additional-fields" id="additionalFields" style="display: none;">
+                        <div style="border-top: 1px dashed #dee2e6; margin: 15px 0; padding-top: 15px;">
+                            <h5 style="color: #2c3e50; margin-bottom: 10px;">
+                                <i class="fa-solid fa-plus-circle"></i> For JT INTERNATIONAL (PHILIPPINES) INC.
+                            </h5>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="poNumber"><i class="fa-solid fa-folder-closed"></i> PO Number <span style="color: red;">*</span></label>
+                            <input type="text" id="poNumber" name="po_number" placeholder="Enter 10-digit PO number" maxlength="10">
+                            <div id="poError" class="error-message"></div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="numberOfDays"><i class="fa-regular fa-sun"></i> Number of Days <span style="color: red;">*</span></label>
+                            <input type="number" id="numberOfDays" name="number_of_days" min="0" placeholder="Enter number of days">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="addAmount"><i class="fa-solid fa-plus"></i> Add Amount</label>
+                            <input type="number" id="addAmount" name="add_amount" value="500" step="0.01" readonly class="readonly-field">
+                            <small style="color: #7f8c8d;">Calculated: 500 * number of days</small>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="summary-section">
+                    <h4 style="margin-top: 0; color: #2c3e50;">
+                        <i class="fa-solid fa-chart-pie"></i> Summary Preview
+                    </h4>
+                    <div class="summary-grid">
+                        <div class="summary-item">
+                            <div class="label"><i class="fa-solid fa-list-ol"></i> Number of Transactions</div>
+                            <div class="value" id="previewTransactionCount">0</div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="label"><i class="fa-solid fa-peso-sign"></i> Total Principal <span style="font-size: 11px; color: #010101;">(optional)</span></div>
+                            <div class="value" id="previewTotalPrincipal">₱ 0.00</div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="label"><i class="fa-solid fa-money-bill-transfer"></i> Service Charge</div>
+                            <div class="value" id="previewServiceChargeAmount">₱ 0.00</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="button-group">
+                    <button type="button" class="btn btn-primary" id="fetchPartnerBtn">
+                        <i class="fa-solid fa-user"></i> Fetch Partner Details
+                    </button>
+                    <button type="button" class="btn btn-success" id="showInvoiceModalBtn">
+                        <i class="fa-solid fa-file-invoice"></i> Create Invoice
+                    </button>
+                    
+                    <a href="billing-service-charge.php" class="btn btn-secondary"> <i class="fa-solid fa-undo"></i> Reset </a>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <div class="modal-overlay" id="invoiceModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>
+                    <i class="fa-solid fa-file-invoice" style="color: #27ae60;"></i>
+                    Invoice Preview (Manual Entry)
+                </h2>
+                <button class="modal-close" id="closeInvoiceModal">&times;</button>
+            </div>
+            <div class="modal-body" id="invoiceModalBody">
+                <div class="invoice-preview" id="invoicePreview">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="closeInvoiceModalBtn">
+                    <i class="fa-solid fa-times"></i> Close
+                </button>
+                <button class="btn btn-danger" id="saveInvoiceBtn">
+                    <i class="fa-solid fa-floppy-disk"></i> Save Invoice For Review
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="saveInfoModal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header" style="background: #f8f9fa;">
+                <h2 style="color: #db3434;">
+                    <i class="fa-solid fa-info-circle" style="color: #000000;"></i>
+                    Save Invoice
+                </h2>
+                <button class="modal-close" id="closeSaveInfoModal">&times;</button>
+            </div>
+            <div class="modal-body" style="text-align: center; padding: 30px 20px;">
+                <div style="font-size: 48px; color: #ff0000; margin-bottom: 20px;">
+                    <i class="fa-solid fa-floppy-disk"></i>
+                </div>
+                <h3 id="saveInfoTitle" style="color: #2c3e50; margin-bottom: 10px;">Save Invoice</h3>
+                <p id="saveInfoMessage" style="color: #7f8c8d; font-size: 16px; line-height: 1.6;"></p>
+            </div>
+            <div class="modal-footer" style="justify-content: center;">
+                <button class="btn btn-danger" id="closeSaveInfoModalBtn">
+                    <i class="fa-solid fa-check"></i> Got it
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <?php include '../../../templates/footer.php'; ?>
+    <?php include '../no-signature-modal.php'; ?>
+    
+    <script>
+    $(document).ready(function() {
+
+        let currentInvoiceData = null;
+        window._currentPartnerName = '';
+        window._isSpecialSemiMonthly = false;
+
+        let _datesAutoPopulated = false;
+        let _rangeReusedFromCancelled = false;
+        // NEW: track whether the user answered "No" and advanced the period
+        let _rangeAdvancedByUser = false;
+
+        function formatDateDisplay(dateStr) {
+            if (!dateStr) return '';
+            var date = new Date(dateStr + 'T00:00:00');
+            if (isNaN(date.getTime())) return dateStr;
+            var options = { year: 'numeric', month: 'long', day: 'numeric' };
+            return date.toLocaleDateString('en-US', options);
+        }
+
+        function setDateFields(fromDate, toDate, reusedFromCancelled) {
+            $('#fromDate').val(fromDate || '');
+            $('#toDate').val(toDate || '');
+            $('#fromDateDisplay').val(formatDateDisplay(fromDate));
+            $('#toDateDisplay').val(formatDateDisplay(toDate));
+            
+            if (fromDate && toDate) {
+                if (reusedFromCancelled) {
+                    $('#fromDateDisplay').addClass('has-value reused-range').css('border-color', '#e67e22');
+                    $('#toDateDisplay').addClass('has-value reused-range').css('border-color', '#e67e22');
+                } else {
+                    $('#fromDateDisplay').addClass('has-value').removeClass('reused-range').css('border-color', '#27ae60');
+                    $('#toDateDisplay').addClass('has-value').removeClass('reused-range').css('border-color', '#27ae60');
+                }
+            } else {
+                $('#fromDateDisplay').removeClass('has-value reused-range').css('border-color', '#bdc3c7');
+                $('#toDateDisplay').removeClass('has-value reused-range').css('border-color', '#bdc3c7');
+            }
+        }
+
+        function formatNumberWithCommas(number) {
+            if (number === null || number === undefined || isNaN(number) || number === '') {
+                return '0';
+            }
+            const parts = String(number).split('.');
+            parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+            return parts.join('.');
+        }
+
+        function formatNumber(num) {
+            if (num === null || num === undefined || isNaN(num) || num === '') {
+                return '0';
+            }
+            return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        }
+
+        function roundTo2(num) {
+            return Math.round(num * 100) / 100;
+        }
+
+        // =============================================
+        // NEW: Advance one service-charge period (mirrors PHP calculateNextDates)
+        // =============================================
+        function advanceOnePeriod(fromDate, toDate, serviceCharge, isSpecial) {
+            var from = new Date(fromDate + 'T00:00:00');
+            var to   = new Date(toDate   + 'T00:00:00');
+            var type = (serviceCharge || '').trim().toUpperCase();
+
+            var nextFrom = new Date(to);
+            var nextTo   = new Date(to);
+
+            if (type === 'WEEKLY') {
+                nextFrom.setDate(nextFrom.getDate() + 1);
+                nextTo.setDate(nextTo.getDate() + 7);
+            } else if (type === 'MONTHLY') {
+                nextFrom = new Date(to.getFullYear(), to.getMonth() + 1, 1);
+                nextTo   = new Date(to.getFullYear(), to.getMonth() + 2, 0);
+            } else if (type === 'SEMI-MONTHLY') {
+                if (isSpecial) {
+                    nextFrom.setDate(nextFrom.getDate() + 1);
+                    nextTo.setDate(nextTo.getDate() + 14);
+                } else {
+                    var lastDayOfMonth = new Date(to.getFullYear(), to.getMonth() + 1, 0).getDate();
+                    if (to.getDate() === 15) {
+                        nextFrom.setDate(nextFrom.getDate() + 1);
+                        nextTo = new Date(to.getFullYear(), to.getMonth(), lastDayOfMonth);
+                    } else if (to.getDate() === lastDayOfMonth) {
+                        nextFrom = new Date(to.getFullYear(), to.getMonth() + 1, 1);
+                        nextTo   = new Date(to.getFullYear(), to.getMonth() + 1, 15);
+                    } else {
+                        nextFrom = new Date(to.getFullYear(), to.getMonth() + 1, 1);
+                        nextTo   = new Date(to.getFullYear(), to.getMonth() + 1, 15);
+                    }
+                }
+            } else if (type === 'DAILY') {
+                nextFrom.setDate(nextFrom.getDate() + 1);
+                nextTo.setDate(nextTo.getDate() + 1);
+            } else {
+                nextFrom.setDate(nextFrom.getDate() + 1);
+                nextTo.setDate(nextTo.getDate() + 7);
+            }
+
+            function fmt(d) {
+                var m = String(d.getMonth() + 1).padStart(2, '0');
+                var day = String(d.getDate()).padStart(2, '0');
+                return d.getFullYear() + '-' + m + '-' + day;
+            }
+            return { from_date: fmt(nextFrom), to_date: fmt(nextTo) };
+        }
+
+        // =============================================
+        // NEW: Apply auto-fetched (or advanced) dates + alerts
+        // =============================================
+        function applyDates(fromDate, toDate, reusedFromCancelled, advanced) {
+            setDateFields(fromDate, toDate, reusedFromCancelled);
+            _datesAutoPopulated = true;
+            _rangeReusedFromCancelled = reusedFromCancelled;
+            _rangeAdvancedByUser = advanced === true;
+
+            if (reusedFromCancelled) {
+                $('#cancelledSoaInfo').addClass('active');
+            } else {
+                $('#cancelledSoaInfo').removeClass('active');
+            }
+
+            updateDateRestrictionInfo();
+
+            var msg;
+            if (reusedFromCancelled) {
+                msg = 'Previous SOA was cancelled. Re-using date range: ' +
+                      formatDateDisplay(fromDate) + ' to ' + formatDateDisplay(toDate);
+            } else if (advanced) {
+                msg = 'No transactions available for the previous range. Date range advanced to: ' +
+                      formatDateDisplay(fromDate) + ' to ' + formatDateDisplay(toDate);
+            } else {
+                msg = 'Next dates auto-populated from previous SOA: ' +
+                      formatDateDisplay(fromDate) + ' to ' + formatDateDisplay(toDate);
+            }
+            showAlert(msg, (reusedFromCancelled || advanced) ? 'warning' : 'success');
+        }
+
+        $('#partnerSelect').select2({
+            placeholder: 'Partner ID - Partner Name - Partner Acc Name',
+            allowClear: true,
+            width: '100%',
+            matcher: function(params, data) {
+                if ($.trim(params.term) === '') {
+                    return data;
+                }
+                var searchTerm = params.term.toLowerCase();
+                var text = data.text.toLowerCase();
+                var id = data.id ? data.id.toLowerCase() : '';
+                var accName = data.element ? $(data.element).data('partner-accname') || '' : '';
+                accName = accName.toLowerCase();
+                
+                if (id.indexOf(searchTerm) > -1 || text.indexOf(searchTerm) > -1 || accName.indexOf(searchTerm) > -1) {
+                    return data;
+                }
+                return null;
+            },
+            templateResult: function(data) {
+                if (data.element) {
+                    var $element = $(data.element);
+                    var isDisabled = $element.prop('disabled');
+                    var soaStatus = $element.data('soa-status') || '';
+                    var hasId = $element.data('has-id') === true || $element.data('has-id') === 'true';
+                    var isSpecial = $element.data('is-special') === true || $element.data('is-special') === 'true';
+                    
+                    if (isDisabled) {
+                        return $('<span style="color: #999; background-color: #f5f5f5; padding: 4px 8px; border-radius: 3px; display: block;">' + 
+                            data.text + 
+                            ' <span style="font-size: 11px; color: #e74c3c; font-weight: 600;">(Disabled - Without SOA)</span>' + 
+                            '</span>');
+                    }
+                    
+                    var badgeHtml = '';
+                    if (hasId) {
+                        badgeHtml = ' <span class="with-id-badge" style="color: #27ae60; font-size: 11px; background: #eafaf1; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #27ae60;">✓ Has ID</span>';
+                    } else {
+                        badgeHtml = ' <span class="no-id-badge" style="color: #e67e22; font-size: 11px; background: #fef9e7; padding: 1px 6px; border-radius: 3px; margin-left: 5px; border: 1px solid #f39c12;">No ID</span>';
+                    }
+                    
+                    if (isSpecial) {
+                        badgeHtml += ' <span class="special-partner-badge" style="background: #8e44ad; color: white; padding: 2px 10px; border-radius: 12px; font-size: 10px; font-weight: 600; margin-left: 5px;">LDS Special</span>';
+                    }
+                    
+                    if (soaStatus === 'WITH SOA') {
+                        return $('<span>' + data.text + ' <span style="color: #27ae60; font-size: 12px; font-weight: 600;">✓</span>' + badgeHtml + '</span>');
+                    }
+                    return $('<span>' + data.text + badgeHtml + '</span>');
+                }
+                return data.text;
+            },
+            templateSelection: function(data) {
+                if (data.element) {
+                    var $element = $(data.element);
+                    var isDisabled = $element.prop('disabled');
+                    if (isDisabled) {
+                        return $('<span style="color: #999;">' + data.text + ' (Disabled)</span>');
+                    }
+                    var isSpecial = $element.data('is-special') === true || $element.data('is-special') === 'true';
+                    if (isSpecial) {
+                        return $('<span>' + data.text + ' <span class="special-partner-badge" style="background: #8e44ad; color: white; padding: 2px 10px; border-radius: 12px; font-size: 10px; font-weight: 600; margin-left: 5px;">LDS Special</span></span>');
+                    }
+                    return data.text;
+                }
+                return data.text;
+            }
+        });
+        
+        $('#partnerSelect').on('select2:selecting', function(e) {
+            var $element = $(e.params.args.data.element);
+            if ($element && $element.prop('disabled')) {
+                e.preventDefault();
+                showAlert('This partner has "WITHOUT SOA" status and cannot be selected. Please choose a partner with "WITH SOA" status.', 'warning');
+                return false;
+            }
+        });
+        
+        setDateFields('', '');
+        
+        function updateDateRestrictionInfo() {
+            const fromDate = $('#fromDate').val();
+            const toDate = $('#toDate').val();
+            
+            if (fromDate && toDate) {
+                const from = new Date(fromDate);
+                const to = new Date(toDate);
+                const diffTime = Math.abs(to - from);
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+                
+                const serviceCharge = $('#serviceCharge').val() || '';
+                const serviceChargeType = serviceCharge.trim().toUpperCase();
+                const isSpecial = window._isSpecialSemiMonthly;
+                
+                let extraInfo = '';
+                if (serviceChargeType === 'SEMI-MONTHLY' && isSpecial) {
+                    extraInfo = ' <span style="color: #8e44ad; font-weight: 600;"><i class="fa-solid fa-star"></i> LDS Special - 14-day rolling period</span>';
+                }
+                if (_rangeReusedFromCancelled) {
+                    extraInfo += ' <span class="reused-badge"><i class="fa-solid fa-rotate-left"></i> Re-used from cancelled SOA</span>';
+                }
+                if (_rangeAdvancedByUser) {
+                    extraInfo += ' <span class="advanced-badge"><i class="fa-solid fa-forward"></i> Advanced (no transactions in previous range)</span>';
+                }
+                
+                $('#dateRestrictionMessage').html(
+                    '<i class="fa-regular fa-calendar"></i> Date range: ' + 
+                    formatDateDisplay(fromDate) + 
+                    ' to ' + 
+                    formatDateDisplay(toDate) + 
+                    ' <span style="color: #7f8c8d;">(' + diffDays + ' days)</span>' +
+                    extraInfo
+                );
+                $('#dateRestrictionInfo').addClass('active');
+            } else {
+                $('#dateRestrictionInfo').removeClass('active');
+            }
+        }
+        
+        function checkExistingSOA(partnerId, fromDate, toDate, partnerName) {
+            return new Promise((resolve, reject) => {
+                if (partnerName && !partnerId) {
+                    $.ajax({
+                        url: window.location.href,
+                        method: 'GET',
+                        data: {
+                            action: 'check_existing_soa',
+                            partner_name: partnerName,
+                            from_date: fromDate,
+                            to_date: toDate
+                        },
+                        success: function(response) {
+                            try {
+                                if (typeof response === 'string') {
+                                    response = JSON.parse(response);
+                                }
+                                resolve(response);
+                            } catch (e) {
+                                reject(e);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            reject(error);
+                        }
+                    });
+                    return;
+                }
+                
+                if (partnerId && partnerId.startsWith('no-id-')) {
+                    var name = partnerName || window._currentPartnerName || '';
+                    if (!name) {
+                        var selectedOption = $('#partnerSelect').find('option:selected');
+                        name = selectedOption.data('partner-name') || '';
+                    }
+                    if (!name) {
+                        resolve({ exists: false });
+                        return;
+                    }
+                    $.ajax({
+                        url: window.location.href,
+                        method: 'GET',
+                        data: {
+                            action: 'check_existing_soa',
+                            partner_name: name,
+                            from_date: fromDate,
+                            to_date: toDate
+                        },
+                        success: function(response) {
+                            try {
+                                if (typeof response === 'string') {
+                                    response = JSON.parse(response);
+                                }
+                                resolve(response);
+                            } catch (e) {
+                                reject(e);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            reject(error);
+                        }
+                    });
+                } else {
+                    $.ajax({
+                        url: window.location.href,
+                        method: 'GET',
+                        data: {
+                            action: 'check_existing_soa',
+                            partner_id: partnerId,
+                            from_date: fromDate,
+                            to_date: toDate
+                        },
+                        success: function(response) {
+                            try {
+                                if (typeof response === 'string') {
+                                    response = JSON.parse(response);
+                                }
+                                resolve(response);
+                            } catch (e) {
+                                reject(e);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            reject(error);
+                        }
+                    });
+                }
+            });
+        }
+        
+        function updateCreateInvoiceButton(exists) {
+            const btn = $('#showInvoiceModalBtn');
+            if (exists) {
+                btn.addClass('disabled-btn').prop('disabled', true);
+                $('#soaExistsWarning').show();
+            } else {
+                btn.removeClass('disabled-btn').prop('disabled', false);
+                $('#soaExistsWarning').hide();
+            }
+        }
+        
+        // =============================================
+        // AUTO-POPULATE DATES (with availability prompt)
+        // =============================================
+        function autoPopulateDates(partnerId, partnerName, hasId) {
+            showLoadingModal('Loading Dates', 'Fetching latest SOA dates for this partner...');
+            
+            var data = { action: 'get_partner_details' };
+            
+            if (hasId && partnerId && !partnerId.startsWith('no-id-')) {
+                data.partner_id = partnerId;
+            } else {
+                data.action = 'get_partner_by_name';
+                data.partner_name = partnerName;
+            }
+            
+            $.ajax({
+                url: window.location.href,
+                method: 'GET',
+                data: data,
+                success: function(response) {
+                    hideLoadingModal();
+                    try {
+                        if (typeof response === 'string') {
+                            response = JSON.parse(response);
+                        }
+                        if (response.error) {
+                            showAlert('Error: ' + response.error, 'error');
+                            return;
+                        }
+                        
+                        if (response.is_special_semi_monthly !== undefined) {
+                            window._isSpecialSemiMonthly = response.is_special_semi_monthly === true;
+                        }
+                        
+                        populateForm(response);
+                        
+                        if (response.has_previous && response.next_from_date && response.next_to_date) {
+                            _rangeReusedFromCancelled = (response.previous_cancelled === true);
+                            
+                            // Show cancelled banner if applicable (but don't return, we want to prompt the user)
+                            if (_rangeReusedFromCancelled) {
+                                var cancelMsg = 'Previous SOA <strong>' + (response.latest_reference_number || '') + '</strong> ' +
+                                    'was <strong>Cancelled</strong>. Re-using the same date range: ' +
+                                    formatDateDisplay(response.next_from_date) + ' to ' + formatDateDisplay(response.next_to_date) +
+                                    '. New reference number will be <strong>' + (response.control_number || '') + '</strong>.';
+                                $('#cancelledSoaMessage').html(cancelMsg);
+                                $('#cancelledSoaInfo').addClass('active');
+                            } else {
+                                $('#cancelledSoaInfo').removeClass('active');
+                            }
+                            
+                            // ============ ASK THE USER ============
+                            var svc = response.serviceCharge || $('#serviceCharge').val() || '';
+                            var isSpecial = window._isSpecialSemiMonthly === true;
+                            var autoFrom = response.next_from_date;
+                            var autoTo   = response.next_to_date;
+                            
+                            Swal.fire({
+                                icon: 'question',
+                                title: 'Available Transactions',
+                                html: 'Are there available transactions for<br>' +
+                                      '<strong>' + formatDateDisplay(autoFrom) + ' to ' + formatDateDisplay(autoTo) + '</strong>?',
+                                showDenyButton: true,
+                                showCancelButton: false,
+                                confirmButtonText: 'Yes',
+                                denyButtonText: 'No',
+                                confirmButtonColor: '#27ae60',
+                                denyButtonColor: '#e67e22',
+                                allowOutsideClick: false
+                            }).then(function(res) {
+                                if (res.isConfirmed) {
+                                    // YES — keep the auto-fetched range
+                                    applyDates(autoFrom, autoTo, _rangeReusedFromCancelled, false);
+                                } else if (res.isDenied) {
+                                    // NO — advance one period and re-check
+                                    var adv = advanceOnePeriod(autoFrom, autoTo, svc, isSpecial);
+                                    
+                                    // Clear the cancelled state since we are moving forward
+                                    applyDates(adv.from_date, adv.to_date, false, true);
+                                    
+                                    // Re-check existing SOA for the new range
+                                    showLoadingModal('Checking...', 'Verifying if SOA already exists for the advanced range.');
+                                    checkExistingSOA(
+                                        $('#partnerSelect').val(),
+                                        adv.from_date,
+                                        adv.to_date,
+                                        window._currentPartnerName
+                                    ).then(function(chk) {
+                                        hideLoadingModal();
+                                        if (chk && chk.exists) {
+                                            updateCreateInvoiceButton(true);
+                                            $('#soaExistsMessage').html(
+                                                'SOA <strong>' + chk.reference_number + '</strong> already exists for ' +
+                                                chk.from_date + ' to ' + chk.to_date + ' (advanced range).'
+                                            );
+                                        } else {
+                                            updateCreateInvoiceButton(false);
+                                        }
+                                    }).catch(function() {
+                                        hideLoadingModal();
+                                        updateCreateInvoiceButton(false);
+                                    });
+                                }
+                            });
+                        } else {
+                            showAlert('No previous SOA found for this partner. Please contact administrator.', 'warning');
+                            setDateFields('', '');
+                            _datesAutoPopulated = false;
+                            _rangeReusedFromCancelled = false;
+                            _rangeAdvancedByUser = false;
+                            $('#cancelledSoaInfo').removeClass('active');
+                        }
+                    } catch (e) {
+                        hideLoadingModal();
+                        console.error('Error parsing auto-populate response:', e);
+                        showAlert('Error auto-populating dates. Please contact administrator.', 'warning');
+                        setDateFields('', '');
+                        _datesAutoPopulated = false;
+                        _rangeReusedFromCancelled = false;
+                        _rangeAdvancedByUser = false;
+                        $('#cancelledSoaInfo').removeClass('active');
+                    }
+                },
+                error: function(xhr, status, error) {
+                    hideLoadingModal();
+                    console.error('Error auto-populating dates:', error);
+                    showAlert('Error auto-populating dates. Please contact administrator.', 'warning');
+                    setDateFields('', '');
+                    _datesAutoPopulated = false;
+                    _rangeReusedFromCancelled = false;
+                    _rangeAdvancedByUser = false;
+                    $('#cancelledSoaInfo').removeClass('active');
+                }
+            });
+        }
+        
+        $('#partnerSelect').on('change.select2', function() {
+            const partnerId = $(this).val();
+            if (partnerId) {
+                var selectedOption = $(this).find('option:selected');
+                if (selectedOption.prop('disabled')) {
+                    $(this).val('').trigger('change.select2');
+                    showAlert('Invalid selection. Please select a partner with "WITH SOA" status.', 'warning');
+                    return;
+                }
+                var hasId = selectedOption.data('has-id') === true || selectedOption.data('has-id') === 'true';
+                var partnerName = selectedOption.data('partner-name') || '';
+                var isSpecial = selectedOption.data('is-special') === true || selectedOption.data('is-special') === 'true';
+                
+                window._currentPartnerName = partnerName;
+                window._isSpecialSemiMonthly = isSpecial;
+                
+                clearManualInputs();
+                _rangeAdvancedByUser = false;
+                autoPopulateDates(partnerId, partnerName, hasId);
+            } else {
+                clearForm();
+                $('#dateRestrictionInfo').removeClass('active');
+                $('#soaExistsWarning').hide();
+                $('#cancelledSoaInfo').removeClass('active');
+                window._currentPartnerName = '';
+                window._isSpecialSemiMonthly = false;
+                _datesAutoPopulated = false;
+                _rangeReusedFromCancelled = false;
+                _rangeAdvancedByUser = false;
+                setDateFields('', '');
+                updateCreateInvoiceButton(false);
+                clearManualInputs();
+            }
+        });
+        
+        function updateManualPreview() {
+            const transactionCount = parseInt($('#numberOfTransactions').val()) || 0;
+            const totalPrincipal = parseFloat($('#totalPrincipal').val()) || 0;
+            const serviceChargeAmount = parseFloat($('#serviceChargeAmount').val()) || 0;
+            
+            $('#previewTransactionCount').text(formatNumberWithCommas(transactionCount));
+            $('#previewTotalPrincipal').text('₱ ' + formatNumberWithCommas(totalPrincipal.toFixed(2)));
+            $('#previewServiceChargeAmount').text('₱ ' + formatNumberWithCommas(serviceChargeAmount.toFixed(2)));
+        }
+        
+        $('#numberOfTransactions, #totalPrincipal, #serviceChargeAmount').on('input', function() {
+            updateManualPreview();
+        });
+        
+        function clearManualInputs() {
+            $('#numberOfTransactions').val('');
+            $('#totalPrincipal').val('');
+            $('#serviceChargeAmount').val('');
+            $('#previewTransactionCount').text('0');
+            $('#previewTotalPrincipal').text('₱ 0.00');
+            $('#previewServiceChargeAmount').text('₱ 0.00');
+        }
+        
+        $('#numberOfDays').on('input', function() {
+            const days = parseInt($(this).val()) || 0;
+            const addAmount = days * 500;
+            $('#addAmount').val(addAmount.toFixed(2));
+        });
+        
+        $('#poNumber').on('input', function() {
+            const poNumber = $(this).val();
+            const errorDiv = $('#poError');
+            if (poNumber && poNumber.length > 0) {
+                if (poNumber.length !== 10 || !/^\d{10}$/.test(poNumber)) {
+                    errorDiv.text('PO Number must be exactly 10 digits.');
+                    $(this).css('border-color', '#e74c3c');
+                } else {
+                    errorDiv.text('');
+                    $(this).css('border-color', '');
+                }
+            } else {
+                errorDiv.text('');
+                $(this).css('border-color', '');
+            }
+        });
+        
+        $('#fetchPartnerBtn').click(async function() {
+            const partnerId = $('#partnerSelect').val();
+            if (!partnerId) {
+                showAlert('Please select a partner first.', 'warning');
+                return;
+            }
+            
+            const fromDate = $('#fromDate').val();
+            const toDate = $('#toDate').val();
+            
+            if (!fromDate || !toDate) {
+                showAlert('No date range available. Please select a partner with existing SOA to auto-populate dates.', 'warning');
+                return;
+            }
+            
+            if (partnerId.startsWith('no-id-')) {
+                var selectedOption = $('#partnerSelect').find('option:selected');
+                var partnerName = selectedOption.data('partner-name') || '';
+                window._currentPartnerName = partnerName;
+                
+                try {
+                    showLoadingModal('Checking...', 'Verifying if SOA already exists for this partner and date range.');
+                    const result = await checkExistingSOA(null, fromDate, toDate, partnerName);
+                    hideLoadingModal();
+                    
+                    if (result.exists) {
+                        updateCreateInvoiceButton(true);
+                        $('#soaExistsMessage').html(
+                            'SOA <strong>' + result.reference_number + '</strong> already exists for this partner (' + 
+                            result.from_date + ' to ' + result.to_date + ').'
+                        );
+                        Swal.fire({
+                            icon: 'warning',
+                            title: 'SOA Already Exists',
+                            html: `
+                                <div style="text-align: left;">
+                                    <p><strong>An SOA has already been created for this partner and date range.</strong></p>
+                                    <hr>
+                                    <p><strong>Reference Number:</strong> ${result.reference_number}</p>
+                                    <p><strong>Existing Period:</strong> ${result.from_date} to ${result.to_date}</p>
+                                    <p style="color: #e74c3c; margin-top: 10px;"><i class="fa-solid fa-ban"></i> Please refresh page and select a different partner or contact admin.</p>
+                                </div>
+                            `,
+                            confirmButtonColor: '#d33',
+                            confirmButtonText: 'OK',
+                            allowOutsideClick: false
+                        });
+                        return;
+                    }
+                    updateCreateInvoiceButton(false);
+                    showAlert('Partner details fetched successfully! Please enter transaction details below.', 'success');
+                    fetchPartnerByName(partnerName);
+                } catch (error) {
+                    hideLoadingModal();
+                    console.error('Error checking existing SOA:', error);
+                    fetchPartnerByName(partnerName);
+                }
+                return;
+            }
+            
+            try {
+                showLoadingModal('Checking...', 'Verifying if SOA already exists for this partner and date range.');
+                const result = await checkExistingSOA(partnerId, fromDate, toDate);
+                hideLoadingModal();
+                
+                if (result.exists) {
+                    updateCreateInvoiceButton(true);
+                    $('#soaExistsMessage').html(
+                        'SOA <strong>' + result.reference_number + '</strong> already exists for this partner (' + 
+                        result.from_date + ' to ' + result.to_date + ').'
+                    );
+                    Swal.fire({
+                        icon: 'warning',
+                        title: 'SOA Already Exists',
+                        html: `
+                            <div style="text-align: left;">
+                                <p><strong>An SOA has already been created for this partner and date range.</strong></p>
+                                <hr>
+                                <p><strong>Reference Number:</strong> ${result.reference_number}</p>
+                                <p><strong>Existing Period:</strong> ${result.from_date} to ${result.to_date}</p>
+                                <p style="color: #e74c3c; margin-top: 10px;"><i class="fa-solid fa-ban"></i> Please refresh page and select a different partner or contact admin.</p>
+                            </div>
+                        `,
+                        confirmButtonColor: '#d33',
+                        confirmButtonText: 'OK',
+                        allowOutsideClick: false
+                    });
+                    return;
+                }
+                
+                updateCreateInvoiceButton(false);
+                showAlert('Partner details fetched successfully! Please enter transaction details below.', 'success');
+                fetchPartnerDetails(partnerId);
+                
+            } catch (error) {
+                hideLoadingModal();
+                console.error('Error checking existing SOA:', error);
+                fetchPartnerDetails(partnerId);
+            }
+        });
+        
+        function fetchPartnerByName(partnerName) {
+            $.ajax({
+                url: window.location.href,
+                method: 'GET',
+                data: {
+                    action: 'get_partner_by_name',
+                    partner_name: partnerName
+                },
+                success: function(response) {
+                    try {
+                        if (typeof response === 'string') {
+                            response = JSON.parse(response);
+                        }
+                        if (response.error) {
+                            showAlert('Error: ' + response.error, 'error');
+                            return;
+                        }
+                        window._currentPartnerName = partnerName;
+                        window._isSpecialSemiMonthly = false;
+                        populateForm(response);
+                        updateDateRestrictionInfo();
+                    } catch (e) {
+                        showAlert('Error parsing response. Please check the console for details.', 'error');
+                        console.error('Response:', response);
+                        console.error('Error:', e);
+                    }
+                },
+                error: function(xhr, status, error) {
+                    let errorMsg = 'Error fetching partner details. ';
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response.error) {
+                            errorMsg += response.error;
+                        } else {
+                            errorMsg += 'Please try again.'
+                        }
+                    } catch (e) {
+                        errorMsg += 'Status: ' + status + ', Error: ' + error;
+                        console.error('Full error response:', xhr.responseText);
+                    }
+                    showAlert(errorMsg, 'error');
+                }
+            });
+        }
+        
+        function fetchPartnerDetails(partnerId) {
+            $.ajax({
+                url: window.location.href,
+                method: 'GET',
+                data: {
+                    action: 'get_partner_details',
+                    partner_id: partnerId
+                },
+                success: function(response) {
+                    try {
+                        if (typeof response === 'string') {
+                            response = JSON.parse(response);
+                        }
+                        if (response.error) {
+                            showAlert('Error: ' + response.error, 'error');
+                            return;
+                        }
+                        if (response.is_special_semi_monthly !== undefined) {
+                            window._isSpecialSemiMonthly = response.is_special_semi_monthly === true;
+                        }
+                        populateForm(response);
+                        updateDateRestrictionInfo();
+                    } catch (e) {
+                        showAlert('Error parsing response. Please check the console for details.', 'error');
+                        console.error('Response:', response);
+                        console.error('Error:', e);
+                    }
+                },
+                error: function(xhr, status, error) {
+                    let errorMsg = 'Error fetching partner details. ';
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response.error) {
+                            errorMsg += response.error;
+                        } else {
+                            errorMsg += 'Please try again.';
+                        }
+                    } catch (e) {
+                        errorMsg += 'Status: ' + status + ', Error: ' + error;
+                        console.error('Full error response:', xhr.responseText);
+                    }
+                    showAlert(errorMsg, 'error');
+                }
+            });
+        }
+        
+        function populateForm(data) {
+            $('#controlNumber').val(data.control_number || '');
+            $('#partnerAccName').val(data.partner_accName || '');
+            $('#partnerTin').val(data.partnerTin || '');
+            $('#partnerAbbreviation').val(data.abbreviation || ''); 
+            $('#address').val(data.address || '');
+            $('#businessStyle').val(data.businessStyle || '');
+            $('#serviceCharge').val(data.serviceCharge ? data.serviceCharge : '');
+            $('#incExc').val(data.inc_exc_display || data.inc_exc || '');
+            $('#withholdingTax').val(data.withheld || '');
+            
+            if (data.is_special_semi_monthly !== undefined) {
+                window._isSpecialSemiMonthly = data.is_special_semi_monthly === true;
+            }
+            
+            if (data.previous_cancelled === true) {
+                _rangeReusedFromCancelled = true;
+                $('#cancelledSoaInfo').addClass('active');
+            }
+            
+            if (data.has_partner_id === false) {
+                $('#additionalFields').hide();
+                $('#numberOfDays').val('');
+                $('#addAmount').val('500');
+                $('#poNumber').val('');
+                $('#poError').text('');
+                $('#poNumber').css('border-color', '');
+            } else if (data.is_partner_434) {
+                $('#additionalFields').show();
+                $('#poNumber').val(data.po_number || '');
+                if (data.po_number && data.po_number.length === 10 && /^\d{10}$/.test(data.po_number)) {
+                    $('#poError').text('');
+                    $('#poNumber').css('border-color', '');
+                } else if (data.po_number) {
+                    $('#poError').text('Invalid PO number format.');
+                    $('#poNumber').css('border-color', '#e74c3c');
+                }
+                if (data.po_year_error) {
+                    $('#poError').text(data.po_year_error);
+                    $('#poNumber').css('border-color', '#e74c3c');
+                }
+            } else {
+                $('#additionalFields').hide();
+                $('#numberOfDays').val('');
+                $('#addAmount').val('500');
+                $('#poNumber').val('');
+                $('#poError').text('');
+                $('#poNumber').css('border-color', '');
+            }
+            
+            updateDateRestrictionInfo();
+        }
+        
+        function clearForm() {
+            $('#controlNumber').val('');
+            $('#partnerAccName').val('');
+            $('#partnerTin').val('');
+            $('#partnerAbbreviation').val(''); 
+            $('#address').val('');
+            $('#businessStyle').val('');
+            $('#serviceCharge').val('');
+            $('#incExc').val('');
+            $('#withholdingTax').val('');
+            $('#additionalFields').hide();
+            $('#alert-container').html('');
+            $('#numberOfDays').val('');
+            $('#addAmount').val('500');
+            $('#poNumber').val('');
+            $('#poError').text('');
+            $('#poNumber').css('border-color', '');
+            $('#dateRestrictionInfo').removeClass('active');
+            $('#soaExistsWarning').hide();
+            $('#cancelledSoaInfo').removeClass('active');
+            currentInvoiceData = null;
+            window._currentPartnerName = '';
+            window._isSpecialSemiMonthly = false;
+            _datesAutoPopulated = false;
+            _rangeReusedFromCancelled = false;
+            _rangeAdvancedByUser = false;
+            updateCreateInvoiceButton(false);
+            clearManualInputs();
+            setDateFields('', '');
+        }
+        
+        function showAlert(message, type) {
+            const alertContainer = $('#alert-container');
+            const alertClass = type === 'success' ? 'alert-success' : 
+                             type === 'warning' ? 'alert-warning' : 'alert-danger';
+            const icon = type === 'success' ? 'fa-check-circle' :
+                        type === 'warning' ? 'fa-exclamation-triangle' : 'fa-times-circle';
+            
+            alertContainer.html(`
+                <div class="alert ${alertClass}" style="padding: 15px; border-radius: 5px; margin-bottom: 15px;">
+                    <i class="fas ${icon}" style="margin-right: 10px;"></i>
+                    ${message}
+                </div>
+            `);
+            
+            if (type === 'success') {
+                setTimeout(() => {
+                    alertContainer.html('');
+                }, 5000);
+            }
+        }
+        
+        $('#showInvoiceModalBtn').click(async function() {
+            if ($(this).prop('disabled')) {
+                showAlert('Cannot create invoice. SOA already exists for this partner and date range.', 'warning');
+                return;
+            }
+            
+            const partnerId = $('#partnerSelect').val();
+            if (!partnerId) {
+                showAlert('Please select a partner first.', 'warning');
+                return;
+            }
+            const fromDate = $('#fromDate').val();
+            const toDate = $('#toDate').val();
+            if (!fromDate || !toDate) {
+                showAlert('No date range available. Please select a partner with existing SOA.', 'warning');
+                return;
+            }
+            
+            const controlNumber = $('#controlNumber').val();
+            if (!controlNumber) {
+                showAlert('Please fetch partner details first (click Fetch Partner Details).', 'warning');
+                return;
+            }
+            
+            const transactionCount = parseInt($('#numberOfTransactions').val()) || 0;
+            const serviceChargeAmount = parseFloat($('#serviceChargeAmount').val()) || 0;
+            
+            if (transactionCount <= 0) {
+                showAlert('Please enter a valid Number of Transactions (must be greater than 0).', 'warning');
+                return;
+            }
+            if (serviceChargeAmount <= 0) {
+                showAlert('Please enter a valid Service Charge Amount (must be greater than 0).', 'warning');
+                return;
+            }
+            
+            const isPartner434 = $('#additionalFields').is(':visible');
+            if (isPartner434) {
+                const poNumber = $('#poNumber').val();
+                if (!poNumber || poNumber.length !== 10 || !/^\d{10}$/.test(poNumber)) {
+                    showAlert('Please enter a valid 10-digit PO Number for Partner 434.', 'warning');
+                    return;
+                }
+            }
+            
+            if (partnerId.startsWith('no-id-')) {
+                generateInvoicePreview();
+                return;
+            }
+            
+            try {
+                showLoadingModal('Checking...', 'Verifying if SOA already exists for this partner and date range.');
+                const result = await checkExistingSOA(partnerId, fromDate, toDate);
+                hideLoadingModal();
+                
+                if (result.exists) {
+                    updateCreateInvoiceButton(true);
+                    $('#soaExistsMessage').html(
+                        'SOA <strong>' + result.reference_number + '</strong> already exists for this partner (' + 
+                        result.from_date + ' to ' + result.to_date + ').'
+                    );
+                    Swal.fire({
+                        icon: 'warning',
+                        title: 'SOA Already Exists',
+                        html: `
+                            <div style="text-align: left;">
+                                <p><strong>An SOA has already been created for this partner and date range.</strong></p>
+                                <hr>
+                                <p><strong>Reference Number:</strong> ${result.reference_number}</p>
+                                <p><strong>Existing Period:</strong> ${result.from_date} to ${result.to_date}</p>
+                                <p style="color: #e74c3c; margin-top: 10px;"><i class="fa-solid fa-ban"></i> Please refresh page and select a different date range or partner.</p>
+                            </div>
+                        `,
+                        confirmButtonColor: '#d33',
+                        confirmButtonText: 'OK',
+                        allowOutsideClick: false
+                    });
+                    return;
+                }
+                
+                updateCreateInvoiceButton(false);
+                generateInvoicePreview();
+                
+            } catch (error) {
+                hideLoadingModal();
+                console.error('Error checking existing SOA:', error);
+                showAlert('Error checking for existing SOA. Please try again.', 'error');
+            }
+        });
+        
+        function generateInvoicePreview() {
+            const partnerAccountName = $('#partnerAccName').val() || 'N/A';
+            const tin = $('#partnerTin').val() || 'N/A';
+            const address = $('#address').val() || 'N/A';
+            const businessStyle = $('#businessStyle').val() || '';
+            const serviceCharge = $('#serviceCharge').val() || '0';
+            const incExc = $('#incExc').val() || 'N/A';
+            const withholdingTax = $('#withholdingTax').val() || 'NO';
+            const controlNumber = $('#controlNumber').val() || 'N/A';
+            const invoiceDate = $('#invoiceDate').val() || '';
+            const partnerId = $('#partnerSelect').val() || '';
+            const fromDate = $('#fromDate').val() || '';
+            const toDate = $('#toDate').val() || '';
+            const poNumber = $('#poNumber').val() || '';
+            
+            const transactionCount = parseInt($('#numberOfTransactions').val()) || 0;
+            const totalPrincipal = parseFloat($('#totalPrincipal').val()) || 0;
+            const serviceChargeAmount = parseFloat($('#serviceChargeAmount').val()) || 0;
+            
+            const numberOfDaysRaw = $('#numberOfDays').val();
+            const numberOfDays = parseInt(numberOfDaysRaw) || 0;
+            const isPartner434 = $('#additionalFields').is(':visible');
+            
+            let addAmountValue = 0;
+            let addAmountDisplay = '';
+            let amountAddBase = '';
+            let addAmountForStorage = '';
+            let numberOfDaysForStorage = '';
+            
+            if (isPartner434 && numberOfDays > 0) {
+                addAmountValue = 500 * numberOfDays;
+                addAmountDisplay = `₱ 500 × ${numberOfDays} = ₱ ${addAmountValue.toFixed(2)}`;
+                amountAddBase = '500';
+                addAmountForStorage = addAmountValue.toFixed(2);
+                numberOfDaysForStorage = String(numberOfDays);
+            }
+            
+            const fromDateFormatted = fromDate ? formatDateDisplay(fromDate) : '';
+            const toDateFormatted = toDate ? formatDateDisplay(toDate) : '';
+            const invoiceDateFormatted = invoiceDate ? new Date(invoiceDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+            
+            let vatAmount = '';
+            let netOfVat = '';
+            let withholdingTaxAmount = '';
+            let totalAmountDue = 0;
+            let lessWT = '';
+            let netAmountDue = '';
+            
+            const incExcUpper = incExc.toUpperCase().trim();
+            const withheldUpper = withholdingTax.toUpperCase().trim();
+            const isNonVat = incExcUpper === 'NON-VAT';
+            const isInclusive = incExcUpper === 'INCLUSIVE';
+            const isExclusive = incExcUpper === 'EXCLUSIVE';
+            const isWithheld = withheldUpper === 'YES';
+            const isNoWithheld = withheldUpper === 'NO' || withheldUpper === 'NO WITHHELD' || withheldUpper === '';
+            
+            const baseAmount = serviceChargeAmount;
+            
+            let formulaText = '';
+
+            if (isNonVat) {
+                vatAmount = '';
+                netOfVat = '';
+                withholdingTaxAmount = '';
+                totalAmountDue = baseAmount;
+                lessWT = '';
+                netAmountDue = '';
+                formulaText = '';
+            } else if (isInclusive && isWithheld) {
+                vatAmount = roundTo2((baseAmount * 0.12) / 1.12);
+                netOfVat = roundTo2(baseAmount - vatAmount);
+                withholdingTaxAmount = roundTo2(netOfVat * 0.02);
+                totalAmountDue = baseAmount;
+                lessWT = withholdingTaxAmount;
+                netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
+                formulaText = 'VAT Amount 12% = (Amount * 12%) / 1.12\n' +
+                            'Net of VAT = Amount - VAT Amount\n' +
+                            'WTax = Net of VAT * 2%';
+            } else if (isInclusive && isNoWithheld) {
+                vatAmount = roundTo2((baseAmount * 0.12) / 1.12);
+                netOfVat = roundTo2(baseAmount - vatAmount);
+                withholdingTaxAmount = 0;
+                totalAmountDue = baseAmount;
+                lessWT = 0;
+                netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
+                formulaText = 'VAT Amount 12% = (Amount * 12%) / 1.12\n' +
+                            'Net of VAT = Amount - VAT Amount';
+            } 
+            else if (isExclusive && isWithheld) {
+                vatAmount = roundTo2(baseAmount * 0.12);
+                netOfVat = 0;
+                withholdingTaxAmount = roundTo2(baseAmount * 0.02);
+                totalAmountDue = roundTo2(baseAmount + vatAmount);
+                lessWT = withholdingTaxAmount;
+                netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
+                formulaText = 'VAT Amount 12% = Amount * 12%\n' +
+                            'WTax = Amount * 2%';
+            } else if (isExclusive && isNoWithheld) {
+                vatAmount = roundTo2(baseAmount * 0.12);
+                netOfVat = 0;
+                withholdingTaxAmount = 0;
+                totalAmountDue = roundTo2(baseAmount + vatAmount);
+                lessWT = 0;
+                netAmountDue = roundTo2(totalAmountDue - lessWT + addAmountValue);
+                formulaText = 'VAT Amount 12% = Amount * 12%';
+            } else {
+                vatAmount = '';
+                netOfVat = '';
+                withholdingTaxAmount = '';
+                totalAmountDue = baseAmount;
+                lessWT = '';
+                netAmountDue = '';
+                formulaText = '';
+            }
+
+            currentInvoiceData = {
+                partner_id: partnerId,
+                invoice_date: invoiceDate,
+                control_number: controlNumber,
+                partner_acc_name: partnerAccountName,
+                partner_tin: tin,
+                address: address,
+                business_style: businessStyle,
+                service_charge: serviceCharge,
+                from_date: fromDate,
+                to_date: toDate,
+                po_number: poNumber,
+                transaction_count: String(transactionCount),
+                amount: baseAmount,
+                add_amount: addAmountForStorage || '',
+                amount_add: amountAddBase || '',
+                number_of_days: numberOfDaysForStorage || '',
+                formula: incExc,
+                formula_withheld: withholdingTax,
+                formula_calc_text: formulaText,
+                vat_amount: vatAmount !== '' ? formatNumber(vatAmount.toFixed(2)) : '',
+                net_of_vat: netOfVat !== '' ? formatNumber(netOfVat.toFixed(2)) : '',
+                withholding_tax: withholdingTaxAmount !== '' ? formatNumber(withholdingTaxAmount.toFixed(2)) : '',
+                total_amount_due: totalAmountDue !== '' ? formatNumber(totalAmountDue.toFixed(2)) : '',
+                net_amount_due: netAmountDue !== '' ? formatNumber(netAmountDue.toFixed(2)) : ''
+            };
+            
+            let leftColumnParticulars = '';
+            
+            leftColumnParticulars += `
+                <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                    <span>Service Charge:</span>
+                    <span style="font-weight: bold;">${serviceCharge}</span>
+                </div>`;
+            
+            leftColumnParticulars += `
+                <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                    <span>Number of Transactions:</span>
+                    <span style="font-weight: bold;">${formatNumber(transactionCount)}</span>
+                </div>`;
+            
+            leftColumnParticulars += `
+                <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                    <span>Transaction Date From:</span>
+                    <span style="font-weight: bold;">${fromDateFormatted}</span>
+                </div>`;
+            
+            leftColumnParticulars += `
+                <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                    <span>Transaction Date To:</span>
+                    <span style="font-weight: bold;">${toDateFormatted}</span>
+                </div>`;
+            
+            leftColumnParticulars += `
+                <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                    <span>VAT (Incl. or Excl.):</span>
+                    <span style="font-weight: bold;">${incExc}</span>
+                </div>`;
+            
+            leftColumnParticulars += `
+                <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                    <span>With Holding Tax (Y / N):</span>
+                    <span style="font-weight: bold;">${withholdingTax}</span>
+                </div>`;
+            
+            if (window._isSpecialSemiMonthly) {
+                leftColumnParticulars += `
+                    <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                        <span style="color: #8e44ad; font-weight: 600;"><i class="fa-solid fa-star"></i> LDS Special:</span>
+                        <span style="font-weight: bold; color: #8e44ad;">14-day rolling semi-monthly</span>
+                    </div>`;
+            }
+            
+            if (_rangeReusedFromCancelled) {
+                leftColumnParticulars += `
+                    <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                        <span style="color: #e67e22; font-weight: 600;"><i class="fa-solid fa-rotate-left"></i> Note:</span>
+                        <span style="font-weight: bold; color: #e67e22;">Re-used date range (previous SOA was cancelled)</span>
+                    </div>`;
+            }
+
+            if (_rangeAdvancedByUser) {
+                leftColumnParticulars += `
+                    <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                        <span style="color: #6c3483; font-weight: 600;"><i class="fa-solid fa-forward"></i> Note:</span>
+                        <span style="font-weight: bold; color: #6c3483;">Advanced range (no transactions in previous period)</span>
+                    </div>`;
+            }
+            
+            if (isPartner434 && numberOfDays > 0) {
+                leftColumnParticulars += `
+                    <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                        <span>Add Amount:</span>
+                        <span style="font-weight: bold;">${addAmountDisplay}</span>
+                    </div>`;
+            }
+
+            if (!isNonVat) {
+                if (isInclusive && isWithheld) {
+                    leftColumnParticulars += `
+                        <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                            <span style="color: #ff0000">VAT Amount 12% = (Amount * 12%) / 1.12</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                            <span style="color: #ff0000">Net of VAT = Amount - VAT Amount</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                            <span style="color: #ff0000">WTax = Net of VAT * 2%</span>
+                        </div>`;
+                } else if (isInclusive && isNoWithheld) {
+                    leftColumnParticulars += `
+                        <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                            <span style="color: #ff0000">VAT Amount 12% = (Amount * 12%) / 1.12</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                            <span style="color: #ff0000">Net of VAT = Amount - VAT Amount</span>
+                        </div>`;
+                } else if (isExclusive && isWithheld) {
+                    leftColumnParticulars += `
+                        <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                            <span style="color: #ff0000">VAT Amount 12% = Amount * 12%</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                            <span style="color: #ff0000">WTax = Amount * 2%</span>
+                        </div>`;
+                } else if (isExclusive && isNoWithheld) {
+                    leftColumnParticulars += `
+                        <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                            <span style="color: #ff0000">VAT Amount 12% = Amount * 12%</span>
+                        </div>`;
+                }
+            } else {
+                leftColumnParticulars += `
+                    <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                        <span style="color: #ff0000">NON-VAT</span>
+                    </div>`;
+            }
+            
+            const invoiceHTML = `
+                <div class="invoice-preview">
+                    <div class="invoice-title-main">BILLING INVOICE</div>
+                    
+                    <div class="divider"></div>
+                    
+                    <div class="right-side-header">
+                        <div style="display: flex; justify-content: flex-end; align-items: center; gap: 20px; margin-bottom: 5px;">
+                            <span style="font-weight: bold; min-width: 120px; text-align: left;">Invoice Date:</span>
+                            <span style="min-width: 150px; text-align: right; font-weight: bold; color: #e74c3c;">${invoiceDateFormatted}</span>
+                        </div>
+                        <div style="display: flex; justify-content: flex-end; align-items: center; gap: 20px; margin-bottom: 5px;">
+                            <span style="font-weight: bold; min-width: 120px; text-align: left;">Control No:</span>
+                            <span style="min-width: 150px; text-align: right; font-weight: bold; color: #e74c3c;">${controlNumber}</span>
+                        </div>
+                    </div>
+                    
+                    <div class="left-side-details">
+                        <div class="row">
+                            <span class="label">Partner Name: <span style="color: red;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${partnerAccountName}</span></span>
+                        </div>
+                        <div class="row">
+                            <span class="label">TIN: <span style="color: red;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${tin}</span></span>
+                        </div>
+                        <div class="row">
+                            <span class="label">Address: <span style="color: red;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${address}</span></span>
+                        </div>
+                        <div class="row">
+                            <span class="label">Business Style: <span style="color: red;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${businessStyle}</span></span>
+                        </div>
+                    </div>
+                    
+                    <div class="divider"></div>
+                    
+                    <div class="side-labels">
+                        <div class="left-label">PARTICULARS</div>
+                        <div class="right-label">AMOUNT</div>
+                    </div>
+                    
+                    <div class="divider"></div>
+                    
+                    <div style="display: flex; justify-content: space-between; gap: 40px; padding: 5px 0;">
+                        <div style="flex: 1;">
+                            ${leftColumnParticulars}
+                        </div>
+                        
+                        <div style="flex: 1;">
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee; font-weight: bold; font-size: 15px;">
+                                <span>Service Charge Amount:</span>
+                                <span style="font-weight: bold;">₱ ${formatNumber(baseAmount.toFixed(2))}</span>
+                            </div>
+                            ${!isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>VAT Amount:</span>
+                                <span style="font-weight: bold;">₱ ${formatNumber(vatAmount.toFixed(2))}</span>
+                            </div>
+                            ` : `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>VAT Amount:</span>
+                                <span style="font-weight: bold;"></span>
+                            </div>
+                            `}
+                            ${isInclusive && !isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Net of VAT:</span>
+                                <span style="font-weight: bold;">₱ ${formatNumber(netOfVat.toFixed(2))}</span>
+                            </div>
+                            ` : (isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Net of VAT:</span>
+                                <span style="font-weight: bold;"></span>
+                            </div>
+                            ` : `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Net of VAT:</span>
+                                <span style="font-weight: bold;">₱ 0.00</span>
+                            </div>
+                            `)}
+                            ${isWithheld && !isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Withholding Tax:</span>
+                                <span style="font-weight: bold;">₱ ${formatNumber(withholdingTaxAmount.toFixed(2))}</span>
+                            </div>
+                            ` : (isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Withholding Tax:</span>
+                                <span style="font-weight: bold;"></span>
+                            </div>
+                            ` : `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Withholding Tax:</span>
+                                <span style="font-weight: bold;">₱ 0.00</span>
+                            </div>
+                            `)}
+                            ${isPartner434 && numberOfDays > 0 ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Add Amount:</span>
+                                <span style="font-weight: bold;">₱ ${formatNumber(addAmountValue.toFixed(2))}</span>
+                            </div>
+                            ` : ''}
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 2px double #333; font-weight: bold; font-size: 15px; margin-top: 5px;">
+                                <span>Total Amount Due:</span>
+                                <span>₱ ${formatNumber(totalAmountDue.toFixed(2))}</span>
+                            </div>
+                            ${isWithheld && !isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Less: Withholding Tax:</span>
+                                <span>₱ ${formatNumber(lessWT.toFixed(2))}</span>
+                            </div>
+                            ` : (isNonVat ? `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Less: Withholding Tax:</span>
+                                <span></span>
+                            </div>
+                            ` : `
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1px dashed #eee;">
+                                <span>Less: Withholding Tax:</span>
+                                <span>₱ 0.00</span>
+                            </div>
+                            `)}
+                            <div style="display: flex; justify-content: space-between; padding: 1px 0; font-weight: bold; font-size: 16px; border-top: 2px double #333; margin-top: 5px; padding-top: 10px;">
+                                <span>Net Amount Due:</span>
+                                <span>${isNonVat ? '' : '₱ ' + formatNumber(netAmountDue.toFixed(2))}</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="divider-double"></div>
+                    
+                    <div class="signature-fields">
+                        <div class="signature-item">
+                            <div class="signature-line"><?php echo htmlspecialchars($display_name); ?></div>
+                            <span class="signature-label">Accounting Staff</span>
+                        </div>
+                        <div class="signature-item">
+                            <div class="signature-line">&nbsp;</div>
+                            <span class="signature-label">Department Manager</span>
+                        </div>
+                        <div class="signature-item">
+                            <div class="signature-line">&nbsp;</div>
+                            <span class="signature-label">Division Head</span>
+                        </div>
+                    </div>
+
+                    <div style="text-align: center; font-size: 11px; color: #999; margin-top: 10px;">
+                        <i class="fa-regular fa-file-lines"></i> Generated on ${new Date().toLocaleString()}
+                    </div>
+                </div>
+            `;
+            
+            $('#invoicePreview').html(invoiceHTML);
+            openInvoiceModal();
+        }
+        
+        function openInvoiceModal() {
+            $('#invoiceModal').addClass('active');
+            $('body').css('overflow', 'hidden');
+        }
+        
+        function closeInvoiceModal() {
+            $('#invoiceModal').removeClass('active');
+            $('body').css('overflow', '');
+        }
+        
+        $('#closeInvoiceModal').click(closeInvoiceModal);
+        $('#closeInvoiceModalBtn').click(closeInvoiceModal);
+        
+        $('#invoiceModal').click(function(e) {
+            if (e.target === this) {
+                closeInvoiceModal();
+            }
+        });
+        
+        $(document).keydown(function(e) {
+            if (e.key === 'Escape' && $('#invoiceModal').hasClass('active')) {
+                closeInvoiceModal();
+            }
+            if (e.key === 'Escape' && $('#saveInfoModal').hasClass('active')) {
+                closeSaveInfoModal();
+            }
+        });
+        
+        $('#saveInvoiceBtn').click(async function() {
+            if (!currentInvoiceData) {
+                showAlert('Please generate the invoice preview first.', 'warning');
+                return;
+            }
+
+            const $btn = $(this);
+            $btn.prop('disabled', true);
+
+            try {
+                showLoadingModal('Saving...', 'Saving the invoice for review.');
+
+                const response = await $.ajax({
+                    url: window.location.href,
+                    method: 'POST',
+                    data: Object.assign({ action: 'save_invoice' }, currentInvoiceData)
+                });
+
+                hideLoadingModal();
+
+                let result = response;
+                if (typeof result === 'string') {
+                    result = JSON.parse(result);
+                }
+
+                if (result.success) {
+                    openSaveInfoModal(true, result);
+                    closeInvoiceModal();
+                    updateCreateInvoiceButton(true);
+                } else {
+                    openSaveInfoModal(false, result);
+                }
+
+            } catch (error) {
+                hideLoadingModal();
+                console.error('Error saving invoice:', error);
+                openSaveInfoModal(false, { message: 'Could not reach the server. Please try again.' });
+            } finally {
+                $btn.prop('disabled', false);
+            }
+        });
+        
+        function openSaveInfoModal(success, result) {
+            result = result || {};
+            const $modal = $('#saveInfoModal');
+            const $icon = $modal.find('.modal-body > div:first-child');
+            const $iconTag = $icon.find('i');
+            const $title = $modal.find('#saveInfoTitle');
+            const $message = $modal.find('#saveInfoMessage');
+
+            if (success) {
+                $icon.css('color', '#27ae60');
+                $iconTag.attr('class', 'fa-solid fa-circle-check');
+                $title.text('Invoice Saved');
+                $message.html(
+                    'The invoice <strong>' + (result.reference_number || '') + '</strong> was saved for review.'
+                );
+            } else {
+                $icon.css('color', '#ff0000');
+                $iconTag.attr('class', 'fa-solid fa-triangle-exclamation');
+                $title.text('Save Failed');
+                $message.html(result.message || 'Something went wrong while saving the invoice.');
+            }
+
+            $modal.addClass('active');
+            $('body').css('overflow', 'hidden');
+        }
+        
+        function closeSaveInfoModal() {
+            $('#saveInfoModal').removeClass('active');
+            $('body').css('overflow', '');
+        }
+        
+        $('#closeSaveInfoModal').click(closeSaveInfoModal);
+        $('#closeSaveInfoModalBtn').click(closeSaveInfoModal);
+        
+        $('#saveInfoModal').click(function(e) {
+            if (e.target === this) {
+                closeSaveInfoModal();
+            }
+        });
+        
+        let loadingModal = null;
+        
+        function showLoadingModal(title, text) {
+            if (loadingModal) {
+                loadingModal.close();
+            }
+            loadingModal = Swal.fire({
+                title: title || 'Loading...',
+                text: text || 'Please wait while we fetch the data.',
+                allowOutsideClick: false,
+                allowEscapeKey: false,
+                showConfirmButton: false,
+                showCancelButton: false,
+                didOpen: function() {
+                    Swal.showLoading();
+                }
+            });
+        }
+        
+        function hideLoadingModal() {
+            if (loadingModal) {
+                loadingModal.close();
+                loadingModal = null;
+            }
+        }
+    });
+    </script>
+</body>
+</html>
