@@ -100,8 +100,6 @@ $date_only_search = (
 
 // ------------------------------------------------------------
 // 2b. SESSION CACHE — try to reuse recon results from main page
-//     Main page must populate: $_SESSION['recon_export'][$key]
-//     where $key = md5(partner|from|to|ref)  (see notes at end)
 // ------------------------------------------------------------
 $cache_key = md5($partner_id . '|' . $date_from . '|' . $date_to . '|' . $reference_no);
 $transactions          = null;
@@ -380,7 +378,7 @@ if ($transactions === null) {
             $gle_by_ref += $fetch_gle_by_refs($refs_to_lookup);
         }
 
-        // 2) Partner-based (SQL now returns only close matches; similar_text is a safety net)
+        // 2) Partner-based — find candidate refs via 428101, then expand to FULL journal
         if ($partner_id !== '' && !$is_all_partners && $partner_name !== '') {
             $partner_hits = $fetch_gle_by_partner($partner_name, $date_from_val, $date_to_val);
 
@@ -402,9 +400,14 @@ if ($transactions === null) {
                 $partner_hits = $filtered;
             }
 
-            foreach ($partner_hits as $ref => $rows) {
-                foreach ($rows as $row) {
-                    $gle_by_ref[$ref][] = $row;
+            // Expand every partner-matched reference to its complete GLE journal lines
+            if (!empty($partner_hits)) {
+                $partner_refs = array_keys($partner_hits);
+                $full_gle_for_partner_refs = $fetch_gle_by_refs($partner_refs);
+                foreach ($full_gle_for_partner_refs as $ref => $rows) {
+                    foreach ($rows as $row) {
+                        $gle_by_ref[$ref][] = $row;
+                    }
                 }
             }
         }

@@ -1,5 +1,5 @@
 <?php
-// config.php — handles BOTH connections (mldb + glcs_db)
+// config.php — handles BOTH connections (mldb local/exactdb + glcs_db exactdb)
 
 // ------------------------------------------------------------
 // Detect environment

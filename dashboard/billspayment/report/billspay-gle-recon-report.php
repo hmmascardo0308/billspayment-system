@@ -195,12 +195,15 @@ if (isset($_GET['filter'])) {
         if ($date_only_search) {
             $sql .= " AND (t.`{$reference_column}` LIKE 'APB%' OR t.`{$reference_column}` LIKE 'EBP%' OR t.`{$reference_column}` LIKE 'KBP%' OR t.`{$reference_column}` LIKE 'WQP%')";
         }
+     $sql .= " ORDER BY t.datetime DESC";
 
-        $sql .= " ORDER BY t.datetime DESC";
-        if ($partner_id === '' && !$date_only_search && !$is_all_partners) {
+        // Protective LIMIT
+        if ($date_only_search || $is_all_partners) {
+            $sql .= " LIMIT 40000";
+        } elseif ($partner_id !== '' && !$is_all_partners) {
+            $sql .= " LIMIT 8000";   // single partner – still protected
+        } else {
             $sql .= " LIMIT 500";
-        } elseif ($date_only_search || $is_all_partners) {
-            $sql .= " LIMIT 3000"; // safety for "ALL" searches
         }
 
         $local_rows = [];
@@ -412,6 +415,10 @@ if (isset($_GET['filter'])) {
             }
 
             // 2) Partner-based pull
+            // First find candidate refs via gl_code 428101 + partner name match,
+            // then expand those refs to the FULL set of GLE lines (all GL codes).
+            // This ensures GLE-only records show complete multi-line journal detail
+            // in both the UI and the PDF export.
             if ($partner_id !== '' && !$is_all_partners && $partner_name !== '') {
                 $partner_hits = $fetch_gle_by_partner($partner_name, $date_from_val, $date_to_val);
 
@@ -433,9 +440,14 @@ if (isset($_GET['filter'])) {
                     $partner_hits = $filtered;
                 }
 
-                foreach ($partner_hits as $ref => $rows) {
-                    foreach ($rows as $row) {
-                        $gle_by_ref[$ref][] = $row;
+                // Expand every partner-matched reference to its complete GLE journal
+                if (!empty($partner_hits)) {
+                    $partner_refs = array_keys($partner_hits);
+                    $full_gle_for_partner_refs = $fetch_gle_by_refs($partner_refs);
+                    foreach ($full_gle_for_partner_refs as $ref => $rows) {
+                        foreach ($rows as $row) {
+                            $gle_by_ref[$ref][] = $row;
+                        }
                     }
                 }
             }
@@ -501,6 +513,8 @@ if (isset($_GET['filter'])) {
         // ------------------------------------------------------------
         // CALCULATE OVERALL TOTALS & BUILD CURRENT PAGE
         // ------------------------------------------------------------
+        $all_transactions = []; // Store all calculated rows before pagination filter
+
         foreach ($all_ref_keys as $idx => $ref) {
             $local_group = $local_by_ref[$ref] ?? [];
             $gle_rows    = $gle_by_ref[$ref]   ?? [];
@@ -560,71 +574,91 @@ if (isset($_GET['filter'])) {
                 $total_credit += $gle_credit_total;
             }
 
-            // ------------------------------------------------------------
-            // IF ROW IS ON CURRENT PAGE, BUILD TRANSACTION ROW AND PAGE TOTALS
-            // ------------------------------------------------------------
-            if ($idx >= $page_offset && $idx < ($page_offset + RECON_PER_PAGE)) {
-                $local_meta = null;
-                foreach ($local_group as $lg) {
-                    if ($local_meta === null) $local_meta = $lg;
-                }
-
-                usort($gle_rows, function ($a, $b) {
-                    $cmp = strcmp((string)($a['entry_number'] ?? ''), (string)($b['entry_number'] ?? ''));
-                    if ($cmp !== 0) return $cmp;
-                    return strcmp((string)($a['gl_code'] ?? ''), (string)($b['gl_code'] ?? ''));
-                });
-
-                $first_gle = $gle_rows[0] ?? null;
-
-                $transactions[] = [
-                    'partner_id_kpx'     => $local_meta['partner_id_kpx'] ?? null,
-                    'partner_name'       => $local_meta['partner_name']   ?? null,
-                    'reference_no'       => $ref,
-                    'datetime'           => $local_meta['datetime']       ?? ($first_gle['datetime'] ?? null),
-                    'amount_paid'        => $has_local ? $amt   : null,
-                    'charge_to_customer' => $has_local ? $chg_c : null,
-                    'charge_to_partner'  => $has_local ? $chg_p : null,
-                    'gle_row_count'      => count($gle_rows),
-                    'gle_debit_total'    => $has_gle ? $gle_debit_total  : null,
-                    'gle_credit_total'   => $has_gle ? $gle_credit_total : null,
-                    'gle_rows'           => $gle_rows,
-                    'gle_partner_id'     => $first_gle['partner_id'] ?? null,
-                    'gle_desc'           => $first_gle['desc']       ?? null,
-                    'gle_datetime'       => $first_gle['datetime']   ?? null,
-                    'match_status'       => $match_status,
-                    'bp_total'           => $has_local ? $bp_reference_total : null,
-                    'variance_debit'     => $has_local && $has_gle ? $reference_variance_debit : null,
-                    'variance_credit'    => $has_local && $has_gle ? $reference_variance_credit : null,
-                    'has_local'          => $has_local,
-                    'has_gle'            => $has_gle,
-                ];
-
-                // ADD TO PAGE TOTALS AND COUNTS
-                if ($match_status === 'MATCHED') {
-                    $page_matched_count++;
-                } elseif ($match_status === 'VARIANCE') {
-                    $page_variance_count++;
-                } elseif ($match_status === 'UNMATCHED (BP only)') {
-                    $page_unmatched_local++;
-                } else {
-                    $page_unmatched_gle++;
-                }
-
-                if ($has_local) {
-                    $page_amount_paid     += $amt;
-                    $page_charge_customer += $chg_c;
-                    $page_charge_partner  += $chg_p;
-                }
-                if ($has_gle) {
-                    $page_debit  += $gle_debit_total;
-                    $page_credit += $gle_credit_total;
-                }
+            $local_meta = null;
+            foreach ($local_group as $lg) {
+                if ($local_meta === null) $local_meta = $lg;
             }
+
+            usort($gle_rows, function ($a, $b) {
+                $cmp = strcmp((string)($a['entry_number'] ?? ''), (string)($b['entry_number'] ?? ''));
+                if ($cmp !== 0) return $cmp;
+                return strcmp((string)($a['gl_code'] ?? ''), (string)($b['gl_code'] ?? ''));
+            });
+
+            $first_gle = $gle_rows[0] ?? null;
+
+            $all_transactions[] = [
+                'partner_id_kpx'     => $local_meta['partner_id_kpx'] ?? null,
+                'partner_name'       => $local_meta['partner_name']   ?? null,
+                'reference_no'       => $ref,
+                'datetime'           => $local_meta['datetime']       ?? ($first_gle['datetime'] ?? null),
+                'amount_paid'        => $has_local ? $amt   : null,
+                'charge_to_customer' => $has_local ? $chg_c : null,
+                'charge_to_partner'  => $has_local ? $chg_p : null,
+                'gle_row_count'      => count($gle_rows),
+                'gle_debit_total'    => $has_gle ? $gle_debit_total  : null,
+                'gle_credit_total'   => $has_gle ? $gle_credit_total : null,
+                'gle_rows'           => $gle_rows,
+                'gle_partner_id'     => $first_gle['partner_id'] ?? null,
+                'gle_desc'           => $first_gle['desc']       ?? null,
+                'gle_datetime'       => $first_gle['datetime']   ?? null,
+                'match_status'       => $match_status,
+                'bp_total'           => $has_local ? $bp_reference_total : null,
+                'variance_debit'     => $has_local && $has_gle ? $reference_variance_debit : null,
+                'variance_credit'    => $has_local && $has_gle ? $reference_variance_credit : null,
+                'has_local'          => $has_local,
+                'has_gle'            => $has_gle,
+            ];
         }
 
-        // Re-slice for Pager HTML display
-        $page_ref_keys = array_slice($all_ref_keys, $page_offset, RECON_PER_PAGE);
+        // ------------------------------------------------------------
+        // APPLY DISPLAY FILTER BEFORE PAGINATION
+        // ------------------------------------------------------------
+        $filtered_transactions = $all_transactions;
+        if ($display_mode === 'variance') {
+            $filtered_transactions = array_values(array_filter($all_transactions, function ($row) {
+                return $row['match_status'] !== 'MATCHED';
+            }));
+        } elseif ($display_mode === 'matched') {
+            $filtered_transactions = array_values(array_filter($all_transactions, function ($row) {
+                return $row['match_status'] === 'MATCHED';
+            }));
+        }
+
+        // ------------------------------------------------------------
+        // RECALCULATE PAGINATION BASED ON FILTERED RESULTS
+        // ------------------------------------------------------------
+        $total_refs  = count($filtered_transactions);
+        $total_pages = $total_refs > 0 ? (int)ceil($total_refs / RECON_PER_PAGE) : 1;
+        if ($current_page > $total_pages) $current_page = $total_pages;
+        $page_offset = ($current_page - 1) * RECON_PER_PAGE;
+
+        $transactions = array_slice($filtered_transactions, $page_offset, RECON_PER_PAGE);
+
+        // ------------------------------------------------------------
+        // CALCULATE PAGE TOTALS & COUNTS
+        // ------------------------------------------------------------
+        foreach ($transactions as $row) {
+            if ($row['match_status'] === 'MATCHED') {
+                $page_matched_count++;
+            } elseif ($row['match_status'] === 'VARIANCE') {
+                $page_variance_count++;
+            } elseif ($row['match_status'] === 'UNMATCHED (BP only)') {
+                $page_unmatched_local++;
+            } else {
+                $page_unmatched_gle++;
+            }
+
+            if ($row['has_local']) {
+                $page_amount_paid     += (float)$row['amount_paid'];
+                $page_charge_customer += (float)$row['charge_to_customer'];
+                $page_charge_partner  += (float)$row['charge_to_partner'];
+            }
+            if ($row['has_gle']) {
+                $page_debit  += (float)$row['gle_debit_total'];
+                $page_credit += (float)$row['gle_credit_total'];
+            }
+        }
 
         // Build the pager HTML
         if ($total_pages > 1) {
@@ -667,19 +701,8 @@ $total_bp_combined = $total_amount_paid + $total_charge_customer + $total_charge
 // Combined totals for Page Footer and Page Summary Cards
 $page_bp_combined = $page_amount_paid + $page_charge_customer + $page_charge_partner;
 
-// Display filtering (page-local set)
+// Display transactions to render (already sliced, but used for the count display)
 $display_transactions = $transactions;
-if (isset($_GET['filter'])) {
-    if ($display_mode === 'variance') {
-        $display_transactions = array_values(array_filter($transactions, function ($row) {
-            return $row['match_status'] !== 'MATCHED';
-        }));
-    } elseif ($display_mode === 'matched') {
-        $display_transactions = array_values(array_filter($transactions, function ($row) {
-            return $row['match_status'] === 'MATCHED';
-        }));
-    }
-}
 
 // Variances (OVERALL)
 $variance_vs_debit  = $total_bp_combined - $total_debit;
