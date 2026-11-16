@@ -733,3 +733,30 @@ Stack trace:
 [30-Oct-2026 09:21:00 Asia/Manila] === STARTING LOOKUP ===
 [30-Oct-2026 09:21:00 Asia/Manila] Total rows to lookup: 21
 [30-Oct-2026 09:21:00 Asia/Manila] Lookup completed. Processed: 21 rows
+[09-Nov-2026 08:02:41 Asia/Manila] === STARTING LOOKUP ===
+[09-Nov-2026 08:02:41 Asia/Manila] Total rows to lookup: 4
+[09-Nov-2026 08:02:41 Asia/Manila] Lookup completed. Processed: 4 rows
+[09-Nov-2026 08:02:42 Asia/Manila] === STARTING IMPORT ===
+[09-Nov-2026 08:02:42 Asia/Manila] Total rows to import: 4
+[09-Nov-2026 08:02:42 Asia/Manila] Late-posting check: 0 report_date(s) already exist in DB.
+[09-Nov-2026 08:02:42 Asia/Manila] Import completed. Inserted: 4 (Late Posting: 0), Duplicates: 0, Errors: 0
+[09-Nov-2026 08:02:47 Asia/Manila] === STARTING LOOKUP ===
+[09-Nov-2026 08:02:47 Asia/Manila] Total rows to lookup: 2
+[09-Nov-2026 08:02:47 Asia/Manila] Lookup completed. Processed: 2 rows
+[09-Nov-2026 08:02:48 Asia/Manila] === STARTING IMPORT ===
+[09-Nov-2026 08:02:48 Asia/Manila] Total rows to import: 2
+[09-Nov-2026 08:02:48 Asia/Manila] Late-posting check: 1 report_date(s) already exist in DB.
+[09-Nov-2026 08:02:48 Asia/Manila] Import completed. Inserted: 2 (Late Posting: 2), Duplicates: 0, Errors: 0
+[10-Nov-2026 08:20:14 Asia/Manila] === STARTING LOOKUP ===
+[10-Nov-2026 08:20:14 Asia/Manila] Total rows to lookup: 21
+[10-Nov-2026 08:20:14 Asia/Manila] Lookup completed. Processed: 21 rows
+[11-Nov-2026 10:59:17 Asia/Manila] === STARTING LOOKUP ===
+[11-Nov-2026 10:59:17 Asia/Manila] Total rows to lookup: 26927
+[11-Nov-2026 10:59:26 Asia/Manila] Lookup completed. Processed: 26927 rows
+[13-Nov-2026 09:30:41 Asia/Manila] === STARTING LOOKUP ===
+[13-Nov-2026 09:30:41 Asia/Manila] Total rows to lookup: 37859
+[13-Nov-2026 09:30:56 Asia/Manila] Lookup completed. Processed: 37859 rows
+[13-Nov-2026 09:31:06 Asia/Manila] === STARTING IMPORT ===
+[13-Nov-2026 09:31:06 Asia/Manila] Total rows to import: 37859
+[13-Nov-2026 09:31:06 Asia/Manila] Late-posting check: 0 report_date(s) already exist in DB.
+[13-Nov-2026 09:41:39 Asia/Manila] Import completed. Inserted: 37859 (Late Posting: 0), Duplicates: 0, Errors: 0

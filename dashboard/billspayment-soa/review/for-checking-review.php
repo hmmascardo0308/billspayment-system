@@ -3,7 +3,6 @@
 require_once __DIR__ . '/../../../config/config.php';
 require_once __DIR__ . '/../../../vendor/autoload.php';
 
-
 // Start the session
 session_start();
 // include shared permission helpers and resolve current user
@@ -308,440 +307,12 @@ if (isset($_POST['EditConfirmBtn'])) {
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="../../../assets/js/sweetalert2.all.min.js"></script>
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+    <link rel="stylesheet" href="for-checking.css?v=<?= time(); ?>">
+
 
     <link rel="icon" href="../../../images/MLW logo.png" type="image/png">
 
-    <style>
-        /* ===== DESIGN TOKENS ===== */
-        :root {
-            --brand:         #C62828;
-            --brand-hover:   #B71C1C;
-            --brand-light:   #FFEBEE;
-            --brand-dark:    #8E0000;
-            --success:       #2E7D32;
-            --success-lt:    #E8F5E9;
-            --warning:       #E65100;
-            --n-50:    #FAFAFA;
-            --n-100:   #F5F5F5;
-            --n-200:   #EEEEEE;
-            --n-300:   #E0E0E0;
-            --n-400:   #BDBDBD;
-            --n-500:   #9E9E9E;
-            --n-600:   #757575;
-            --n-700:   #616161;
-            --n-800:   #424242;
-            --n-900:   #212121;
-            --shadow-sm: 0 1px 3px rgba(0,0,0,.10), 0 1px 2px rgba(0,0,0,.06);
-            --shadow:    0 4px 6px rgba(0,0,0,.08), 0 2px 4px rgba(0,0,0,.06);
-            --shadow-lg: 0 10px 20px rgba(0,0,0,.10), 0 4px 8px rgba(0,0,0,.06);
-            --shadow-xl: 0 25px 50px rgba(0,0,0,.15);
-            --radius-sm: 6px;
-            --radius:    10px;
-            --radius-lg: 14px;
-            --ease: cubic-bezier(.4,0,.2,1);
-            --row-h: 40px;
-            --hdr-h: 44px;
-        }
 
-        /* ===== MICONS helper ===== */
-        .micon,
-        .material-icons-round { font-family: 'Material Icons Round'; font-style: normal; font-size: 18px;
-                 line-height: 1; vertical-align: middle; }
-        .micon-sm  { font-size: 16px; }
-        .micon-hdr { font-size: 22px; vertical-align: middle; }
-
-        /* ===== TOOLBAR ===== */
-        .tbl-toolbar {
-            display: flex; align-items: center; gap: 10px;
-            margin-bottom: 14px; flex-wrap: wrap;
-        }
-        .btn-action {
-            display: inline-flex; align-items: center; gap: 6px;
-            padding: 8px 18px; border: none; border-radius: var(--radius-sm);
-            font-weight: 600; font-size: 13.5px; cursor: pointer;
-            transition: background .18s var(--ease), transform .1s var(--ease), box-shadow .18s var(--ease);
-            box-shadow: var(--shadow-sm); letter-spacing: .01em;
-        }
-        .btn-action:hover  { transform: translateY(-1px); box-shadow: var(--shadow); }
-        .btn-action:active { transform: translateY(0); }
-
-        /* Bulk Review: disabled/grey until selection */
-        #forreviewed {
-            background: var(--n-400); color: #fff;
-            pointer-events: none; opacity: .7; cursor: not-allowed;
-        }
-        #forreviewed.enabled {
-            background: var(--success); pointer-events: auto; opacity: 1; cursor: pointer;
-        }
-        #forreviewed.enabled:hover { background: #1b5e20; }
-
-        #forcancelled { background: var(--brand); color: #fff; }
-        #forcancelled:hover { background: var(--brand-hover); }
-
-        /* ===== PAGINATION ===== */
-        .pagination-bar {
-            display: flex; align-items: center; justify-content: space-between;
-            margin-top: 12px; flex-wrap: wrap; gap: 8px;
-        }
-        .pagination-info { font-size: 12.5px; color: var(--n-600); }
-        .pagination-btns { display: flex; gap: 4px; }
-        .pg-btn {
-            display: inline-flex; align-items: center; justify-content: center;
-            width: 32px; height: 32px; border: 1px solid var(--n-300);
-            border-radius: var(--radius-sm); background: #fff;
-            cursor: pointer; font-size: 13px; color: var(--n-700);
-            transition: background .14s, border-color .14s, color .14s;
-            user-select: none;
-        }
-        .pg-btn:hover { background: var(--brand-light); border-color: var(--brand); color: var(--brand); }
-        .pg-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 700; }
-        .pg-btn[disabled] { opacity: .4; pointer-events: none; }
-
-        /* ===== CUSTOM CHECKBOX (grid trick for perfect centring) ===== */
-        .cbx {
-            appearance: none;
-            -webkit-appearance: none;
-            display: inline-grid;
-            place-items: center;
-            width: 16px; height: 16px;
-            border: 2px solid var(--n-400);
-            border-radius: 3px;
-            background: #fff;
-            cursor: pointer;
-            flex-shrink: 0;
-            vertical-align: middle;
-            transition: background .12s, border-color .12s;
-        }
-        .cbx::before {
-            content: "";
-            width: 9px; height: 9px;
-            clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
-            transform: scale(0);
-            background: #fff;
-            transition: transform .1s var(--ease);
-        }
-        .cbx:hover    { border-color: var(--brand); }
-        .cbx:checked  { background: var(--brand); border-color: var(--brand); }
-        .cbx:checked::before { transform: scale(1); }
-        .cbx:focus-visible { outline: 3px solid var(--brand-light); outline-offset: 2px; }
-
-        /* slightly bigger for header */
-        .cbx-lg { width: 17px; height: 17px; }
-        .cbx-lg::before { width: 10px; height: 10px; }
-
-        .select-all-wrap {
-            display: flex; flex-direction: column; align-items: center; gap: 4px;
-            cursor: pointer; user-select: none;
-        }
-        .select-all-label {
-            font-size: 9px; font-weight: 700; color: var(--n-600);
-            text-transform: uppercase; letter-spacing: .05em; line-height: 1;
-        }
-
-        /* ===== TABLE ===== */
-        .tbl-scroll-wrapper {
-            overflow: auto;
-            border: 1px solid var(--n-200);
-            border-radius: var(--radius);
-            box-shadow: var(--shadow-sm);
-            max-height: calc(10 * var(--row-h) + var(--hdr-h) + 16px);
-        }
-        table.soa-table {
-            width: 100%;
-            min-width: max-content;
-            border-collapse: collapse;
-            white-space: nowrap;
-            table-layout: auto !important;
-        }
-        table.soa-table th,
-        table.soa-table td {
-            width: auto !important;
-            max-width: none !important;
-            min-width: 0;
-            white-space: nowrap !important;
-            overflow: visible !important;
-        }
-        table.soa-table thead th {
-            position: sticky; top: 0; z-index: 2;
-            background: var(--n-50);
-            padding: 0 14px;
-            height: var(--hdr-h);
-            font-size: 12px; font-weight: 700;
-            text-transform: uppercase; letter-spacing: .05em;
-            color: var(--n-700);
-            border-bottom: 2px solid var(--n-200);
-            border-right: 1px solid var(--n-200);
-            text-align: center;
-            display: table-cell !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-            line-height: 1.2 !important;
-            -webkit-text-fill-color: currentColor;
-        }
-        table.soa-table thead th:last-child { border-right: none; }
-        table.soa-table thead th.th-check {
-            padding: 0 8px; min-width: 60px; width: 60px;
-        }
-        table.soa-table tbody tr {
-            height: var(--row-h);
-            cursor: pointer;
-            transition: background .12s;
-        }
-        table.soa-table tbody tr:hover         { background: var(--brand-light); }
-        table.soa-table tbody tr.selected-row  { background: #FFCDD2; }
-        table.soa-table tbody tr.selected-row td { color: var(--brand-dark); }
-        table.soa-table tbody td {
-            padding: 0 14px; font-size: 13px;
-            color: var(--n-800);
-            border-bottom: 1px solid var(--n-100);
-            border-right: 1px solid var(--n-100);
-            overflow: visible;
-            vertical-align: middle;
-            display: table-cell !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-            line-height: 1.25 !important;
-            -webkit-text-fill-color: currentColor;
-        }
-        table.soa-table tbody td:last-child { border-right: none; }
-        table.soa-table tbody td.td-check { text-align: center; }
-        table.soa-table td.soa-ta-num,
-        table.soa-table th.soa-ta-num { text-align: right; }
-        table.soa-table td.soa-ta-center,
-        table.soa-table th.soa-ta-center { text-align: center; }
-        table.soa-table td.soa-ta-left,
-        table.soa-table th.soa-ta-left { text-align: left; }
-
-        /* hard override against legacy table skins from included stylesheets */
-        .bp-card table.soa-table thead th,
-        .bp-card table.soa-table tbody td {
-            color: #424242 !important;
-            background-clip: padding-box;
-            text-indent: 0 !important;
-            font-size: inherit !important;
-        }
-
-        .col-ref { min-width: 140px; }
-        .col-partner { min-width: 250px; }
-        .col-tin { min-width: 150px; }
-        .col-address { min-width: 260px; }
-        .col-business { min-width: 190px; }
-        .col-service { min-width: 120px; }
-        .col-date { min-width: 120px; }
-        .col-po { min-width: 140px; }
-        .col-count { min-width: 110px; }
-        .col-amount { min-width: 130px; }
-        .col-user { min-width: 150px; }
-
-        /* ===== CONTAINER ===== */
-        .container-fluid { padding: 12px; margin: 0; }
-
-        /* ===== MODAL OVERLAY ===== */
-        .modal-overlay {
-            display: none; position: fixed; inset: 0;
-            background: rgba(10,10,10,.5);
-            backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
-            z-index: 1050;
-            align-items: center; justify-content: center; padding: 16px;
-        }
-        .modal-overlay.active { display: flex; }
-
-        .modal-card {
-            background: #fff; border-radius: var(--radius-lg);
-            box-shadow: var(--shadow-xl);
-            width: 100%; max-width: 520px;
-            animation: mcSlide .2s var(--ease);
-            overflow: hidden;
-        }
-        .modal-card-wide { max-width: 880px; }
-        @keyframes mcSlide { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-
-        /* Red header */
-        .modal-card-header {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 14px 20px;
-            background: var(--brand);
-            color: #fff;
-        }
-        .modal-card-header h3 {
-            margin: 0; font-size: 15px; font-weight: 600;
-            color: #fff; display: flex; align-items: center; gap: 8px;
-        }
-        .modal-hdr-icon {
-            width: 30px; height: 30px; border-radius: 50%;
-            background: rgba(255,255,255,.2);
-            display: flex; align-items: center; justify-content: center;
-            font-size: 16px; flex-shrink: 0;
-        }
-        .modal-close-btn {
-            background: none; border: none; cursor: pointer;
-            color: rgba(255,255,255,.8); font-size: 22px; line-height: 1;
-            padding: 2px 6px; border-radius: 4px;
-            transition: color .12s, background .12s;
-        }
-        .modal-close-btn:hover { color: #fff; background: rgba(255,255,255,.15); }
-
-        .modal-card-body  { padding: 20px 22px; }
-        .modal-card-footer {
-            padding: 12px 20px 16px;
-            display: flex; align-items: center; justify-content: flex-end;
-            gap: 8px; flex-wrap: wrap;
-            border-top: 1px solid var(--n-200);
-        }
-
-        /* ===== REVIEW MODAL – 2-COLUMN BODY ===== */
-        .rv-body {
-            display: grid; grid-template-columns: 1fr 1fr;
-            gap: 0;
-        }
-        .rv-col { padding: 18px 22px; }
-        .rv-col + .rv-col { border-left: 1px solid var(--n-200); background: var(--n-50); }
-        .rv-section-label {
-            font-size: 10.5px; font-weight: 700; text-transform: uppercase;
-            letter-spacing: .06em; color: var(--brand); margin-bottom: 12px;
-            padding-bottom: 6px; border-bottom: 2px solid var(--brand-light);
-        }
-        .rv-row {
-            display: flex; align-items: baseline; gap: 8px;
-            margin-bottom: 10px; font-size: 13px;
-        }
-        .rv-lbl {
-            min-width: 110px; font-size: 11px; font-weight: 600;
-            color: var(--n-600); text-transform: uppercase; letter-spacing: .03em;
-            flex-shrink: 0; padding-top: 1px;
-        }
-        .rv-val {
-            flex: 1; color: var(--n-900); font-weight: 500; word-break: break-word;
-        }
-        .rv-amt { font-variant-numeric: tabular-nums; }
-        hr.rv-hr { border: none; border-top: 1px dashed var(--n-200); margin: 10px 0; }
-
-        .peso-inline {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            font-variant-numeric: tabular-nums;
-        }
-
-        /* ===== MODAL BUTTONS ===== */
-        .btn-modal {
-            display: inline-flex; align-items: center; gap: 6px;
-            padding: 8px 18px; border: none; border-radius: var(--radius-sm);
-            font-size: 13px; font-weight: 600; cursor: pointer;
-            transition: background .14s var(--ease), transform .1s, box-shadow .14s;
-            box-shadow: var(--shadow-sm);
-        }
-        .btn-modal:hover  { transform: translateY(-1px); box-shadow: var(--shadow); }
-        .btn-modal:active { transform: translateY(0); }
-
-        .btn-red     { background: var(--brand); color: #fff; }
-        .btn-red:hover     { background: var(--brand-hover); }
-        .btn-green   { background: var(--success); color: #fff; }
-        .btn-green:hover   { background: #1b5e20; }
-        .btn-edit    { background: #1565C0; color: #fff; }
-        .btn-edit:hover    { background: #0D47A1; }
-        .btn-ghost   { background: var(--n-100); color: var(--n-800); border: 1px solid var(--n-300); }
-        .btn-ghost:hover   { background: var(--n-200); }
-        .btn-outline-red   { background: #fff; color: var(--brand); border: 1.5px solid var(--brand); }
-        .btn-outline-red:hover { background: var(--brand-light); }
-
-        /* ===== EDIT MODAL FIELDS ===== */
-        .edit-field-row { display: flex; align-items: center; gap: 10px; margin-bottom: 11px; }
-        .edit-field-row label {
-            min-width: 130px; font-size: 11px; font-weight: 700;
-            color: var(--n-600); text-transform: uppercase; letter-spacing: .03em; flex-shrink: 0;
-        }
-        .edit-input-wrap { flex: 1; display: flex; align-items: center; gap: 6px; }
-        .edit-peso { font-size: 13px; color: var(--n-600); flex-shrink: 0; }
-        .edit-inp {
-            flex: 1; border: 1.5px solid var(--n-200); border-radius: var(--radius-sm);
-            padding: 7px 10px; font-size: 13px; color: var(--n-900);
-            background: #fff; outline: none;
-            transition: border-color .14s;
-        }
-        .edit-inp:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-light); }
-        .edit-inp[readonly] { background: var(--n-50); color: var(--n-600); }
-        .field-divider { border: none; border-top: 1px dashed var(--n-200); margin: 12px 0; }
-
-        .edit-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0;
-        }
-        .edit-col { padding: 18px 22px; }
-        .edit-col + .edit-col {
-            border-left: 1px solid var(--n-200);
-            background: var(--n-50);
-        }
-        .edit-section-label {
-            font-size: 10.5px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: .06em;
-            color: var(--brand);
-            margin-bottom: 12px;
-            padding-bottom: 6px;
-            border-bottom: 2px solid var(--brand-light);
-        }
-        .edit-col .edit-field-row label { min-width: 125px; }
-
-        /* ===== CANCEL TEXTAREA ===== */
-        .cancel-textarea {
-            width: 100%; min-height: 100px;
-            border: 1.5px solid var(--n-200); border-radius: var(--radius-sm);
-            padding: 10px 12px; font-size: 13.5px; color: var(--n-900);
-            resize: vertical; outline: none; font-family: inherit; line-height: 1.5;
-            transition: border-color .14s, box-shadow .14s;
-            box-sizing: border-box;
-        }
-        .cancel-textarea:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-light); }
-        .cancel-textarea.error { border-color: var(--brand); }
-        .char-count { font-size: 11px; color: var(--n-500); text-align: right; margin-top: 4px; }
-
-        /* ===== CONFIRM MINI-MODAL ===== */
-        .confirm-body { padding: 24px 24px 16px; text-align: center; }
-        .confirm-icon-wrap {
-            width: 60px; height: 60px; border-radius: 50%;
-            display: flex; align-items: center; justify-content: center;
-            margin: 0 auto 14px;
-        }
-        .confirm-body h4 { margin: 0 0 8px; font-size: 17px; font-weight: 700; color: var(--n-900); }
-        .confirm-body p  { margin: 0; font-size: 13px; color: var(--n-600); line-height: 1.6; }
-
-        @media (max-width: 960px) {
-            .rv-body,
-            .edit-grid { grid-template-columns: 1fr; }
-            .rv-col + .rv-col,
-            .edit-col + .edit-col { border-left: none; border-top: 1px solid var(--n-200); }
-        }
-
-        /* ===== MESSAGE MODAL ===== */
-        .message-modal {
-            display: none; position: fixed; inset: 0;
-            background: rgba(10,10,10,.5);
-            backdrop-filter: blur(3px);
-            z-index: 1100; align-items: center; justify-content: center;
-        }
-        .message-modal.active { display: flex; }
-        .message-modal-content {
-            background: #fff; border-radius: var(--radius-lg);
-            padding: 30px 36px; text-align: center;
-            max-width: 380px; width: 90%;
-            box-shadow: var(--shadow-xl);
-            animation: mcSlide .2s var(--ease);
-        }
-        #modalMessage { font-size: 14px; color: var(--n-700); line-height: 1.6; display: block; margin-bottom: 16px; }
-        .icon-container { margin-bottom: 10px; }
-        .icon     { font-size: 40px; color: var(--success); }
-        .err-icon { font-size: 40px; color: var(--brand); }
-        .close-button {
-            background: var(--brand); color: #fff; border: none;
-            padding: 8px 28px; border-radius: var(--radius-sm);
-            font-size: 13px; font-weight: 600; cursor: pointer;
-            transition: background .14s;
-        }
-        .close-button:hover { background: var(--brand-hover); }
-    </style>
 </head>
 
 <body>
@@ -770,6 +341,16 @@ if (isset($_POST['EditConfirmBtn'])) {
                     <button type="button" id="forcancelled" class="btn-action" name="cancelled">
                         <span class="micon micon-sm">block</span> Cancel Selected
                     </button>
+
+                    <!-- SEARCH BAR -->
+                    <div class="search-wrapper" id="searchWrapper">
+                        <span class="material-icons-round search-icon" aria-hidden="true">search</span>
+                        <input type="text" id="partnerSearch" class="search-input"
+                               placeholder="Search partner name..."
+                               autocomplete="off"
+                               aria-label="Search by partner name">
+                        <button type="button" class="search-clear-btn" id="searchClearBtn" title="Clear search">&times;</button>
+                    </div>
                 </div>
                 <div class="tbl-scroll-wrapper">
                 <table class="soa-table">
@@ -1204,31 +785,53 @@ if (isset($_POST['EditConfirmBtn'])) {
     </div>
     <script>
         /* ================================================================
-           PAGINATION
+           PAGINATION + PARTNER NAME SEARCH
         ================================================================ */
-        var ROWS_PER_PAGE = 10;
+        var ROWS_PER_PAGE = 25;
         var currentPage   = 1;
+        var searchTerm    = '';
 
         function getAllRows() {
             return Array.from(document.querySelectorAll('#tableBody .table-row'));
         }
 
-        function renderPage(page) {
-            var rows  = getAllRows();
-            var total = rows.length;
-            var pages = Math.max(1, Math.ceil(total / ROWS_PER_PAGE));
-            currentPage = Math.min(Math.max(1, page), pages);
+        /* Return only rows whose partner-name cell (4th td) matches the term */
+        function getFilteredRows() {
+            var rows = getAllRows();
+            if (!searchTerm) return rows;
+            return rows.filter(function (r) {
+                var partnerCell = r.querySelector('td:nth-child(4)');
+                if (!partnerCell) return false;
+                return partnerCell.textContent.toLowerCase().indexOf(searchTerm) !== -1;
+            });
+        }
 
-            rows.forEach(function (r, i) {
+        function renderPage(page) {
+            var allRows   = getAllRows();
+            var matchRows = getFilteredRows();
+            var total     = matchRows.length;
+            var pages     = Math.max(1, Math.ceil(total / ROWS_PER_PAGE));
+            currentPage   = Math.min(Math.max(1, page), pages);
+
+            /* Hide every row first, then show the matching ones on this page */
+            allRows.forEach(function (r) { r.style.display = 'none'; });
+            matchRows.forEach(function (r, i) {
                 r.style.display = (i >= (currentPage - 1) * ROWS_PER_PAGE && i < currentPage * ROWS_PER_PAGE) ? '' : 'none';
             });
 
             var from = total === 0 ? 0 : (currentPage - 1) * ROWS_PER_PAGE + 1;
             var to   = Math.min(currentPage * ROWS_PER_PAGE, total);
             var info = document.getElementById('paginationInfo');
-            if (info) info.textContent = total === 0
-                ? 'No records found'
-                : 'Showing ' + from + '\u2013' + to + ' of ' + total + ' records';
+            if (info) {
+                if (allRows.length === 0) {
+                    info.textContent = 'No records found';
+                } else if (total === 0) {
+                    info.textContent = 'No records match your search';
+                } else {
+                    info.textContent = 'Showing ' + from + '\u2013' + to + ' of ' + total + ' record' + (total === 1 ? '' : 's')
+                                     + (searchTerm ? ' (filtered from ' + allRows.length + ')' : '');
+                }
+            }
 
             var btns = document.getElementById('paginationBtns');
             if (!btns) return;
@@ -1267,6 +870,33 @@ if (isset($_POST['EditConfirmBtn'])) {
         }
 
         /* ================================================================
+           SEARCH BAR
+        ================================================================ */
+        function handleSearchInput() {
+            var input   = document.getElementById('partnerSearch');
+            var wrapper = document.getElementById('searchWrapper');
+            var term    = input.value.trim().toLowerCase();
+
+            wrapper.classList.toggle('has-text', term.length > 0);
+            searchTerm = term;
+            renderPage(1);
+        }
+
+        var searchDebounce = null;
+        document.getElementById('partnerSearch').addEventListener('input', function () {
+            clearTimeout(searchDebounce);
+            var self = this;
+            searchDebounce = setTimeout(handleSearchInput, 150);
+        });
+
+        document.getElementById('searchClearBtn').addEventListener('click', function () {
+            var input = document.getElementById('partnerSearch');
+            input.value = '';
+            handleSearchInput();
+            input.focus();
+        });
+
+        /* ================================================================
            BULK REVIEW BUTTON STATE
         ================================================================ */
         function updateBulkReview() {
@@ -1300,7 +930,11 @@ if (isset($_POST['EditConfirmBtn'])) {
            SELECT-ALL CHECKBOX
         ================================================================ */
         document.getElementById('selectAllCheckbox').addEventListener('change', function () {
-            var checkboxes = document.querySelectorAll('.row-checkbox');
+            /* Only toggle visible (filtered) rows so search doesn't
+               silently select hidden records. */
+            var checkboxes = getFilteredRows().map(function (row) {
+                return row.querySelector('.row-checkbox');
+            }).filter(Boolean);
             checkboxes.forEach(function (cb) {
                 cb.checked = this.checked;
                 var row = cb.closest('.table-row');
@@ -1313,9 +947,13 @@ if (isset($_POST['EditConfirmBtn'])) {
         /* keep Select-All in sync when individual checkboxes change */
         document.querySelectorAll('.row-checkbox').forEach(function (cb) {
             cb.addEventListener('change', function () {
-                var all  = document.querySelectorAll('.row-checkbox');
-                var chkd = document.querySelectorAll('.row-checkbox:checked');
-                document.getElementById('selectAllCheckbox').checked = (all.length === chkd.length);
+                var visible = getFilteredRows().map(function (r) {
+                    return r.querySelector('.row-checkbox');
+                }).filter(Boolean);
+                var checkedVisible = visible.filter(function (c) { return c.checked; });
+                document.getElementById('selectAllCheckbox').checked =
+                    visible.length > 0 && visible.length === checkedVisible.length;
+
                 var row = this.closest('.table-row');
                 if (this.checked) row.classList.add('selected-row');
                 else              row.classList.remove('selected-row');
