@@ -452,7 +452,7 @@ function recon_run(mysqli $conn, mysqli $conn_exact, array $f, array $partners, 
         if ($has_local && $has_gle) {
             $var_d = $bp_total - $d;
             $var_c = $bp_total - $c;
-            $status = (abs($var_d) < 0.00 || abs($var_c) < 0.00) ? 'MATCHED' : 'VARIANCE';
+            $status = (abs($var_d) < 0.01 || abs($var_c) < 0.01) ? 'MATCHED' : 'VARIANCE';
         } elseif ($has_local) {
             $status = 'UNMATCHED (BP only)';
         } else {

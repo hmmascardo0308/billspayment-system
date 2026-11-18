@@ -453,7 +453,7 @@ function recon_run(mysqli $conn, mysqli $conn_exact, array $f, array $partners, 
         if ($has_local && $has_gle) {
             $var_d = $bp_total - $d;
             $var_c = $bp_total - $c;
-            $status = (abs($var_d) < 0.00 || abs($var_c) < 0.00) ? 'MATCHED' : 'VARIANCE';
+            $status = (abs($var_d) < 0.01 || abs($var_c) < 0.01) ? 'MATCHED' : 'VARIANCE';
         } elseif ($has_local) {
             $status = 'UNMATCHED (BP only)';
         } else {
@@ -1115,8 +1115,8 @@ function recon_render_bp_subrow(array $row) {
                                     <?php endif; ?>
                                     <?php if ($row['has_local'] && $row['has_gle']): ?>
                                         <div style="font-size:10px;line-height:1.4;margin-top:3px;color:#555;white-space:nowrap;">
-                                            <span title="BP Total minus GLE Debit">D: <strong style="color:<?php echo abs((float)$row['variance_debit']) < 0.00 ? '#2e7d32' : '#c62828'; ?>;"><?php echo number_format((float)$row['variance_debit'], 2); ?></strong></span>
-                                            <span title="BP Total minus GLE Credit" style="margin-left:4px;">C: <strong style="color:<?php echo abs((float)$row['variance_credit']) < 0.00 ? '#2e7d32' : '#c62828'; ?>;"><?php echo number_format((float)$row['variance_credit'], 2); ?></strong></span>
+                                            <span title="BP Total minus GLE Debit">D: <strong style="color:<?php echo abs((float)$row['variance_debit']) < 0.01 ? '#2e7d32' : '#c62828'; ?>;"><?php echo number_format((float)$row['variance_debit'], 2); ?></strong></span>
+                                            <span title="BP Total minus GLE Credit" style="margin-left:4px;">C: <strong style="color:<?php echo abs((float)$row['variance_credit']) < 0.01 ? '#2e7d32' : '#c62828'; ?>;"><?php echo number_format((float)$row['variance_credit'], 2); ?></strong></span>
                                         </div>
                                     <?php endif; ?>
                                     <?php
