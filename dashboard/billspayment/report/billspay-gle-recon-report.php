@@ -1,14 +1,557 @@
 <?php
-// Connect to the databases (both $conn and $conn_exact are defined in config.php)
 // billspay-gle-recon-report.php
+// Connect to the databases (both $conn and $conn_exact are defined in config.php)
 require_once __DIR__ . '/../../../config/config.php';
 require_once __DIR__ . '/../../../vendor/autoload.php';
+// ===== BEGIN inlined recon library (identical in both files; do not edit one without the other) =====
+// ============================================================
+// recon_lib.php
+// Shared by billspay-gle-recon-report.php and export_recon.php
+// (put this file in the same folder as those two)
+//
+// Strategy (why this is faster):
+//   Phase 1 - AGGREGATES ONLY: one row per reference from SQL
+//             (SUM/COUNT/GROUP BY) for both BP and GLE. Cheap, light on memory.
+//   Phase 2 - DETAILS: full GLE rows are fetched ONLY for the references that
+//             are actually displayed (100 on the page, or the filtered set in the export).
+//   Result of phase 1 is cached in a temp file so pager clicks and
+//   the export don't recompute everything.
+// ============================================================
+
+const RECON_GLE_TO_BP_PREFIXES = ['KBP'];                    // GLE refs expected to exist in BP
+const RECON_DATE_ONLY_PREFIXES = ['APB', 'EBP', 'KBP', 'WQP']; // BP refs scanned in date-only mode
+const RECON_CACHE_VERSION      = 'v3';
+const RECON_CACHE_TTL          = 900;      // seconds
+const RECON_BP_GROUP_CAP       = 200000;   // safety cap on number of BP references
+const RECON_REF_CHUNK          = 1000;     // refs per IN (...) query
+const RECON_PDF_MAX_REFS       = 3000;     // above this, PDF is refused -> use CSV
+
+// ------------------------------------------------------------
+// Small helpers
+// ------------------------------------------------------------
+function recon_is_gle_to_bp_ref($ref) {
+    $ref = (string)$ref;
+    foreach (RECON_GLE_TO_BP_PREFIXES as $pfx) {
+        if ($pfx !== '' && stripos($ref, $pfx) === 0) return true;
+    }
+    return false;
+}
+
+function recon_normalize_partner_name($value) {
+    $value = strtoupper(trim((string)$value));
+    $value = str_replace(["\\'", "'"], '', $value);
+    return preg_replace('/[^A-Z0-9]/', '', $value);
+}
+
+function recon_prefix_sql(array $prefixes, $column, &$types, array &$params) {
+    $parts = [];
+    foreach ($prefixes as $pfx) {
+        $parts[]  = "$column LIKE ?";
+        $params[] = $pfx . '%';
+        $types   .= 's';
+    }
+    return '(' . implode(' OR ', $parts) . ')';
+}
+
+function recon_fetch_all(mysqli $db, $sql, $types, array $params, &$err) {
+    $err = '';
+    $out = [];
+    $stmt = $db->prepare($sql);
+    if (!$stmt) { $err = $db->error; return $out; }
+    if ($types !== '') $stmt->bind_param($types, ...$params);
+    if (!$stmt->execute()) { $err = $stmt->error; $stmt->close(); return $out; }
+    $res = $stmt->get_result();
+    while ($row = $res->fetch_assoc()) $out[] = $row;
+    $stmt->close();
+    return $out;
+}
+
+// ------------------------------------------------------------
+// File cache (NOT the session: big arrays in $_SESSION slow every request)
+// ------------------------------------------------------------
+function recon_cache_path($key) {
+    return sys_get_temp_dir() . '/recon_' . preg_replace('/[^a-z0-9_]/i', '', $key) . '.cache';
+}
+
+function recon_cache_get($key, $ttl = RECON_CACHE_TTL) {
+    $f = recon_cache_path($key);
+    if (!is_file($f) || (time() - filemtime($f)) > $ttl) return null;
+    $raw = @file_get_contents($f);
+    if ($raw === false) return null;
+    $data = @unserialize($raw, ['allowed_classes' => false]);
+    return is_array($data) ? $data : null;
+}
+
+function recon_cache_put($key, array $data) {
+    $f   = recon_cache_path($key);
+    $tmp = $f . '.' . getmypid();
+    if (@file_put_contents($tmp, serialize($data)) !== false) {
+        @rename($tmp, $f); // atomic
+    }
+    // light garbage collection (~2% of writes): delete files older than 1 hour
+    if (mt_rand(1, 50) === 1) {
+        foreach (glob(sys_get_temp_dir() . '/recon_*.cache') ?: [] as $old) {
+            if (time() - @filemtime($old) > 3600) @unlink($old);
+        }
+    }
+}
+
+function recon_cache_key(array $f) {
+    return 'r_' . md5(RECON_CACHE_VERSION . '|' . implode(',', RECON_GLE_TO_BP_PREFIXES) . '|'
+        . $f['partner_id'] . '|' . $f['date_from'] . '|' . $f['date_to'] . '|' . $f['reference_no']);
+}
+
+// ------------------------------------------------------------
+// Metadata
+// ------------------------------------------------------------
+function recon_detect_reference_column(mysqli $conn) {
+    $cached = recon_cache_get('refcol', 86400);
+    if ($cached && !empty($cached['col'])) return $cached['col'];
+
+    $col = 'reference_no';
+    $q = $conn->query("
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = 'mldb'
+          AND TABLE_NAME = 'billspayment_transaction'
+          AND (COLUMN_NAME LIKE '%ref%' OR COLUMN_NAME LIKE '%reference%')
+        ORDER BY (COLUMN_NAME = 'reference_no') DESC
+        LIMIT 1
+    ");
+    if ($q && $q->num_rows > 0) {
+        $c = $q->fetch_assoc();
+        if (preg_match('/^[A-Za-z0-9_]+$/', (string)$c['COLUMN_NAME'])) {
+            $col = $c['COLUMN_NAME'];
+        }
+        $q->free();
+    }
+    recon_cache_put('refcol', ['col' => $col]);
+    return $col;
+}
+
+function recon_load_partners(mysqli $conn) {
+    $partners = [];
+    $res = $conn->query("
+        SELECT partner_id_kpx, partner_name
+        FROM masterdata.partner_masterfile
+        WHERE partner_id_kpx IS NOT NULL
+          AND partner_name IS NOT NULL
+        ORDER BY partner_name ASC
+    ");
+    if ($res) {
+        while ($row = $res->fetch_assoc()) $partners[] = $row;
+        $res->free();
+    }
+    return $partners;
+}
+
+function recon_partner_name(array $partners, $partner_id) {
+    foreach ($partners as $p) {
+        if ((string)$p['partner_id_kpx'] === (string)$partner_id) return $p['partner_name'];
+    }
+    return '';
+}
+
+// ------------------------------------------------------------
+// Filters
+// ------------------------------------------------------------
+function recon_parse_filters(array $src) {
+    $g = function ($k) use ($src) {
+        return (isset($src[$k]) && is_string($src[$k])) ? trim($src[$k]) : '';
+    };
+    $f = [
+        'partner_id'   => $g('partner'),
+        'date_from'    => $g('date_from'),
+        'date_to'      => $g('date_to'),
+        'reference_no' => $g('reference_no'),
+        'display_mode' => $g('display_mode') ?: 'variance',
+    ];
+    if (!in_array($f['display_mode'], ['variance', 'bp_only', 'gle_only', 'matched', 'all'], true)) {
+        $f['display_mode'] = 'variance';
+    }
+    $f['is_all']    = ($f['partner_id'] === 'ALL');
+    $f['date_only'] = (
+        $f['reference_no'] === '' &&
+        ($f['partner_id'] === '' || $f['is_all']) &&
+        $f['date_from'] !== '' && $f['date_to'] !== ''
+    );
+    return $f;
+}
+
+// returns '' when valid, else an error message
+function recon_validate_filters(array $f) {
+    if ($f['reference_no'] === '' && $f['partner_id'] === '' && ($f['date_from'] === '' || $f['date_to'] === '')) {
+        return 'Enter a Reference No, select a Partner, or provide both Date From and Date To.';
+    }
+    if ($f['partner_id'] !== '' && !$f['is_all'] && ($f['date_from'] === '' || $f['date_to'] === '')) {
+        return 'When filtering by Partner, both Date From and Date To are required.';
+    }
+    if (($f['date_from'] === '') !== ($f['date_to'] === '') && $f['reference_no'] === '') {
+        return 'Please provide both Date From and Date To when filtering by date.';
+    }
+    if ($f['date_from'] !== '' && $f['date_to'] !== '' && $f['date_from'] > $f['date_to']) {
+        return 'Date From cannot be later than Date To.';
+    }
+    return '';
+}
+
+function recon_date_bounds(array $f) {
+    return [
+        $f['date_from'] !== '' ? $f['date_from'] . ' 00:00:00' : null,
+        $f['date_to']   !== '' ? $f['date_to']   . ' 23:59:59' : null,
+    ];
+}
+
+function recon_filter_rows(array $rows, $mode) {
+    $map = [
+        'variance' => 'VARIANCE',
+        'bp_only'  => 'UNMATCHED (BP only)',
+        'gle_only' => 'UNMATCHED (GLE only)',
+        'matched'  => 'MATCHED',
+    ];
+    if (!isset($map[$mode])) return $rows; // 'all'
+    $want = $map[$mode];
+    return array_values(array_filter($rows, function ($r) use ($want) {
+        return $r['match_status'] === $want;
+    }));
+}
+
+function recon_sum_rows(array $rows) {
+    $t = ['amount_paid' => 0, 'charge_customer' => 0, 'charge_partner' => 0, 'debit' => 0, 'credit' => 0,
+          'matched' => 0, 'variance' => 0, 'unmatched_local' => 0, 'unmatched_gle' => 0];
+    foreach ($rows as $r) {
+        switch ($r['match_status']) {
+            case 'MATCHED':             $t['matched']++;         break;
+            case 'VARIANCE':            $t['variance']++;        break;
+            case 'UNMATCHED (BP only)': $t['unmatched_local']++; break;
+            default:                    $t['unmatched_gle']++;
+        }
+        if ($r['has_local']) {
+            $t['amount_paid']     += (float)$r['amount_paid'];
+            $t['charge_customer'] += (float)$r['charge_to_customer'];
+            $t['charge_partner']  += (float)$r['charge_to_partner'];
+        }
+        if ($r['has_gle']) {
+            $t['debit']  += (float)$r['gle_debit_total'];
+            $t['credit'] += (float)$r['gle_credit_total'];
+        }
+    }
+    return $t;
+}
+
+// ------------------------------------------------------------
+// PHASE 1: aggregates only
+// ------------------------------------------------------------
+function recon_gle_agg_map(array $rows) {
+    $map = [];
+    foreach ($rows as $r) {
+        $ref = trim((string)$r['reference']);
+        if ($ref === '') continue;
+        if (!isset($map[$ref])) {
+            $map[$ref] = ['n' => 0, 'd' => 0.0, 'c' => 0.0];
+        }
+        $map[$ref]['n'] += (int)$r['n'];
+        $map[$ref]['d'] += (float)$r['d'];
+        $map[$ref]['c'] += (float)$r['c'];
+    }
+    return $map;
+}
+
+function recon_gle_agg_by_refs(mysqli $db, array $refs, $df, $dt, array &$warnings) {
+    $out = [];
+    if (!$refs) return $out;
+
+    $date_sql = ''; $date_params = []; $date_types = '';
+    if ($df !== null) { $date_sql .= ' AND datetime >= ?'; $date_params[] = $df; $date_types .= 's'; }
+    if ($dt !== null) { $date_sql .= ' AND datetime <= ?'; $date_params[] = $dt; $date_types .= 's'; }
+
+    foreach (array_chunk($refs, RECON_REF_CHUNK) as $chunk) {
+        $ph  = implode(',', array_fill(0, count($chunk), '?'));
+        $sql = "SELECT reference, COUNT(*) AS n, SUM(debit) AS d, SUM(credit) AS c
+                FROM gle
+                WHERE reference IN ($ph)$date_sql
+                GROUP BY reference";
+        $err  = '';
+        $rows = recon_fetch_all($db, $sql, str_repeat('s', count($chunk)) . $date_types,
+                                array_merge($chunk, $date_params), $err);
+        if ($err !== '') $warnings[] = 'GLE aggregate error: ' . $err;
+        $out += recon_gle_agg_map($rows);
+    }
+    return $out;
+}
+
+// KBP (GLE -> BP scope) references in a date range, aggregated. Covered by
+// idx_reference_datetime_covering (reference, datetime, ..., debit, credit).
+function recon_gle_agg_scoped_by_date(mysqli $db, $df, $dt, array &$warnings) {
+    if ($df === null || $dt === null) return [];
+    $types = ''; $params = [];
+    $pfx_sql = recon_prefix_sql(RECON_GLE_TO_BP_PREFIXES, 'reference', $types, $params);
+    $sql = "SELECT reference, COUNT(*) AS n, SUM(debit) AS d, SUM(credit) AS c
+            FROM gle
+            WHERE $pfx_sql AND datetime >= ? AND datetime <= ?
+            GROUP BY reference";
+    $params[] = $df; $params[] = $dt; $types .= 'ss';
+    $err  = '';
+    $rows = recon_fetch_all($db, $sql, $types, $params, $err);
+    if ($err !== '') $warnings[] = 'GLE date lookup error: ' . $err;
+    return recon_gle_agg_map($rows);
+}
+
+// KBP references whose 428101 line matches the partner name (candidates for GLE-only)
+function recon_gle_partner_candidate_refs(mysqli $db, $partner_name, $df, $dt, array &$warnings) {
+    $refs = [];
+    if ($partner_name === '') return $refs;
+
+    $types = ''; $params = [];
+    $pfx_sql = recon_prefix_sql(RECON_GLE_TO_BP_PREFIXES, 'reference', $types, $params);
+
+    $date_sql = '';
+    if ($df !== null) { $date_sql .= ' AND datetime >= ?'; $params[] = $df; $types .= 's'; }
+    if ($dt !== null) { $date_sql .= ' AND datetime <= ?'; $params[] = $dt; $types .= 's'; }
+
+    $params[] = '%' . addcslashes($partner_name, '%_\\') . '%';
+    $types   .= 's';
+
+    // idx_gle_reference_details (gl_code, desc, reference, datetime, no) covers this
+    $sql = "SELECT DISTINCT reference, `desc`
+            FROM gle
+            WHERE gl_code = '428101' AND $pfx_sql$date_sql AND `desc` LIKE ?";
+    $err  = '';
+    $rows = recon_fetch_all($db, $sql, $types, $params, $err);
+    if ($err !== '') { $warnings[] = 'GLE partner lookup error: ' . $err; return $refs; }
+
+    $normalized_partner = recon_normalize_partner_name($partner_name);
+    $memo = []; // similar_text is expensive; many rows share the same desc
+    foreach ($rows as $r) {
+        $rdesc = (string)($r['desc'] ?? '');
+        $ref   = trim((string)$r['reference']);
+        if ($rdesc === '' || $ref === '') continue;
+        if (!isset($memo[$rdesc])) {
+            $norm = recon_normalize_partner_name($rdesc);
+            $pct  = 0.0;
+            similar_text($normalized_partner, $norm, $pct);
+            $memo[$rdesc] = ($norm === $normalized_partner || $pct >= 95.0);
+        }
+        if ($memo[$rdesc]) $refs[$ref] = true;
+    }
+    return array_keys($refs);
+}
+
+/**
+ * Runs the whole reconciliation at the AGGREGATE level.
+ * Returns ['rows' => [...one light row per reference...], 'totals' => [...], 'warnings' => [...]]
+ * Row keys match what the page/export templates already use.
+ */
+function recon_run(mysqli $conn, mysqli $conn_exact, array $f, array $partners, $reference_column) {
+    $warnings     = [];
+    $partner_name = ($f['partner_id'] !== '' && !$f['is_all']) ? recon_partner_name($partners, $f['partner_id']) : '';
+    $partner_map  = [];
+    foreach ($partners as $p) $partner_map[(string)$p['partner_id_kpx']] = $p['partner_name'];
+    list($df, $dt) = recon_date_bounds($f);
+
+    // ---------- BP aggregate (no ORDER BY, no join; names come from $partners) ----------
+    $col = $reference_column;
+    $sql = "
+        SELECT t.`{$col}` AS reference_no,
+               MIN(t.partner_id_kpx)        AS partner_id_kpx,
+               MAX(t.datetime)              AS datetime,
+               SUM(t.amount_paid)           AS amt,
+               SUM(t.charge_to_customer)    AS chg_c,
+               SUM(t.charge_to_partner)     AS chg_p
+        FROM mldb.billspayment_transaction t
+        WHERE t.outlet <> 'ML CEBU HEAD OFFICE'
+          AND t.`{$col}` IS NOT NULL AND t.`{$col}` <> ''
+    ";
+    $params = []; $types = '';
+    if ($f['reference_no'] !== '') {
+        $sql .= " AND t.`{$col}` = ?"; $params[] = $f['reference_no']; $types .= 's';
+    }
+    if ($f['partner_id'] !== '' && !$f['is_all']) {
+        $sql .= ' AND t.partner_id_kpx = ?'; $params[] = $f['partner_id']; $types .= 's';
+    }
+    if ($df !== null) { $sql .= ' AND t.datetime >= ?'; $params[] = $df; $types .= 's'; }
+    if ($dt !== null) { $sql .= ' AND t.datetime <= ?'; $params[] = $dt; $types .= 's'; }
+    if ($f['date_only']) {
+        $sql .= ' AND ' . recon_prefix_sql(RECON_DATE_ONLY_PREFIXES, "t.`{$col}`", $types, $params);
+    }
+    $sql .= " GROUP BY t.`{$col}` ORDER BY NULL LIMIT " . (RECON_BP_GROUP_CAP + 1);
+
+    $err = '';
+    $bp_rows = recon_fetch_all($conn, $sql, $types, $params, $err);
+    if ($err !== '') $warnings[] = 'Local query error: ' . $err;
+    if (count($bp_rows) > RECON_BP_GROUP_CAP) {
+        array_pop($bp_rows);
+        $warnings[] = 'Result capped at ' . RECON_BP_GROUP_CAP . ' BP references. Please narrow the filters.';
+    }
+
+    $bp = [];
+    foreach ($bp_rows as $r) {
+        $ref = trim((string)$r['reference_no']);
+        if ($ref === '') continue;
+        if (!isset($bp[$ref])) {
+            $bp[$ref] = [
+                'pid' => $r['partner_id_kpx'], 'dt' => $r['datetime'],
+                'amt' => (float)$r['amt'], 'chg_c' => (float)$r['chg_c'], 'chg_p' => (float)$r['chg_p'],
+            ];
+        } else { // refs that only differed by whitespace
+            $bp[$ref]['amt']   += (float)$r['amt'];
+            $bp[$ref]['chg_c'] += (float)$r['chg_c'];
+            $bp[$ref]['chg_p'] += (float)$r['chg_p'];
+            if ((string)$r['datetime'] > (string)$bp[$ref]['dt']) $bp[$ref]['dt'] = $r['datetime'];
+        }
+    }
+    unset($bp_rows);
+
+    // ---------- GLE aggregates ----------
+    // (a) every BP reference (+ the typed reference) -> BP -> GLE direction
+    $lookup = array_map('strval', array_keys($bp));
+    if ($f['reference_no'] !== '') $lookup[] = $f['reference_no'];
+
+    // (b) partner mode: KBP references found via the partner's 428101 line (GLE -> BP direction)
+    if ($partner_name !== '') {
+        foreach (recon_gle_partner_candidate_refs($conn_exact, $partner_name, $df, $dt, $warnings) as $r) {
+            if (!isset($bp[$r])) $lookup[] = (string)$r;
+        }
+    }
+    $lookup = array_values(array_unique($lookup));
+
+    $gle = recon_gle_agg_by_refs($conn_exact, $lookup, $df, $dt, $warnings);
+
+    // (c) date-only / ALL partners: KBP references in the range (only KBP can be GLE-only)
+    if ($f['date_only']) {
+        foreach (recon_gle_agg_scoped_by_date($conn_exact, $df, $dt, $warnings) as $ref => $v) {
+            if (!isset($gle[$ref])) $gle[$ref] = $v;
+        }
+    }
+
+    // ---------- Scope ----------
+    $keys = [];
+    foreach ($bp as $ref => $_) $keys[(string)$ref] = true;
+    foreach ($gle as $ref => $_) {
+        $ref = (string)$ref;
+        if ($ref === '') continue;
+        if (isset($bp[$ref]) || recon_is_gle_to_bp_ref($ref)) $keys[$ref] = true;
+    }
+    $keys = array_map('strval', array_keys($keys));
+    sort($keys, SORT_NATURAL | SORT_FLAG_CASE);
+
+    // ---------- Reconcile ----------
+    $rows = [];
+    foreach ($keys as $ref) {
+        $b = $bp[$ref]  ?? null;
+        $g = $gle[$ref] ?? null;
+        $has_local = ($b !== null);
+        $has_gle   = ($g !== null);
+        if (!$has_local && !$has_gle) continue;
+        if (!$has_local && !recon_is_gle_to_bp_ref($ref)) continue;
+
+        $bp_total = $has_local ? ($b['amt'] + $b['chg_c'] + $b['chg_p']) : null;
+        $d = $has_gle ? $g['d'] : 0.0;
+        $c = $has_gle ? $g['c'] : 0.0;
+
+        $var_d = $var_c = null;
+        if ($has_local && $has_gle) {
+            $var_d = $bp_total - $d;
+            $var_c = $bp_total - $c;
+            $status = (abs($var_d) < 0.00 || abs($var_c) < 0.00) ? 'MATCHED' : 'VARIANCE';
+        } elseif ($has_local) {
+            $status = 'UNMATCHED (BP only)';
+        } else {
+            $status = 'UNMATCHED (GLE only)';
+        }
+
+        $pid = $has_local ? $b['pid'] : null;
+        $rows[] = [
+            'partner_id_kpx'     => $pid,
+            'partner_name'       => $pid !== null ? ($partner_map[(string)$pid] ?? null) : null,
+            'reference_no'       => $ref,
+            'datetime'           => $has_local ? $b['dt'] : null,
+            'amount_paid'        => $has_local ? $b['amt']   : null,
+            'charge_to_customer' => $has_local ? $b['chg_c'] : null,
+            'charge_to_partner'  => $has_local ? $b['chg_p'] : null,
+            'gle_row_count'      => $has_gle ? $g['n'] : 0,
+            'gle_debit_total'    => $has_gle ? $d : null,
+            'gle_credit_total'   => $has_gle ? $c : null,
+            'gle_rows'           => [],      // filled by recon_attach_details()
+            'gle_desc'           => null,    // filled by recon_attach_details()
+            'match_status'       => $status,
+            'bp_total'           => $bp_total,
+            'variance_debit'     => $var_d,
+            'variance_credit'    => $var_c,
+            'has_local'          => $has_local,
+            'has_gle'            => $has_gle,
+        ];
+    }
+
+    return [
+        'rows'     => $rows,
+        'totals'   => recon_sum_rows($rows),
+        'warnings' => array_values(array_unique($warnings)),
+        'created'  => time(),
+    ];
+}
+
+// ------------------------------------------------------------
+// PHASE 2: full GLE rows, only for the rows passed in
+// ------------------------------------------------------------
+function recon_attach_details(mysqli $conn_exact, array $rows, $df, $dt, array &$warnings) {
+    $refs = [];
+    foreach ($rows as $r) {
+        if ($r['has_gle']) $refs[] = (string)$r['reference_no'];
+    }
+    if (!$refs) return $rows;
+
+    $date_sql = ''; $date_params = []; $date_types = '';
+    if ($df !== null) { $date_sql .= ' AND datetime >= ?'; $date_params[] = $df; $date_types .= 's'; }
+    if ($dt !== null) { $date_sql .= ' AND datetime <= ?'; $date_params[] = $dt; $date_types .= 's'; }
+
+    $by_ref = [];
+    foreach (array_chunk(array_values(array_unique($refs)), RECON_REF_CHUNK) as $chunk) {
+        $ph  = implode(',', array_fill(0, count($chunk), '?'));
+        $sql = "SELECT `no`, datetime, gl_code, gl_desc, `desc`, reference, entry_number, debit, credit
+                FROM gle
+                WHERE reference IN ($ph)$date_sql";
+        $err = '';
+        $res = recon_fetch_all($conn_exact, $sql, str_repeat('s', count($chunk)) . $date_types,
+                               array_merge($chunk, $date_params), $err);
+        if ($err !== '') $warnings[] = 'GLE detail error: ' . $err;
+        foreach ($res as $g) {
+            $ref = trim((string)$g['reference']);
+            if ($ref !== '') $by_ref[$ref][] = $g;
+        }
+    }
+
+    foreach ($rows as &$r) {
+        $ref = (string)$r['reference_no'];
+        $g   = $by_ref[$ref] ?? [];
+        if ($g) {
+            usort($g, function ($a, $b) {
+                $cmp = strcmp((string)($a['entry_number'] ?? ''), (string)($b['entry_number'] ?? ''));
+                if ($cmp !== 0) return $cmp;
+                $cmp = strcmp((string)($a['gl_code'] ?? ''), (string)($b['gl_code'] ?? ''));
+                if ($cmp !== 0) return $cmp;
+                return strcmp((string)($a['no'] ?? ''), (string)($b['no'] ?? ''));
+            });
+            $r['gle_rows']      = $g;
+            $r['gle_row_count'] = count($g);
+            $r['gle_desc']      = $g[0]['desc'] ?? null;
+            if ($r['datetime'] === null) $r['datetime'] = $g[0]['datetime'] ?? null;
+        }
+    }
+    unset($r);
+    return $rows;
+}
+
+// ===== END inlined recon library =====
+
 
 // Start the session
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
+$current_user_email = '';
 if (isset($_SESSION['user_type'])) {
-    $current_user_email = '';
     if ($_SESSION['user_type'] === 'admin' && isset($_SESSION['admin_email'])) {
         $current_user_email = $_SESSION['admin_email'];
     } elseif ($_SESSION['user_type'] === 'user' && isset($_SESSION['user_email'])) {
@@ -16,50 +559,14 @@ if (isset($_SESSION['user_type'])) {
     }
 }
 
-// Normalize partner names
-function normalizePartnerName($value) {
-    $value = strtoupper(trim((string)$value));
-    $value = str_replace(["\\'", "'"], '', $value);
-    return preg_replace('/[^A-Z0-9]/', '', $value);
-}
+// ------------------------------------------------------------
+// 0/1. Reference column + partners for the dropdown
+// ------------------------------------------------------------
+$reference_column = recon_detect_reference_column($conn);
+$partners         = recon_load_partners($conn);
 
 // ------------------------------------------------------------
-// 0. Detect reference column (fallback safe)
-// ------------------------------------------------------------
-$reference_column = 'reference_no';
-$check_col = $conn->query("
-    SELECT COLUMN_NAME 
-    FROM INFORMATION_SCHEMA.COLUMNS 
-    WHERE TABLE_SCHEMA = 'mldb' 
-      AND TABLE_NAME = 'billspayment_transaction' 
-      AND (COLUMN_NAME LIKE '%ref%' OR COLUMN_NAME LIKE '%reference%')
-");
-if ($check_col && $check_col->num_rows > 0) {
-    $c = $check_col->fetch_assoc();
-    $reference_column = $c['COLUMN_NAME'];
-    $check_col->free();
-}
-
-// ------------------------------------------------------------
-// 1. FETCH PARTNERS FOR DROPDOWN
-// ------------------------------------------------------------
-$partners = [];
-$result_partners = $conn->query("
-    SELECT partner_id_kpx, partner_name 
-    FROM masterdata.partner_masterfile 
-    WHERE partner_id_kpx IS NOT NULL 
-      AND partner_name IS NOT NULL
-    ORDER BY partner_name ASC
-");
-if ($result_partners) {
-    while ($row = $result_partners->fetch_assoc()) {
-        $partners[] = $row;
-    }
-    $result_partners->free();
-}
-
-// ------------------------------------------------------------
-// 2. FETCH + RECONCILE TRANSACTIONS (BIDIRECTIONAL)
+// 2. Defaults
 // ------------------------------------------------------------
 $transactions   = [];
 $filter_applied = false;
@@ -73,8 +580,8 @@ $total_debit           = 0;
 $total_credit          = 0;
 $matched_count         = 0;
 $variance_count        = 0;
-$unmatched_local       = 0;   // BP only
-$unmatched_gle         = 0;   // GLE only
+$unmatched_local       = 0;
+$unmatched_gle         = 0;
 
 // --- PAGE TOTALS (For Table Footer) ---
 $page_amount_paid     = 0;
@@ -83,584 +590,92 @@ $page_charge_partner  = 0;
 $page_debit           = 0;
 $page_credit          = 0;
 
-// --- PAGE SUMMARY COUNTS (For Display Cards) ---
+// --- PAGE SUMMARY COUNTS ---
 $page_matched_count   = 0;
 $page_variance_count  = 0;
 $page_unmatched_local = 0;
 $page_unmatched_gle   = 0;
 
-// Display mode
-$display_mode = isset($_GET['display_mode']) ? trim($_GET['display_mode']) : 'variance';
-if (!in_array($display_mode, ['variance', 'all', 'matched'], true)) {
-    $display_mode = 'variance';
-}
-
-// Pagination
 const RECON_PER_PAGE = 100;
 $current_page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 if ($current_page < 1) $current_page = 1;
 
-$total_refs          = 0;
-$total_pages         = 1;
-$page_offset         = 0;
-$page_ref_keys       = [];
-$pager_html          = '';
+$total_refs  = 0;
+$total_pages = 1;
+$page_offset = 0;
+$pager_html  = '';
+
+$f            = recon_parse_filters($_GET);
+$display_mode = $f['display_mode'];
 
 if (isset($_GET['filter'])) {
-    $partner_id   = isset($_GET['partner']) ? trim($_GET['partner']) : '';
-    $date_from    = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
-    $date_to      = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
-    $reference_no = isset($_GET['reference_no']) ? trim($_GET['reference_no']) : '';
 
-    // Resolve partner name
-    $partner_name = '';
-    $is_all_partners = ($partner_id === 'ALL');
-    
-    if ($partner_id !== '' && !$is_all_partners) {
-        foreach ($partners as $p) {
-            if ((string)$p['partner_id_kpx'] === (string)$partner_id) {
-                $partner_name = $p['partner_name'];
-                break;
-            }
-        }
-    }
+    $debug_message = recon_validate_filters($f);
 
-    // ---------- Validation ----------
-    if ($reference_no === '' && $partner_id === '' && ($date_from === '' || $date_to === '')) {
-        $debug_message = "Enter a Reference No, select a Partner, or provide both Date From and Date To.";
-    } elseif ($partner_id !== '' && !$is_all_partners && ($date_from === '' || $date_to === '')) {
-        $debug_message = "When filtering by Partner, both Date From and Date To are required.";
-    } elseif (($date_from === '') !== ($date_to === '') && $reference_no === '') {
-        $debug_message = "Please provide both Date From and Date To when filtering by date.";
-    } elseif ($date_from !== '' && $date_to !== '' && $date_from > $date_to) {
-        $debug_message = "Date From cannot be later than Date To.";
-    } else {
+    if ($debug_message === '') {
         $filter_applied = true;
 
-        // ============================================================
-        // LOCAL (Bills Payment) QUERY
-        // ============================================================
-        $sql = "
-            SELECT 
-                t.partner_id_kpx,
-                p.partner_name,
-                t.`{$reference_column}` AS reference_no,
-                t.datetime,
-                t.amount_paid,
-                t.charge_to_customer,
-                t.charge_to_partner,
-                t.branch_id,
-                t.outlet
-            FROM mldb.billspayment_transaction t
-            LEFT JOIN masterdata.partner_masterfile p 
-                ON t.partner_id_kpx = p.partner_id_kpx
-            WHERE t.outlet <> 'ML CEBU HEAD OFFICE'
-        ";
+        // Release the session lock before the heavy work so other tabs/requests aren't blocked.
+        // ($_SESSION stays readable. If header/sidebar templates WRITE to the session, remove this line.)
+        session_write_close();
 
-        $params = [];
-        $types  = '';
-
-        if ($reference_no !== '') {
-            $sql .= " AND t.`{$reference_column}` = ?";
-            $params[] = $reference_no;
-            $types   .= 's';
+        // ---------------- Phase 1: aggregates (cached) ----------------
+        // "Filter & Recon" button (no &page=) always recomputes fresh data.
+        // Pager links (&page=N) reuse the cache so paging is instant.
+        $cache_key = recon_cache_key($f);
+        $result    = isset($_GET['page']) ? recon_cache_get($cache_key) : null;
+        if ($result === null) {
+            $result = recon_run($conn, $conn_exact, $f, $partners, $reference_column);
+            recon_cache_put($cache_key, $result);
         }
 
-        // Only apply specific partner filter if not 'ALL'
-        if ($partner_id !== '' && !$is_all_partners) {
-            $sql .= " AND t.partner_id_kpx = ? AND p.partner_name = ?";
-            $params[] = $partner_id;
-            $params[] = $partner_name;
-            $types   .= 'ss';
+        if (!empty($result['warnings'])) {
+            $debug_message = implode(' | ', $result['warnings']);
         }
 
-        if ($date_from !== '') {
-            $sql .= " AND t.datetime >= ?";
-            $params[] = $date_from . ' 00:00:00';
-            $types   .= 's';
-        }
-        if ($date_to !== '') {
-            $sql .= " AND t.datetime <= ?";
-            $params[] = $date_to . ' 23:59:59';
-            $types   .= 's';
-        }
+        $T = $result['totals'];
+        $total_amount_paid     = $T['amount_paid'];
+        $total_charge_customer = $T['charge_customer'];
+        $total_charge_partner  = $T['charge_partner'];
+        $total_debit           = $T['debit'];
+        $total_credit          = $T['credit'];
+        $matched_count         = $T['matched'];
+        $variance_count        = $T['variance'];
+        $unmatched_local       = $T['unmatched_local'];
+        $unmatched_gle         = $T['unmatched_gle'];
 
-        $date_only_search = (
-            $reference_no === '' &&
-            ($partner_id === '' || $is_all_partners) &&
-            $date_from !== '' &&
-            $date_to !== ''
-        );
-        
-        if ($date_only_search) {
-            $sql .= " AND (t.`{$reference_column}` LIKE 'APB%' OR t.`{$reference_column}` LIKE 'EBP%' OR t.`{$reference_column}` LIKE 'KBP%' OR t.`{$reference_column}` LIKE 'WQP%')";
-        }
-     $sql .= " ORDER BY t.datetime DESC";
+        // ---------------- Display filter + pagination ----------------
+        $filtered_transactions = recon_filter_rows($result['rows'], $display_mode);
 
-        // Protective LIMIT
-        if ($date_only_search || $is_all_partners) {
-            $sql .= " LIMIT 40000";
-        } elseif ($partner_id !== '' && !$is_all_partners) {
-            $sql .= " LIMIT 8000";   // single partner – still protected
-        } else {
-            $sql .= " LIMIT 500";
-        }
-
-        $local_rows = [];
-        $stmt = $conn->prepare($sql);
-        if ($stmt) {
-            if ($types !== '') {
-                $stmt->bind_param($types, ...$params);
-            }
-            $stmt->execute();
-            $result = $stmt->get_result();
-            while ($row = $result->fetch_assoc()) {
-                $local_rows[] = $row;
-            }
-            $stmt->close();
-        } else {
-            $debug_message = "Local query error: " . $conn->error;
-        }
-
-        // Collect unique references
-        $refs = [];
-        foreach ($local_rows as $lr) {
-            $r = trim($lr['reference_no'] ?? '');
-            if ($r !== '') {
-                $refs[$r] = true;
-            }
-        }
-        $refs = array_keys($refs);
-
-        // ============================================================
-        // EXACTDB (GLE) QUERY
-        // ============================================================
-        $gle_by_ref = [];
-        $should_query_gle = ($reference_no !== '' || !empty($refs) || ($partner_id !== '' && !$is_all_partners && $partner_name !== '') || $date_only_search || $is_all_partners);
-
-        if ($should_query_gle) {
-
-            $date_from_val = ($date_from !== '') ? $date_from . ' 00:00:00' : null;
-            $date_to_val   = ($date_to   !== '') ? $date_to   . ' 23:59:59' : null;
-
-            // Helper: pull GLE rows for a set of references
-            $fetch_gle_by_refs = function (array $refs_in) use ($conn_exact, $date_from_val, $date_to_val, &$debug_message) {
-                $out = [];
-                if (empty($refs_in)) return $out;
-
-                $date_sql    = '';
-                $date_params = [];
-                $date_types  = '';
-                if ($date_from_val !== null) { $date_sql .= " AND datetime >= ?"; $date_params[] = $date_from_val; $date_types .= 's'; }
-                if ($date_to_val   !== null) { $date_sql .= " AND datetime <= ?"; $date_params[] = $date_to_val;   $date_types .= 's'; }
-
-                $chunks = array_chunk($refs_in, 500);
-                foreach ($chunks as $chunk) {
-                    $ph = implode(',', array_fill(0, count($chunk), '?'));
-
-                    $sql = "
-                        SELECT 
-                           no, datetime, gl_code, gl_desc, partner_id, `desc`, reference,
-                            entry_number, currency, debit, credit, transaction_type,
-                            branch_id, branch_code, item, main_zone, zone, region
-                        FROM gle
-                        FORCE INDEX (idx_gle_reference_datetime)
-                        WHERE reference IN ($ph)" . $date_sql . "
-                    ";
-
-                    $params = array_merge($chunk, $date_params);
-                    $types  = str_repeat('s', count($chunk)) . $date_types;
-
-                    $stmt = $conn_exact->prepare($sql);
-                    if (!$stmt) {
-                        $debug_message .= ($debug_message ? ' | ' : '') . "GLE ref lookup error: " . $conn_exact->error;
-                        continue;
-                    }
-                    $stmt->bind_param($types, ...$params);
-                    $stmt->execute();
-                    $res = $stmt->get_result();
-                    while ($row = $res->fetch_assoc()) {
-                        $ref = trim($row['reference'] ?? '');
-                        if ($ref !== '') {
-                            $out[$ref][] = $row;
-                        }
-                    }
-                    $stmt->close();
-                }
-                return $out;
-            };
-
-            // Helper: pull GLE 428101 rows matching partner desc
-            $fetch_gle_by_partner = function ($partner_name_in, $date_from_in, $date_to_in) use ($conn_exact, &$debug_message) {
-                $out = [];
-                if ($partner_name_in === '') return $out;
-
-                $date_sql    = '';
-                $date_params = [];
-                $date_types  = '';
-                if ($date_from_in !== null) { $date_sql .= " AND datetime >= ?"; $date_params[] = $date_from_in; $date_types .= 's'; }
-                if ($date_to_in   !== null) { $date_sql .= " AND datetime <= ?"; $date_params[] = $date_to_in;   $date_types .= 's'; }
-
-                $sql = "
-                    SELECT 
-                        no, datetime, gl_code, gl_desc, partner_id, `desc`, reference,
-                        entry_number, currency, debit, credit, transaction_type,
-                        branch_id, branch_code, item, main_zone, zone, region
-                    FROM gle
-                    FORCE INDEX (idx_gle_gl_datetime_no)
-                    WHERE gl_code = '428101'" . $date_sql . "
-                      AND (
-                            `desc` = ?
-                         OR `desc` LIKE ?
-                         OR `desc` LIKE ?
-                      )
-                ";
-
-                $params = array_merge($date_params, [
-                    $partner_name_in,
-                    $partner_name_in . '%',
-                    '%' . $partner_name_in . '%',
-                ]);
-                $types = $date_types . 'sss';
-
-                $stmt = $conn_exact->prepare($sql);
-                if (!$stmt) {
-                    $debug_message .= ($debug_message ? ' | ' : '') . "GLE partner lookup error: " . $conn_exact->error;
-                    return $out;
-                }
-                $stmt->bind_param($types, ...$params);
-                $stmt->execute();
-                $res = $stmt->get_result();
-                while ($row = $res->fetch_assoc()) {
-                    $ref = trim($row['reference'] ?? '');
-                    if ($ref !== '') {
-                        $out[$ref][] = $row;
-                    }
-                }
-                $stmt->close();
-                return $out;
-            };
-
-            // Helper: date-only lookup
-            $fetch_gle_date_only = function ($date_from_in, $date_to_in) use ($conn_exact, &$debug_message) {
-                $out = [];
-
-                if ($date_from_in === null || $date_to_in === null) {
-                    return $out;
-                }
-
-                $prefixes = ['APB', 'EBP', 'KBP', 'WQP'];
-
-                $branch_sql = [];
-                $branch_params = [];
-                $branch_types = '';
-                foreach ($prefixes as $pfx) {
-                    $branch_sql[]   = "(SELECT no, datetime, gl_code, gl_desc, partner_id, `desc`,
-                           reference, entry_number, currency, debit, credit,
-                           transaction_type, branch_id, branch_code, item,
-                           main_zone, zone, region
-                    FROM gle FORCE INDEX (idx_ref_prefix_datetime)
-                    WHERE reference >= ? AND reference < ?
-                      AND datetime >= ? AND datetime <= ?)";
-                    $branch_params[] = $pfx;
-                    $branch_params[] = $pfx . '~';
-                    $branch_params[] = $date_from_in;
-                    $branch_params[] = $date_to_in;
-                    $branch_types   .= 'ssss';
-                }
-
-                $sql = implode(" UNION ALL ", $branch_sql) .
-                       " ORDER BY reference ASC, entry_number ASC, gl_code ASC";
-
-                $max_rows = 50000;
-
-                $stmt = $conn_exact->prepare($sql);
-                if (!$stmt) {
-                    $debug_message .= ($debug_message ? ' | ' : '') . "GLE date-only lookup error: " . $conn_exact->error;
-                    return $out;
-                }
-                $stmt->bind_param($branch_types, ...$branch_params);
-                $stmt->execute();
-                $res = $stmt->get_result();
-
-                $count = 0;
-                while ($row = $res->fetch_assoc()) {
-                    if (++$count > $max_rows) {
-                        $debug_message .= ($debug_message ? ' | ' : '') .
-                            "Date-only search capped at {$max_rows} GLE rows. Please narrow the date range.";
-                        break;
-                    }
-                    $ref = trim($row['reference'] ?? '');
-                    if ($ref !== '') {
-                        $out[$ref][] = $row;
-                    }
-                }
-                $stmt->close();
-
-                return $out;
-            };
-
-            // 1) Reference-based pull
-            $refs_to_lookup = [];
-            if ($reference_no !== '') {
-                $refs_to_lookup[$reference_no] = true;
-            }
-            foreach ($refs as $r) {
-                if ($r !== '') $refs_to_lookup[$r] = true;
-            }
-            $refs_to_lookup = array_keys($refs_to_lookup);
-
-            if (!empty($refs_to_lookup)) {
-                $gle_by_ref += $fetch_gle_by_refs($refs_to_lookup);
-            }
-
-            // 2) Partner-based pull
-            // First find candidate refs via gl_code 428101 + partner name match,
-            // then expand those refs to the FULL set of GLE lines (all GL codes).
-            // This ensures GLE-only records show complete multi-line journal detail
-            // in both the UI and the PDF export.
-            if ($partner_id !== '' && !$is_all_partners && $partner_name !== '') {
-                $partner_hits = $fetch_gle_by_partner($partner_name, $date_from_val, $date_to_val);
-
-                if (!empty($partner_hits)) {
-                    $normalized_partner = normalizePartnerName($partner_name);
-                    $filtered = [];
-                    foreach ($partner_hits as $ref => $rows) {
-                        foreach ($rows as $row) {
-                            $rdesc = (string)($row['desc'] ?? '');
-                            if ($rdesc === '') continue;
-                            $norm = normalizePartnerName($rdesc);
-                            $pct  = 0.0;
-                            similar_text($normalized_partner, $norm, $pct);
-                            if ($norm === $normalized_partner || $pct >= 95.0) {
-                                $filtered[$ref][] = $row;
-                            }
-                        }
-                    }
-                    $partner_hits = $filtered;
-                }
-
-                // Expand every partner-matched reference to its complete GLE journal
-                if (!empty($partner_hits)) {
-                    $partner_refs = array_keys($partner_hits);
-                    $full_gle_for_partner_refs = $fetch_gle_by_refs($partner_refs);
-                    foreach ($full_gle_for_partner_refs as $ref => $rows) {
-                        foreach ($rows as $row) {
-                            $gle_by_ref[$ref][] = $row;
-                        }
-                    }
-                }
-            }
-
-            // 3) Date-only / All partners pull
-            if (
-                $reference_no === '' &&
-                ($partner_id === '' || $is_all_partners) &&
-                $date_from !== '' &&
-                $date_to !== ''
-            ) {
-                $date_hits = $fetch_gle_date_only($date_from_val, $date_to_val);
-                foreach ($date_hits as $ref => $rows) {
-                    foreach ($rows as $row) {
-                        $gle_by_ref[$ref][] = $row;
-                    }
-                }
-            }
-
-            // Deduplicate GLE rows
-            foreach ($gle_by_ref as $ref => &$rows) {
-                $seen = [];
-                $deduped = [];
-                foreach ($rows as $row) {
-                    $key = $row['no'] ?? ''; 
-                    if (!isset($seen[$key])) {
-                        $seen[$key] = true;
-                        $deduped[]  = $row;
-                    }
-                }
-                $rows = $deduped;
-            }
-            unset($rows);
-        }
-
-        // ============================================================
-        // RECONCILIATION
-        // ============================================================
-        $local_by_ref = [];
-        foreach ($local_rows as $lr) {
-            $r = trim($lr['reference_no'] ?? '');
-            if ($r !== '') {
-                $local_by_ref[$r][] = $lr;
-            }
-        }
-
-        $all_refs = [];
-        foreach ($local_by_ref as $ref => $_) { $all_refs[$ref] = true; }
-        foreach ($gle_by_ref as $ref => $_) {
-            if ($ref === '__DESC_MATCH__') continue;
-            if ($ref !== '') { $all_refs[$ref] = true; }
-        }
-
-        $all_ref_keys = array_keys($all_refs);
-        sort($all_ref_keys, SORT_NATURAL | SORT_FLAG_CASE);
-
-        $total_refs  = count($all_ref_keys);
-        $total_pages = $total_refs > 0 ? (int)ceil($total_refs / RECON_PER_PAGE) : 1;
-        if ($current_page > $total_pages) $current_page = $total_pages;
-
-        $page_offset   = ($current_page - 1) * RECON_PER_PAGE;
-        
-        // ------------------------------------------------------------
-        // CALCULATE OVERALL TOTALS & BUILD CURRENT PAGE
-        // ------------------------------------------------------------
-        $all_transactions = []; // Store all calculated rows before pagination filter
-
-        foreach ($all_ref_keys as $idx => $ref) {
-            $local_group = $local_by_ref[$ref] ?? [];
-            $gle_rows    = $gle_by_ref[$ref]   ?? [];
-
-            $has_local = !empty($local_group);
-            $has_gle   = !empty($gle_rows);
-
-            $match_status = 'UNMATCHED';
-            if ($has_local && $has_gle) {
-                $match_status = 'MATCHED';
-            } elseif ($has_local && !$has_gle) {
-                $match_status = 'UNMATCHED (BP only)';
-            } else {
-                $match_status = 'UNMATCHED (GLE only)';
-            }
-
-            $amt = 0; $chg_c = 0; $chg_p = 0;
-            foreach ($local_group as $lg) {
-                $amt   += (float)($lg['amount_paid']        ?? 0);
-                $chg_c += (float)($lg['charge_to_customer'] ?? 0);
-                $chg_p += (float)($lg['charge_to_partner']  ?? 0);
-            }
-
-            $gle_debit_total  = 0;
-            $gle_credit_total = 0;
-            foreach ($gle_rows as $g) {
-                $gle_debit_total  += (float)($g['debit']  ?? 0);
-                $gle_credit_total += (float)($g['credit'] ?? 0);
-            }
-
-            $bp_reference_total = $amt + $chg_c + $chg_p;
-            $reference_variance_debit  = $bp_reference_total - $gle_debit_total;
-            $reference_variance_credit = $bp_reference_total - $gle_credit_total;
-
-            if ($has_local && $has_gle) {
-                if (abs($reference_variance_debit) < 0.01 || abs($reference_variance_credit) < 0.01) {
-                    $match_status = 'MATCHED';
-                    $matched_count++;
-                } else {
-                    $match_status = 'VARIANCE';
-                    $variance_count++;
-                }
-            } elseif ($has_local && !$has_gle) {
-                $unmatched_local++;
-            } else {
-                $unmatched_gle++;
-            }
-
-            // ADD TO OVERALL TOTALS
-            if ($has_local) {
-                $total_amount_paid     += $amt;
-                $total_charge_customer += $chg_c;
-                $total_charge_partner  += $chg_p;
-            }
-            if ($has_gle) {
-                $total_debit  += $gle_debit_total;
-                $total_credit += $gle_credit_total;
-            }
-
-            $local_meta = null;
-            foreach ($local_group as $lg) {
-                if ($local_meta === null) $local_meta = $lg;
-            }
-
-            usort($gle_rows, function ($a, $b) {
-                $cmp = strcmp((string)($a['entry_number'] ?? ''), (string)($b['entry_number'] ?? ''));
-                if ($cmp !== 0) return $cmp;
-                return strcmp((string)($a['gl_code'] ?? ''), (string)($b['gl_code'] ?? ''));
-            });
-
-            $first_gle = $gle_rows[0] ?? null;
-
-            $all_transactions[] = [
-                'partner_id_kpx'     => $local_meta['partner_id_kpx'] ?? null,
-                'partner_name'       => $local_meta['partner_name']   ?? null,
-                'reference_no'       => $ref,
-                'datetime'           => $local_meta['datetime']       ?? ($first_gle['datetime'] ?? null),
-                'amount_paid'        => $has_local ? $amt   : null,
-                'charge_to_customer' => $has_local ? $chg_c : null,
-                'charge_to_partner'  => $has_local ? $chg_p : null,
-                'gle_row_count'      => count($gle_rows),
-                'gle_debit_total'    => $has_gle ? $gle_debit_total  : null,
-                'gle_credit_total'   => $has_gle ? $gle_credit_total : null,
-                'gle_rows'           => $gle_rows,
-                'gle_partner_id'     => $first_gle['partner_id'] ?? null,
-                'gle_desc'           => $first_gle['desc']       ?? null,
-                'gle_datetime'       => $first_gle['datetime']   ?? null,
-                'match_status'       => $match_status,
-                'bp_total'           => $has_local ? $bp_reference_total : null,
-                'variance_debit'     => $has_local && $has_gle ? $reference_variance_debit : null,
-                'variance_credit'    => $has_local && $has_gle ? $reference_variance_credit : null,
-                'has_local'          => $has_local,
-                'has_gle'            => $has_gle,
-            ];
-        }
-
-        // ------------------------------------------------------------
-        // APPLY DISPLAY FILTER BEFORE PAGINATION
-        // ------------------------------------------------------------
-        $filtered_transactions = $all_transactions;
-        if ($display_mode === 'variance') {
-            $filtered_transactions = array_values(array_filter($all_transactions, function ($row) {
-                return $row['match_status'] !== 'MATCHED';
-            }));
-        } elseif ($display_mode === 'matched') {
-            $filtered_transactions = array_values(array_filter($all_transactions, function ($row) {
-                return $row['match_status'] === 'MATCHED';
-            }));
-        }
-
-        // ------------------------------------------------------------
-        // RECALCULATE PAGINATION BASED ON FILTERED RESULTS
-        // ------------------------------------------------------------
         $total_refs  = count($filtered_transactions);
         $total_pages = $total_refs > 0 ? (int)ceil($total_refs / RECON_PER_PAGE) : 1;
         if ($current_page > $total_pages) $current_page = $total_pages;
         $page_offset = ($current_page - 1) * RECON_PER_PAGE;
 
         $transactions = array_slice($filtered_transactions, $page_offset, RECON_PER_PAGE);
+        unset($filtered_transactions, $result);
 
-        // ------------------------------------------------------------
-        // CALCULATE PAGE TOTALS & COUNTS
-        // ------------------------------------------------------------
-        foreach ($transactions as $row) {
-            if ($row['match_status'] === 'MATCHED') {
-                $page_matched_count++;
-            } elseif ($row['match_status'] === 'VARIANCE') {
-                $page_variance_count++;
-            } elseif ($row['match_status'] === 'UNMATCHED (BP only)') {
-                $page_unmatched_local++;
-            } else {
-                $page_unmatched_gle++;
-            }
+        // ---------------- Page totals & counts (from aggregates) ----------------
+        $PT = recon_sum_rows($transactions);
+        $page_amount_paid     = $PT['amount_paid'];
+        $page_charge_customer = $PT['charge_customer'];
+        $page_charge_partner  = $PT['charge_partner'];
+        $page_debit           = $PT['debit'];
+        $page_credit          = $PT['credit'];
+        $page_matched_count   = $PT['matched'];
+        $page_variance_count  = $PT['variance'];
+        $page_unmatched_local = $PT['unmatched_local'];
+        $page_unmatched_gle   = $PT['unmatched_gle'];
 
-            if ($row['has_local']) {
-                $page_amount_paid     += (float)$row['amount_paid'];
-                $page_charge_customer += (float)$row['charge_to_customer'];
-                $page_charge_partner  += (float)$row['charge_to_partner'];
-            }
-            if ($row['has_gle']) {
-                $page_debit  += (float)$row['gle_debit_total'];
-                $page_credit += (float)$row['gle_credit_total'];
-            }
+        // ---------------- Phase 2: GLE detail rows for THIS PAGE ONLY ----------------
+        list($df_val, $dt_val) = recon_date_bounds($f);
+        $detail_warnings = [];
+        $transactions = recon_attach_details($conn_exact, $transactions, $df_val, $dt_val, $detail_warnings);
+        if ($detail_warnings) {
+            $debug_message .= ($debug_message ? ' | ' : '') . implode(' | ', $detail_warnings);
         }
 
-        // Build the pager HTML
+        // ---------------- Pager HTML ----------------
         if ($total_pages > 1) {
             $shown_from = $page_offset + 1;
             $shown_to   = min($page_offset + RECON_PER_PAGE, $total_refs);
@@ -701,7 +716,6 @@ $total_bp_combined = $total_amount_paid + $total_charge_customer + $total_charge
 // Combined totals for Page Footer and Page Summary Cards
 $page_bp_combined = $page_amount_paid + $page_charge_customer + $page_charge_partner;
 
-// Display transactions to render (already sliced, but used for the count display)
 $display_transactions = $transactions;
 
 // Variances (OVERALL)
@@ -713,14 +727,64 @@ $page_variance_vs_debit  = $page_bp_combined - $page_debit;
 $page_variance_vs_credit = $page_bp_combined - $page_credit;
 
 // Build export query string
-$export_qs = http_build_query([
+$export_params = [
     'reference_no' => $_GET['reference_no'] ?? '',
     'partner'      => $_GET['partner']      ?? '',
     'date_from'    => $_GET['date_from']    ?? '',
     'date_to'      => $_GET['date_to']      ?? '',
     'display_mode' => $_GET['display_mode'] ?? 'variance',
     'page'         => $current_page,
-]);
+];
+$export_qs     = http_build_query($export_params);
+$export_csv_qs = http_build_query($export_params + ['format' => 'csv']);
+
+// ------------------------------------------------------------
+// Render helpers (same markup as before, just not repeated 5 times)
+// ------------------------------------------------------------
+function recon_render_gle_cells(array $g, $extra = '') {
+    ?>
+    <td class="col-glcode" style="padding: 0.35rem 0.5rem; font-weight:600; color:#1a3c5e; text-align: right;<?php echo $extra; ?>">
+        <?php echo htmlspecialchars($g['gl_code'] ?? '—'); ?>
+    </td>
+    <td class="col-gldesc wrap-cell" style="padding: 0.35rem 0.5rem;<?php echo $extra; ?>">
+        <?php echo htmlspecialchars($g['gl_desc'] ?? '—'); ?>
+    </td>
+    <td class="col-desc wrap-cell" style="padding: 0.35rem 0.5rem;<?php echo $extra; ?>">
+        <?php echo htmlspecialchars($g['desc'] ?? '—'); ?>
+    </td>
+    <td class="col-reference" style="padding: 0.35rem 0.5rem;<?php echo $extra; ?>">
+        <?php echo htmlspecialchars($g['reference'] ?? '—'); ?>
+    </td>
+    <td class="col-datetime" style="padding: 0.35rem 0.5rem; color:#000000;<?php echo $extra; ?>">
+        <?php echo htmlspecialchars($g['datetime'] ?? '—'); ?>
+    </td>
+    <td class="col-debit" style="padding: 0.35rem 0.5rem; text-align: right; color:#1565c0; font-weight:600;<?php echo $extra; ?>">
+        <?php echo number_format((float)($g['debit'] ?? 0), 2); ?>
+    </td>
+    <td class="col-credit" style="padding: 0.35rem 0.5rem; text-align: right; color:#6a1b9a; font-weight:600;<?php echo $extra; ?>">
+        <?php echo number_format((float)($g['credit'] ?? 0), 2); ?>
+    </td>
+    <td class="col-entry" style="padding: 0.35rem 0.5rem;<?php echo $extra; ?>">
+        <?php echo htmlspecialchars($g['entry_number'] ?? '—'); ?>
+    </td>
+    <?php
+}
+
+function recon_render_bp_subrow(array $row) {
+    $has = $row['has_local'];
+    ?>
+    <tr>
+        <td colspan="4" class="divider-right" style="padding: 0.25rem 0.5rem 0.35rem 0.5rem; text-align: right; border-top: none; background: #fcfafa;">
+            <span style="font-size: 10px; color: #666; text-transform: uppercase; margin-right: 4px;">Amt Paid:</span> <strong style="color: #0d47a1; margin-right: 12px;"><?php echo $has && $row['amount_paid'] !== null ? number_format((float)$row['amount_paid'], 2) : '—'; ?></strong>
+
+            <span style="font-size: 10px; color: #666; text-transform: uppercase; margin-right: 4px;">Chg Cust:</span> <strong style="color: #b30000; margin-right: 12px;"><?php echo $has && $row['charge_to_customer'] !== null ? number_format((float)$row['charge_to_customer'], 2) : '—'; ?></strong>
+
+            <span style="font-size: 10px; color: #666; text-transform: uppercase; margin-right: 4px;">Chg Partr:</span> <strong style="color: #2e7d32;"><?php echo $has && $row['charge_to_partner'] !== null ? number_format((float)$row['charge_to_partner'], 2) : '—'; ?></strong>
+        </td>
+        <td colspan="8" style="border-top: none; background: #fafbfc;"></td>
+    </tr>
+    <?php
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -819,9 +883,11 @@ $export_qs = http_build_query([
                             <i class="fa-solid fa-filter-circle-dollar"></i> Display
                         </label>
                         <select name="display_mode" id="display_mode" class="bp-input" style="width:100%;padding:.5rem;border:1px solid #ccc;border-radius:4px;">
-                            <option value="variance" <?php echo (($_GET['display_mode'] ?? 'variance') === 'variance') ? 'selected' : ''; ?>>Variance / Unmatched</option>
-                            <option value="all" <?php echo (($_GET['display_mode'] ?? '') === 'all') ? 'selected' : ''; ?>>All transactions</option>
-                            <option value="matched" <?php echo (($_GET['display_mode'] ?? '') === 'matched') ? 'selected' : ''; ?>>Matched only</option>
+                            <option value="variance" <?php echo ($display_mode === 'variance') ? 'selected' : ''; ?>>Variance</option>
+                            <option value="bp_only" <?php echo ($display_mode === 'bp_only') ? 'selected' : ''; ?>>BP Only (Unmatched)</option>
+                            <option value="gle_only" <?php echo ($display_mode === 'gle_only') ? 'selected' : ''; ?>>GLE Only (Unmatched)</option>
+                            <option value="matched" <?php echo ($display_mode === 'matched') ? 'selected' : ''; ?>>Matched Only</option>
+                            <option value="all" <?php echo ($display_mode === 'all') ? 'selected' : ''; ?>>All Transactions</option>
                         </select>
                     </div>
 
@@ -850,10 +916,9 @@ $export_qs = http_build_query([
         <!-- Summary cards -->
         <?php if ($filter_applied && ($total_refs > 0)): ?>
             <div style="margin: 1rem; display: flex; flex-direction: column; gap: 1rem;">
-                
+
                 <!-- ROW 1: Overall Financial Totals -->
                 <div style="display: flex; flex-wrap: wrap; gap: 1rem;">
-                    <!-- Amount Paid -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #1976d2;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Overall Amount Paid</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: #1976d2; margin-top: 0.2rem; white-space: nowrap;">
@@ -861,7 +926,6 @@ $export_qs = http_build_query([
                         </div>
                     </div>
 
-                    <!-- Charge to Customer -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #e65100;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Overall Chg to Cust</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: #e65100; margin-top: 0.2rem; white-space: nowrap;">
@@ -869,7 +933,6 @@ $export_qs = http_build_query([
                         </div>
                     </div>
 
-                    <!-- Charge to Partner -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #2e7d32;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Overall Chg to Partr</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: #2e7d32; margin-top: 0.2rem; white-space: nowrap;">
@@ -877,7 +940,6 @@ $export_qs = http_build_query([
                         </div>
                     </div>
 
-                    <!-- BP Total -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #6a1b9a;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Overall BP Total</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: #6a1b9a; margin-top: 0.2rem; white-space: nowrap;">
@@ -885,7 +947,6 @@ $export_qs = http_build_query([
                         </div>
                     </div>
 
-                    <!-- Overall Debit -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #1565c0;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Overall Debit</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: #1565c0; margin-top: 0.2rem; white-space: nowrap;">
@@ -893,7 +954,6 @@ $export_qs = http_build_query([
                         </div>
                     </div>
 
-                    <!-- Overall Credit -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #c62828;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Overall Credit</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: #c62828; margin-top: 0.2rem; white-space: nowrap;">
@@ -904,7 +964,6 @@ $export_qs = http_build_query([
 
                 <!-- ROW 2: Variance & Count Cards -->
                 <div style="display: flex; flex-wrap: wrap; gap: 1rem;">
-                    <!-- 1. Overall Matched -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #ef6c00;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Overall Matched / Var / BP / GLE</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: #ef6c00; margin-top: 0.2rem; white-space: nowrap;">
@@ -912,7 +971,6 @@ $export_qs = http_build_query([
                         </div>
                     </div>
 
-                    <!-- 2. Overall Debit -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #c62828;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Overall BP Total - GLE Debit</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: <?php echo $variance_vs_debit == 0 ? '#2e7d32' : '#c62828'; ?>; margin-top: 0.2rem; white-space: nowrap;">
@@ -921,7 +979,6 @@ $export_qs = http_build_query([
                         </div>
                     </div>
 
-                    <!-- 3. Overall Credit -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #ad1457;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Overall BP Total - GLE Credit</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: <?php echo $variance_vs_credit == 0 ? '#2e7d32' : '#ad1457'; ?>; margin-top: 0.2rem; white-space: nowrap;">
@@ -930,7 +987,6 @@ $export_qs = http_build_query([
                         </div>
                     </div>
 
-                    <!-- 4. Page Matched -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #ef6c00;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Page Matched / Var / BP / GLE</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: #ef6c00; margin-top: 0.2rem; white-space: nowrap;">
@@ -938,7 +994,6 @@ $export_qs = http_build_query([
                         </div>
                     </div>
 
-                    <!-- 5. Page Debit -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #c62828;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Page BP Total - GLE Debit</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: <?php echo $page_variance_vs_debit == 0 ? '#2e7d32' : '#c62828'; ?>; margin-top: 0.2rem; white-space: nowrap;">
@@ -947,7 +1002,6 @@ $export_qs = http_build_query([
                         </div>
                     </div>
 
-                    <!-- 6. Page Credit -->
                     <div style="flex: 1 1 0; min-width: 140px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: .5rem 1rem; border-left: 5px solid #ad1457;">
                         <div style="font-size: 0.7rem; color: #666; text-transform: uppercase;">Page BP Total - GLE Credit</div>
                         <div style="font-size: 0.95rem; font-weight: 700; color: <?php echo $page_variance_vs_credit == 0 ? '#2e7d32' : '#ad1457'; ?>; margin-top: 0.2rem; white-space: nowrap;">
@@ -968,15 +1022,22 @@ $export_qs = http_build_query([
                 <div style="padding: .4rem 1rem; background: #fff; border-bottom: 1px solid #eee;">
                     <?php echo $pager_html; ?>
                 </div>
-            <?php endif; ?>
+                <?php endif; ?>
                 <div style="font-size: 0.85rem; color: #666; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
                     <?php if ($filter_applied && count($transactions) > 0): ?>
-                        <!-- ✅ EXPORT PDF BUTTON -->
-                        <a id="export-pdf-btn"
+                        <!-- EXPORT PDF (capped for large result sets) -->
+                        <a id="export-pdf-btn" class="export-btn"
                            href="export_recon.php?<?php echo htmlspecialchars($export_qs); ?>"
                            target="_blank"
+                           title="PDF is limited to <?php echo RECON_PDF_MAX_REFS; ?> references; use CSV for larger sets"
                            style="background: #b30000; color: #fff; border: 1px solid #8b0000; border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 0.8rem; text-decoration: none; display: inline-flex; align-items: center; gap: 5px;">
                             <i class="fa-solid fa-file-pdf"></i> Export PDF
+                        </a>
+                        <!-- EXPORT CSV (fast, no row cap) -->
+                        <a id="export-csv-btn" class="export-btn"
+                           href="export_recon.php?<?php echo htmlspecialchars($export_csv_qs); ?>"
+                           style="background: #2e7d32; color: #fff; border: 1px solid #1b5e20; border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 0.8rem; text-decoration: none; display: inline-flex; align-items: center; gap: 5px;">
+                            <i class="fa-solid fa-file-csv"></i> Export CSV
                         </a>
                     <?php endif; ?>
                     <span>
@@ -1022,7 +1083,6 @@ $export_qs = http_build_query([
                                 <?php
                                     $child_rows  = $row['gle_rows'] ?? [];
                                     $has_match   = ($row['match_status'] === 'MATCHED');
-                                    $is_bp_only  = ($row['match_status'] === 'UNMATCHED (BP only)');
                                     $is_gle_only = ($row['match_status'] === 'UNMATCHED (GLE only)');
                                     $is_variance = ($row['match_status'] === 'VARIANCE');
                                     $is_multi    = (($row['gle_row_count'] ?? 0) > 1);
@@ -1055,153 +1115,51 @@ $export_qs = http_build_query([
                                     <?php endif; ?>
                                     <?php if ($row['has_local'] && $row['has_gle']): ?>
                                         <div style="font-size:10px;line-height:1.4;margin-top:3px;color:#555;white-space:nowrap;">
-                                            <span title="BP Total minus GLE Debit">D: <strong style="color:<?php echo abs((float)$row['variance_debit']) < 0.01 ? '#2e7d32' : '#c62828'; ?>;"><?php echo number_format((float)$row['variance_debit'], 2); ?></strong></span>
-                                            <span title="BP Total minus GLE Credit" style="margin-left:4px;">C: <strong style="color:<?php echo abs((float)$row['variance_credit']) < 0.01 ? '#2e7d32' : '#c62828'; ?>;"><?php echo number_format((float)$row['variance_credit'], 2); ?></strong></span>
+                                            <span title="BP Total minus GLE Debit">D: <strong style="color:<?php echo abs((float)$row['variance_debit']) < 0.00 ? '#2e7d32' : '#c62828'; ?>;"><?php echo number_format((float)$row['variance_debit'], 2); ?></strong></span>
+                                            <span title="BP Total minus GLE Credit" style="margin-left:4px;">C: <strong style="color:<?php echo abs((float)$row['variance_credit']) < 0.00 ? '#2e7d32' : '#c62828'; ?>;"><?php echo number_format((float)$row['variance_credit'], 2); ?></strong></span>
                                         </div>
                                     <?php endif; ?>
-                                    <?php 
+                                    <?php
                                     $status_html = ob_get_clean();
                                 ?>
 
-                                <?php if ($is_multi): ?>
-                                    <!-- MULTIPLE GLE ROWS: Sub-row for BP Amounts, then GLE rows -->
+                                <?php if (!empty($child_rows)): ?>
                                     <?php foreach ($child_rows as $g_index => $g): ?>
                                         <?php if ($g_index === 0): ?>
-                                            <!-- First Row: BP Main Info & GLE Row 1 -->
+                                            <!-- First GLE row carries the BP info -->
                                             <tr>
                                                 <td class="col-status" style="padding: 0.35rem 0.5rem;"><?php echo $status_html; ?></td>
                                                 <td class="col-partner wrap-cell" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($partner_display); ?></td>
                                                 <td class="col-reference" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($row['reference_no'] ?? '—'); ?></td>
                                                 <td class="col-datetime divider-right" style="padding: 0.35rem 0.5rem;"><?php echo $row['has_local'] ? htmlspecialchars($row['datetime'] ?? '—') : '—'; ?></td>
-
-                                                <!-- GLE Row 1 Data -->
-                                                <td class="col-glcode" style="padding: 0.35rem 0.5rem; font-weight:600; color:#1a3c5e; text-align: right;">
-                                                    <?php echo htmlspecialchars($g['gl_code'] ?? '—'); ?>
-                                                </td>
-                                                <td class="col-gldesc wrap-cell" style="padding: 0.35rem 0.5rem;">
-                                                    <?php echo htmlspecialchars($g['gl_desc'] ?? '—'); ?>
-                                                </td>
-                                                <td class="col-desc wrap-cell" style="padding: 0.35rem 0.5rem;">
-                                                    <?php echo htmlspecialchars($g['desc'] ?? '—'); ?>
-                                                </td>
-                                                <td class="col-reference" style="padding: 0.35rem 0.5rem;">
-                                                    <?php echo htmlspecialchars($g['reference'] ?? '—'); ?>
-                                                </td>
-                                                <td class="col-datetime" style="padding: 0.35rem 0.5rem; color:#000000;">
-                                                    <?php echo htmlspecialchars($g['datetime'] ?? '—'); ?>
-                                                </td>
-                                                <td class="col-debit" style="padding: 0.35rem 0.5rem; text-align: right; color:#1565c0; font-weight:600;">
-                                                    <?php echo number_format((float)($g['debit'] ?? 0), 2); ?>
-                                                </td>
-                                                <td class="col-credit" style="padding: 0.35rem 0.5rem; text-align: right; color:#6a1b9a; font-weight:600;">
-                                                    <?php echo number_format((float)($g['credit'] ?? 0), 2); ?>
-                                                </td>
-                                                <td class="col-entry" style="padding: 0.35rem 0.5rem;">
-                                                    <?php echo htmlspecialchars($g['entry_number'] ?? '—'); ?>
-                                                </td>
+                                                <?php recon_render_gle_cells($g); ?>
                                             </tr>
-
-                                            <!-- Secondary Row: BP Financial Amounts -->
-                                            <tr>
-                                                <td colspan="4" class="divider-right" style="padding: 0.25rem 0.5rem 0.35rem 0.5rem; text-align: right; border-top: none; background: #fcfafa;">
-                                                    <span style="font-size: 10px; color: #666; text-transform: uppercase; margin-right: 4px;">Amt Paid:</span> <strong style="color: #0d47a1; margin-right: 12px;"><?php echo $row['has_local'] && $row['amount_paid'] !== null ? number_format((float)$row['amount_paid'], 2) : '—'; ?></strong>
-                                                    
-                                                    <span style="font-size: 10px; color: #666; text-transform: uppercase; margin-right: 4px;">Chg Cust:</span> <strong style="color: #b30000; margin-right: 12px;"><?php echo $row['has_local'] && $row['charge_to_customer'] !== null ? number_format((float)$row['charge_to_customer'], 2) : '—'; ?></strong>
-                                                    
-                                                    <span style="font-size: 10px; color: #666; text-transform: uppercase; margin-right: 4px;">Chg Partr:</span> <strong style="color: #2e7d32;"><?php echo $row['has_local'] && $row['charge_to_partner'] !== null ? number_format((float)$row['charge_to_partner'], 2) : '—'; ?></strong>
-                                                </td>
-                                                <td colspan="8" style="border-top: none; background: #fafbfc;"></td>
-                                            </tr>
+                                            <?php recon_render_bp_subrow($row); ?>
                                         <?php else: ?>
-                                            <!-- Subsequent GLE Rows -->
+                                            <!-- Subsequent GLE rows -->
                                             <tr>
                                                 <td colspan="4" class="divider-right" style="border-top: none;"></td>
-                                                <td class="col-glcode" style="padding: 0.35rem 0.5rem; font-weight:600; color:#1a3c5e; text-align: right; border-top: none;">
-                                                    <?php echo htmlspecialchars($g['gl_code'] ?? '—'); ?>
-                                                </td>
-                                                <td class="col-gldesc wrap-cell" style="padding: 0.35rem 0.5rem; border-top: none;">
-                                                    <?php echo htmlspecialchars($g['gl_desc'] ?? '—'); ?>
-                                                </td>
-                                                <td class="col-desc wrap-cell" style="padding: 0.35rem 0.5rem; border-top: none;">
-                                                    <?php echo htmlspecialchars($g['desc'] ?? '—'); ?>
-                                                </td>
-                                                <td class="col-reference" style="padding: 0.35rem 0.5rem; border-top: none;">
-                                                    <?php echo htmlspecialchars($g['reference'] ?? '—'); ?>
-                                                </td>
-                                                <td class="col-datetime" style="padding: 0.35rem 0.5rem; color:#000000; border-top: none;">
-                                                    <?php echo htmlspecialchars($g['datetime'] ?? '—'); ?>
-                                                </td>
-                                                <td class="col-debit" style="padding: 0.35rem 0.5rem; text-align: right; color:#1565c0; font-weight:600; border-top: none;">
-                                                    <?php echo number_format((float)($g['debit'] ?? 0), 2); ?>
-                                                </td>
-                                                <td class="col-credit" style="padding: 0.35rem 0.5rem; text-align: right; color:#6a1b9a; font-weight:600; border-top: none;">
-                                                    <?php echo number_format((float)($g['credit'] ?? 0), 2); ?>
-                                                </td>
-                                                <td class="col-entry" style="padding: 0.35rem 0.5rem; border-top: none;">
-                                                    <?php echo htmlspecialchars($g['entry_number'] ?? '—'); ?>
-                                                </td>
+                                                <?php recon_render_gle_cells($g, ' border-top: none;'); ?>
                                             </tr>
                                         <?php endif; ?>
                                     <?php endforeach; ?>
-
                                 <?php else: ?>
-                                    <!-- SINGLE ROW OR NO GLE ROWS: Standard display -->
+                                    <!-- NO GLE ROWS -->
                                     <tr>
                                         <td class="col-status" style="padding: 0.35rem 0.5rem;"><?php echo $status_html; ?></td>
                                         <td class="col-partner wrap-cell" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($partner_display); ?></td>
                                         <td class="col-reference" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($row['reference_no'] ?? '—'); ?></td>
-                                        <td class="col-datetime divider-right" style="padding: 0.35rem 0.5rem;">
-                                            <?php echo $row['has_local'] ? htmlspecialchars($row['datetime'] ?? '—') : '—'; ?>
-                                        </td>
-
-                                        <?php if (!empty($child_rows)): ?>
-                                            <?php $single = $child_rows[0]; ?>
-                                            <td class="col-glcode" style="padding: 0.35rem 0.5rem; text-align: right; font-weight:600; color:#1a3c5e;">
-                                                <?php echo htmlspecialchars($single['gl_code'] ?? '—'); ?>
-                                            </td>
-                                            <td class="col-gldesc wrap-cell" style="padding: 0.35rem 0.5rem;">
-                                                <?php echo htmlspecialchars($single['gl_desc'] ?? '—'); ?>
-                                            </td>
-                                            <td class="col-desc wrap-cell" style="padding: 0.35rem 0.5rem;">
-                                                <?php echo htmlspecialchars($single['desc'] ?? '—'); ?>
-                                            </td>
-                                            <td class="col-reference" style="padding: 0.35rem 0.5rem;">
-                                                <?php echo htmlspecialchars($single['reference'] ?? '—'); ?>
-                                            </td>
-                                            <td class="col-datetime" style="padding: 0.35rem 0.5rem; color:#000;">
-                                                <?php echo htmlspecialchars($single['datetime'] ?? '—'); ?>
-                                            </td>
-                                            <td class="col-debit" style="padding: 0.35rem 0.5rem; text-align: right; color:#1565c0; font-weight:600;">
-                                                <?php echo number_format((float)($single['debit'] ?? 0), 2); ?>
-                                            </td>
-                                            <td class="col-credit" style="padding: 0.35rem 0.5rem; text-align: right; color:#6a1b9a; font-weight:600;">
-                                                <?php echo number_format((float)($single['credit'] ?? 0), 2); ?>
-                                            </td>
-                                            <td class="col-entry" style="padding: 0.35rem 0.5rem;">
-                                                <?php echo htmlspecialchars($single['entry_number'] ?? '—'); ?>
-                                            </td>
-                                        <?php else: ?>
-                                            <td class="col-glcode" style="padding: 0.35rem 0.5rem; text-align: right;">—</td>
-                                            <td class="col-gldesc" style="padding: 0.35rem 0.5rem;">—</td>
-                                            <td class="col-desc" style="padding: 0.35rem 0.5rem;">—</td>
-                                            <td class="col-reference" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($row['reference_no'] ?? '—'); ?></td>
-                                            <td class="col-datetime" style="padding: 0.35rem 0.5rem; text-align: right; font-weight: 600; color:#1565c0;">—</td>
-                                            <td class="col-debit" style="padding: 0.35rem 0.5rem; text-align: right; font-weight: 600; color:#6a1b9a;">—</td>
-                                            <td class="col-credit" style="padding: 0.35rem 0.5rem; text-align: right;">—</td>
-                                            <td class="col-entry" style="padding: 0.35rem 0.5rem;">—</td>
-                                        <?php endif; ?>
+                                        <td class="col-datetime divider-right" style="padding: 0.35rem 0.5rem;"><?php echo $row['has_local'] ? htmlspecialchars($row['datetime'] ?? '—') : '—'; ?></td>
+                                        <td class="col-glcode" style="padding: 0.35rem 0.5rem; text-align: right;">—</td>
+                                        <td class="col-gldesc" style="padding: 0.35rem 0.5rem;">—</td>
+                                        <td class="col-desc" style="padding: 0.35rem 0.5rem;">—</td>
+                                        <td class="col-reference" style="padding: 0.35rem 0.5rem;"><?php echo htmlspecialchars($row['reference_no'] ?? '—'); ?></td>
+                                        <td class="col-datetime" style="padding: 0.35rem 0.5rem; text-align: right; font-weight: 600; color:#1565c0;">—</td>
+                                        <td class="col-debit" style="padding: 0.35rem 0.5rem; text-align: right; font-weight: 600; color:#6a1b9a;">—</td>
+                                        <td class="col-credit" style="padding: 0.35rem 0.5rem; text-align: right;">—</td>
+                                        <td class="col-entry" style="padding: 0.35rem 0.5rem;">—</td>
                                     </tr>
-                                    <!-- Secondary Row for BP Amounts (Single/No GLE) -->
-                                    <tr>
-                                        <td colspan="4" class="divider-right" style="padding: 0.25rem 0.5rem 0.35rem 0.5rem; text-align: right; border-top: none; background: #fcfafa;">
-                                            <span style="font-size: 10px; color: #666; text-transform: uppercase; margin-right: 4px;">Amt Paid:</span> <strong style="color: #0d47a1; margin-right: 12px;"><?php echo $row['has_local'] && $row['amount_paid'] !== null ? number_format((float)$row['amount_paid'], 2) : '—'; ?></strong>
-                                            
-                                            <span style="font-size: 10px; color: #666; text-transform: uppercase; margin-right: 4px;">Chg Cust:</span> <strong style="color: #b30000; margin-right: 12px;"><?php echo $row['has_local'] && $row['charge_to_customer'] !== null ? number_format((float)$row['charge_to_customer'], 2) : '—'; ?></strong>
-                                            
-                                            <span style="font-size: 10px; color: #666; text-transform: uppercase; margin-right: 4px;">Chg Partr:</span> <strong style="color: #2e7d32;"><?php echo $row['has_local'] && $row['charge_to_partner'] !== null ? number_format((float)$row['charge_to_partner'], 2) : '—'; ?></strong>
-                                        </td>
-                                        <td colspan="8" style="border-top: none; background: #fafbfc;"></td>
-                                    </tr>
+                                    <?php recon_render_bp_subrow($row); ?>
                                 <?php endif; ?>
                             <?php endforeach; ?>
                         <?php elseif ($filter_applied && count($display_transactions) === 0): ?>
@@ -1233,14 +1191,14 @@ $export_qs = http_build_query([
                             <tr class="total-row">
                                 <td colspan="4" style="text-align: right; border-top: none; background: #910000;">
                                     <span style="font-size: 10px; color: #ffffff; text-transform: uppercase; margin-right: 4px;">Amt Paid:</span> <strong style="color: #ffffff; margin-right: 12px;"><?php echo number_format($page_amount_paid, 2); ?></strong>
-                                    
+
                                     <span style="font-size: 10px; color: #ffffff; text-transform: uppercase; margin-right: 4px;">Chg Cust:</span> <strong style="color: #ffffff; margin-right: 12px;"><?php echo number_format($page_charge_customer, 2); ?></strong>
-                                    
+
                                     <span style="font-size: 10px; color: #ffffff; text-transform: uppercase; margin-right: 4px;">Chg Partr:</span> <strong style="color: #ffffff;"><?php echo number_format($page_charge_partner, 2); ?></strong>
                                     <span style="font-size: 10px; color: #ffffff; text-transform: uppercase; margin-right: 4px;">BP Total:</span> <strong style="color: #ffffff;"><?php echo number_format($page_bp_combined, 2); ?></strong>
                                 </td>
                                 <td colspan="8" style="border-top: none; background: #910000; vertical-align: middle;">
-                                  
+
                                 </td>
                             </tr>
                         </tfoot>
@@ -1303,7 +1261,6 @@ $export_qs = http_build_query([
                 }).then((result) => {
                     if (result.isConfirmed) {
                         $('#loading-overlay').css('display', 'flex');
-                        // Re-submit the form after confirmation
                         $('#filter-form')[0].submit();
                     }
                 });
@@ -1313,8 +1270,8 @@ $export_qs = http_build_query([
             $('#loading-overlay').css('display', 'flex');
         });
 
-        // ---------- Export PDF validation ----------
-        $('#export-pdf-btn').on('click', function(e) {
+        // ---------- Export validation (PDF + CSV) ----------
+        $('.export-btn').on('click', function(e) {
             var from    = $('#date_from').val();
             var to      = $('#date_to').val();
             var refno   = $('#reference_no').val().trim();

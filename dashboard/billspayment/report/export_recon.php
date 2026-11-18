@@ -1,602 +1,784 @@
 <?php
 // export_recon.php
+// ?format=pdf (default, capped at RECON_PDF_MAX_REFS references)  |  ?format=csv (streamed, no cap)
 require_once __DIR__ . '/../../../config/config.php';
-require_once __DIR__ . '/../../../vendor/autoload.php';
-date_default_timezone_set('Asia/Manila');
+// ===== BEGIN inlined recon library (identical in both files; do not edit one without the other) =====
+// ============================================================
+// recon_lib.php
+// Shared by billspay-gle-recon-report.php and export_recon.php
+// (put this file in the same folder as those two)
+//
+// Strategy (why this is faster):
+//   Phase 1 - AGGREGATES ONLY: one row per reference from SQL
+//             (SUM/COUNT/GROUP BY) for both BP and GLE. Cheap, light on memory.
+//   Phase 2 - DETAILS: full GLE rows are fetched ONLY for the references that
+//             are actually displayed (100 on the page, or the filtered set in the export).
+//   Result of phase 1 is cached in a temp file so pager clicks and
+//   the export don't recompute everything.
+// ============================================================
 
-use Dompdf\Dompdf;
-use Dompdf\Options;
-
-session_start();
-set_time_limit(120);
+const RECON_GLE_TO_BP_PREFIXES = ['KBP'];                    // GLE refs expected to exist in BP
+const RECON_DATE_ONLY_PREFIXES = ['APB', 'EBP', 'KBP', 'WQP']; // BP refs scanned in date-only mode
+const RECON_CACHE_VERSION      = 'v3';
+const RECON_CACHE_TTL          = 900;      // seconds
+const RECON_BP_GROUP_CAP       = 200000;   // safety cap on number of BP references
+const RECON_REF_CHUNK          = 1000;     // refs per IN (...) query
+const RECON_PDF_MAX_REFS       = 3000;     // above this, PDF is refused -> use CSV
 
 // ------------------------------------------------------------
-// Normalize partner names (same as main page)
+// Small helpers
 // ------------------------------------------------------------
-function normalizePartnerName($value) {
+function recon_is_gle_to_bp_ref($ref) {
+    $ref = (string)$ref;
+    foreach (RECON_GLE_TO_BP_PREFIXES as $pfx) {
+        if ($pfx !== '' && stripos($ref, $pfx) === 0) return true;
+    }
+    return false;
+}
+
+function recon_normalize_partner_name($value) {
     $value = strtoupper(trim((string)$value));
     $value = str_replace(["\\'", "'"], '', $value);
     return preg_replace('/[^A-Z0-9]/', '', $value);
 }
 
-// ------------------------------------------------------------
-// 0. Detect reference column (same as main page)
-// ------------------------------------------------------------
-$reference_column = 'reference_no';
-$check_col = $conn->query("
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_SCHEMA = 'mldb'
-      AND TABLE_NAME = 'billspayment_transaction'
-      AND (COLUMN_NAME LIKE '%ref%' OR COLUMN_NAME LIKE '%reference%')
-");
-if ($check_col && $check_col->num_rows > 0) {
-    $c = $check_col->fetch_assoc();
-    $reference_column = $c['COLUMN_NAME'];
-    $check_col->free();
-}
-
-// ------------------------------------------------------------
-// 1. Fetch partners (needed for name resolution)
-// ------------------------------------------------------------
-$partners = [];
-$result_partners = $conn->query("
-    SELECT partner_id_kpx, partner_name
-    FROM masterdata.partner_masterfile
-    WHERE partner_id_kpx IS NOT NULL
-      AND partner_name IS NOT NULL
-    ORDER BY partner_name ASC
-");
-if ($result_partners) {
-    while ($row = $result_partners->fetch_assoc()) {
-        $partners[] = $row;
+function recon_prefix_sql(array $prefixes, $column, &$types, array &$params) {
+    $parts = [];
+    foreach ($prefixes as $pfx) {
+        $parts[]  = "$column LIKE ?";
+        $params[] = $pfx . '%';
+        $types   .= 's';
     }
-    $result_partners->free();
+    return '(' . implode(' OR ', $parts) . ')';
+}
+
+function recon_fetch_all(mysqli $db, $sql, $types, array $params, &$err) {
+    $err = '';
+    $out = [];
+    $stmt = $db->prepare($sql);
+    if (!$stmt) { $err = $db->error; return $out; }
+    if ($types !== '') $stmt->bind_param($types, ...$params);
+    if (!$stmt->execute()) { $err = $stmt->error; $stmt->close(); return $out; }
+    $res = $stmt->get_result();
+    while ($row = $res->fetch_assoc()) $out[] = $row;
+    $stmt->close();
+    return $out;
 }
 
 // ------------------------------------------------------------
-// 2. Read filters (same as main page)
+// File cache (NOT the session: big arrays in $_SESSION slow every request)
 // ------------------------------------------------------------
-$partner_id   = isset($_GET['partner']) ? trim($_GET['partner']) : '';
-$date_from    = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
-$date_to      = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
-$reference_no = isset($_GET['reference_no']) ? trim($_GET['reference_no']) : '';
-$display_mode = isset($_GET['display_mode']) ? trim($_GET['display_mode']) : 'variance';
-if (!in_array($display_mode, ['variance', 'all', 'matched'], true)) {
-    $display_mode = 'variance';
+function recon_cache_path($key) {
+    return sys_get_temp_dir() . '/recon_' . preg_replace('/[^a-z0-9_]/i', '', $key) . '.cache';
 }
 
-// Validation (aligned with main page)
-if ($reference_no === '' && $partner_id === '' && ($date_from === '' || $date_to === '')) {
-    die('Enter a Reference No, select a Partner, or provide both Date From and Date To.');
-}
-if ($partner_id !== '' && $partner_id !== 'ALL' && ($date_from === '' || $date_to === '')) {
-    die('When filtering by Partner, both Date From and Date To are required.');
-}
-if (($date_from === '') !== ($date_to === '') && $reference_no === '') {
-    die('Please provide both Date From and Date To when filtering by date.');
-}
-if ($date_from !== '' && $date_to !== '' && $date_from > $date_to) {
-    die('Date From cannot be later than Date To.');
+function recon_cache_get($key, $ttl = RECON_CACHE_TTL) {
+    $f = recon_cache_path($key);
+    if (!is_file($f) || (time() - filemtime($f)) > $ttl) return null;
+    $raw = @file_get_contents($f);
+    if ($raw === false) return null;
+    $data = @unserialize($raw, ['allowed_classes' => false]);
+    return is_array($data) ? $data : null;
 }
 
-$partner_name    = '';
-$is_all_partners = ($partner_id === 'ALL');
-if ($partner_id !== '' && !$is_all_partners) {
+function recon_cache_put($key, array $data) {
+    $f   = recon_cache_path($key);
+    $tmp = $f . '.' . getmypid();
+    if (@file_put_contents($tmp, serialize($data)) !== false) {
+        @rename($tmp, $f); // atomic
+    }
+    // light garbage collection (~2% of writes): delete files older than 1 hour
+    if (mt_rand(1, 50) === 1) {
+        foreach (glob(sys_get_temp_dir() . '/recon_*.cache') ?: [] as $old) {
+            if (time() - @filemtime($old) > 3600) @unlink($old);
+        }
+    }
+}
+
+function recon_cache_key(array $f) {
+    return 'r_' . md5(RECON_CACHE_VERSION . '|' . implode(',', RECON_GLE_TO_BP_PREFIXES) . '|'
+        . $f['partner_id'] . '|' . $f['date_from'] . '|' . $f['date_to'] . '|' . $f['reference_no']);
+}
+
+// ------------------------------------------------------------
+// Metadata
+// ------------------------------------------------------------
+function recon_detect_reference_column(mysqli $conn) {
+    $cached = recon_cache_get('refcol', 86400);
+    if ($cached && !empty($cached['col'])) return $cached['col'];
+
+    $col = 'reference_no';
+    $q = $conn->query("
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = 'mldb'
+          AND TABLE_NAME = 'billspayment_transaction'
+          AND (COLUMN_NAME LIKE '%ref%' OR COLUMN_NAME LIKE '%reference%')
+        ORDER BY (COLUMN_NAME = 'reference_no') DESC
+        LIMIT 1
+    ");
+    if ($q && $q->num_rows > 0) {
+        $c = $q->fetch_assoc();
+        if (preg_match('/^[A-Za-z0-9_]+$/', (string)$c['COLUMN_NAME'])) {
+            $col = $c['COLUMN_NAME'];
+        }
+        $q->free();
+    }
+    recon_cache_put('refcol', ['col' => $col]);
+    return $col;
+}
+
+function recon_load_partners(mysqli $conn) {
+    $partners = [];
+    $res = $conn->query("
+        SELECT partner_id_kpx, partner_name
+        FROM masterdata.partner_masterfile
+        WHERE partner_id_kpx IS NOT NULL
+          AND partner_name IS NOT NULL
+        ORDER BY partner_name ASC
+    ");
+    if ($res) {
+        while ($row = $res->fetch_assoc()) $partners[] = $row;
+        $res->free();
+    }
+    return $partners;
+}
+
+function recon_partner_name(array $partners, $partner_id) {
     foreach ($partners as $p) {
-        if ((string)$p['partner_id_kpx'] === (string)$partner_id) {
-            $partner_name = $p['partner_name'];
-            break;
-        }
+        if ((string)$p['partner_id_kpx'] === (string)$partner_id) return $p['partner_name'];
     }
-}
-
-$date_only_search = (
-    $reference_no === '' &&
-    ($partner_id === '' || $is_all_partners) &&
-    $date_from !== '' &&
-    $date_to !== ''
-);
-
-// ------------------------------------------------------------
-// 2b. SESSION CACHE — try to reuse recon results from main page
-// ------------------------------------------------------------
-$cache_key = md5($partner_id . '|' . $date_from . '|' . $date_to . '|' . $reference_no);
-$transactions          = null;
-$total_amount_paid     = 0;
-$total_charge_customer = 0;
-$total_charge_partner  = 0;
-$total_debit           = 0;
-$total_credit          = 0;
-$matched_count         = 0;
-$variance_count        = 0;
-$unmatched_local       = 0;
-$unmatched_gle         = 0;
-
-if (isset($_SESSION['recon_export'][$cache_key]) && is_array($_SESSION['recon_export'][$cache_key])) {
-    $cached = $_SESSION['recon_export'][$cache_key];
-    $transactions          = $cached['transactions'];
-    $total_amount_paid     = $cached['total_amount_paid'];
-    $total_charge_customer = $cached['total_charge_customer'];
-    $total_charge_partner  = $cached['total_charge_partner'];
-    $total_debit           = $cached['total_debit'];
-    $total_credit          = $cached['total_credit'];
-    $matched_count         = $cached['matched_count'];
-    $variance_count        = $cached['variance_count'];
-    $unmatched_local       = $cached['unmatched_local'];
-    $unmatched_gle         = $cached['unmatched_gle'];
+    return '';
 }
 
 // ------------------------------------------------------------
-// 3. If not cached, run the (optimized) queries
+// Filters
 // ------------------------------------------------------------
-if ($transactions === null) {
-
-    // ---------- LOCAL (Bills Payment) QUERY ----------
-    $sql = "
-        SELECT
-            t.partner_id_kpx,
-            p.partner_name,
-            t.`{$reference_column}` AS reference_no,
-            t.datetime,
-            t.amount_paid,
-            t.charge_to_customer,
-            t.charge_to_partner,
-            t.branch_id,
-            t.outlet
-        FROM mldb.billspayment_transaction t
-        LEFT JOIN masterdata.partner_masterfile p
-            ON t.partner_id_kpx = p.partner_id_kpx
-        WHERE t.outlet <> 'ML CEBU HEAD OFFICE'
-    ";
-    $params = [];
-    $types  = '';
-
-    if ($reference_no !== '') {
-        $sql .= " AND t.`{$reference_column}` = ?";
-        $params[] = $reference_no;
-        $types   .= 's';
+function recon_parse_filters(array $src) {
+    $g = function ($k) use ($src) {
+        return (isset($src[$k]) && is_string($src[$k])) ? trim($src[$k]) : '';
+    };
+    $f = [
+        'partner_id'   => $g('partner'),
+        'date_from'    => $g('date_from'),
+        'date_to'      => $g('date_to'),
+        'reference_no' => $g('reference_no'),
+        'display_mode' => $g('display_mode') ?: 'variance',
+    ];
+    if (!in_array($f['display_mode'], ['variance', 'bp_only', 'gle_only', 'matched', 'all'], true)) {
+        $f['display_mode'] = 'variance';
     }
-
-    if ($partner_id !== '' && !$is_all_partners) {
-        $sql .= " AND t.partner_id_kpx = ? AND p.partner_name = ?";
-        $params[] = $partner_id;
-        $params[] = $partner_name;
-        $types   .= 'ss';
-    }
-
-    if ($date_from !== '') {
-        $sql .= " AND t.datetime >= ?";
-        $params[] = $date_from . ' 00:00:00';
-        $types   .= 's';
-    }
-    if ($date_to !== '') {
-        $sql .= " AND t.datetime <= ?";
-        $params[] = $date_to . ' 23:59:59';
-        $types   .= 's';
-    }
-
-    if ($date_only_search) {
-        $sql .= " AND (t.`{$reference_column}` LIKE 'APB%'
-                    OR t.`{$reference_column}` LIKE 'EBP%'
-                    OR t.`{$reference_column}` LIKE 'KBP%'
-                    OR t.`{$reference_column}` LIKE 'WQP%')";
-    }
-
-    $sql .= " ORDER BY t.datetime DESC";
-
-    if ($partner_id === '' && !$date_only_search && !$is_all_partners) {
-        $sql .= " LIMIT 500";
-    } elseif ($date_only_search || $is_all_partners) {
-        $sql .= " LIMIT 3000";
-    }
-
-    $local_rows = [];
-    $stmt = $conn->prepare($sql);
-    if ($stmt) {
-        if ($types !== '') {
-            $stmt->bind_param($types, ...$params);
-        }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        while ($row = $result->fetch_assoc()) {
-            $local_rows[] = $row;
-        }
-        $stmt->close();
-    }
-
-    $refs = [];
-    foreach ($local_rows as $lr) {
-        $r = trim($lr['reference_no'] ?? '');
-        if ($r !== '') {
-            $refs[$r] = true;
-        }
-    }
-    $refs = array_keys($refs);
-
-    // ---------- GLE QUERIES ----------
-    $gle_by_ref = [];
-    $should_query_gle = (
-        $reference_no !== '' ||
-        !empty($refs) ||
-        ($partner_id !== '' && !$is_all_partners && $partner_name !== '') ||
-        $date_only_search ||
-        $is_all_partners
+    $f['is_all']    = ($f['partner_id'] === 'ALL');
+    $f['date_only'] = (
+        $f['reference_no'] === '' &&
+        ($f['partner_id'] === '' || $f['is_all']) &&
+        $f['date_from'] !== '' && $f['date_to'] !== ''
     );
+    return $f;
+}
 
-    if ($should_query_gle) {
+// returns '' when valid, else an error message
+function recon_validate_filters(array $f) {
+    if ($f['reference_no'] === '' && $f['partner_id'] === '' && ($f['date_from'] === '' || $f['date_to'] === '')) {
+        return 'Enter a Reference No, select a Partner, or provide both Date From and Date To.';
+    }
+    if ($f['partner_id'] !== '' && !$f['is_all'] && ($f['date_from'] === '' || $f['date_to'] === '')) {
+        return 'When filtering by Partner, both Date From and Date To are required.';
+    }
+    if (($f['date_from'] === '') !== ($f['date_to'] === '') && $f['reference_no'] === '') {
+        return 'Please provide both Date From and Date To when filtering by date.';
+    }
+    if ($f['date_from'] !== '' && $f['date_to'] !== '' && $f['date_from'] > $f['date_to']) {
+        return 'Date From cannot be later than Date To.';
+    }
+    return '';
+}
 
-        $date_from_val = ($date_from !== '') ? $date_from . ' 00:00:00' : null;
-        $date_to_val   = ($date_to   !== '') ? $date_to   . ' 23:59:59' : null;
+function recon_date_bounds(array $f) {
+    return [
+        $f['date_from'] !== '' ? $f['date_from'] . ' 00:00:00' : null,
+        $f['date_to']   !== '' ? $f['date_to']   . ' 23:59:59' : null,
+    ];
+}
 
-        // ----------------------------------------------------------
-        // 3a. Reference-based GLE lookup (indexed, chunked)
-        // ----------------------------------------------------------
-        $fetch_gle_by_refs = function (array $refs_in) use ($conn_exact, $date_from_val, $date_to_val) {
-            $out = [];
-            if (empty($refs_in)) return $out;
+function recon_filter_rows(array $rows, $mode) {
+    $map = [
+        'variance' => 'VARIANCE',
+        'bp_only'  => 'UNMATCHED (BP only)',
+        'gle_only' => 'UNMATCHED (GLE only)',
+        'matched'  => 'MATCHED',
+    ];
+    if (!isset($map[$mode])) return $rows; // 'all'
+    $want = $map[$mode];
+    return array_values(array_filter($rows, function ($r) use ($want) {
+        return $r['match_status'] === $want;
+    }));
+}
 
-            $date_sql    = '';
-            $date_params = [];
-            $date_types  = '';
-            if ($date_from_val !== null) { $date_sql .= " AND datetime >= ?"; $date_params[] = $date_from_val; $date_types .= 's'; }
-            if ($date_to_val   !== null) { $date_sql .= " AND datetime <= ?"; $date_params[] = $date_to_val;   $date_types .= 's'; }
+function recon_sum_rows(array $rows) {
+    $t = ['amount_paid' => 0, 'charge_customer' => 0, 'charge_partner' => 0, 'debit' => 0, 'credit' => 0,
+          'matched' => 0, 'variance' => 0, 'unmatched_local' => 0, 'unmatched_gle' => 0];
+    foreach ($rows as $r) {
+        switch ($r['match_status']) {
+            case 'MATCHED':             $t['matched']++;         break;
+            case 'VARIANCE':            $t['variance']++;        break;
+            case 'UNMATCHED (BP only)': $t['unmatched_local']++; break;
+            default:                    $t['unmatched_gle']++;
+        }
+        if ($r['has_local']) {
+            $t['amount_paid']     += (float)$r['amount_paid'];
+            $t['charge_customer'] += (float)$r['charge_to_customer'];
+            $t['charge_partner']  += (float)$r['charge_to_partner'];
+        }
+        if ($r['has_gle']) {
+            $t['debit']  += (float)$r['gle_debit_total'];
+            $t['credit'] += (float)$r['gle_credit_total'];
+        }
+    }
+    return $t;
+}
 
-            foreach (array_chunk($refs_in, 500) as $chunk) {
-                $ph = implode(',', array_fill(0, count($chunk), '?'));
+// ------------------------------------------------------------
+// PHASE 1: aggregates only
+// ------------------------------------------------------------
+function recon_gle_agg_map(array $rows) {
+    $map = [];
+    foreach ($rows as $r) {
+        $ref = trim((string)$r['reference']);
+        if ($ref === '') continue;
+        if (!isset($map[$ref])) {
+            $map[$ref] = ['n' => 0, 'd' => 0.0, 'c' => 0.0];
+        }
+        $map[$ref]['n'] += (int)$r['n'];
+        $map[$ref]['d'] += (float)$r['d'];
+        $map[$ref]['c'] += (float)$r['c'];
+    }
+    return $map;
+}
 
-                $sql = "
-                    SELECT
-                        no, datetime, gl_code, gl_desc, partner_id, `desc`, reference,
-                        entry_number, currency, debit, credit, transaction_type,
-                        branch_id, branch_code, item, main_zone, zone, region
-                    FROM gle
-                    FORCE INDEX (idx_gle_reference_datetime)
-                    WHERE reference IN ($ph)" . $date_sql;
+function recon_gle_agg_by_refs(mysqli $db, array $refs, $df, $dt, array &$warnings) {
+    $out = [];
+    if (!$refs) return $out;
 
-                $params = array_merge($chunk, $date_params);
-                $types  = str_repeat('s', count($chunk)) . $date_types;
+    $date_sql = ''; $date_params = []; $date_types = '';
+    if ($df !== null) { $date_sql .= ' AND datetime >= ?'; $date_params[] = $df; $date_types .= 's'; }
+    if ($dt !== null) { $date_sql .= ' AND datetime <= ?'; $date_params[] = $dt; $date_types .= 's'; }
 
-                $stmt = $conn_exact->prepare($sql);
-                if (!$stmt) continue;
-                $stmt->bind_param($types, ...$params);
-                $stmt->execute();
-                $res = $stmt->get_result();
-                while ($row = $res->fetch_assoc()) {
-                    $ref = trim($row['reference'] ?? '');
-                    if ($ref !== '') $out[$ref][] = $row;
-                }
-                $stmt->close();
-            }
-            return $out;
-        };
-
-        // ----------------------------------------------------------
-        // 3b. Partner-name GLE lookup (pushed into SQL, indexed)
-        // ----------------------------------------------------------
-        $fetch_gle_by_partner = function ($partner_name_in, $date_from_in, $date_to_in) use ($conn_exact) {
-            $out = [];
-            if ($partner_name_in === '') return $out;
-
-            $date_sql    = '';
-            $date_params = [];
-            $date_types  = '';
-            if ($date_from_in !== null) { $date_sql .= " AND datetime >= ?"; $date_params[] = $date_from_in; $date_types .= 's'; }
-            if ($date_to_in   !== null) { $date_sql .= " AND datetime <= ?"; $date_params[] = $date_to_in;   $date_types .= 's'; }
-
-            $sql = "
-                SELECT
-                    no, datetime, gl_code, gl_desc, partner_id, `desc`, reference,
-                    entry_number, currency, debit, credit, transaction_type,
-                    branch_id, branch_code, item, main_zone, zone, region
+    foreach (array_chunk($refs, RECON_REF_CHUNK) as $chunk) {
+        $ph  = implode(',', array_fill(0, count($chunk), '?'));
+        $sql = "SELECT reference, COUNT(*) AS n, SUM(debit) AS d, SUM(credit) AS c
                 FROM gle
-                FORCE INDEX (idx_gle_gl_datetime_no)
-                WHERE gl_code = '428101'" . $date_sql . "
-                  AND (
-                        `desc` = ?
-                     OR `desc` LIKE ?
-                     OR `desc` LIKE ?
-                  )
-            ";
+                WHERE reference IN ($ph)$date_sql
+                GROUP BY reference";
+        $err  = '';
+        $rows = recon_fetch_all($db, $sql, str_repeat('s', count($chunk)) . $date_types,
+                                array_merge($chunk, $date_params), $err);
+        if ($err !== '') $warnings[] = 'GLE aggregate error: ' . $err;
+        $out += recon_gle_agg_map($rows);
+    }
+    return $out;
+}
 
-            $params = array_merge($date_params, [
-                $partner_name_in,
-                $partner_name_in . '%',
-                '%' . $partner_name_in . '%',
-            ]);
-            $types = $date_types . 'sss';
+// KBP (GLE -> BP scope) references in a date range, aggregated. Covered by
+// idx_reference_datetime_covering (reference, datetime, ..., debit, credit).
+function recon_gle_agg_scoped_by_date(mysqli $db, $df, $dt, array &$warnings) {
+    if ($df === null || $dt === null) return [];
+    $types = ''; $params = [];
+    $pfx_sql = recon_prefix_sql(RECON_GLE_TO_BP_PREFIXES, 'reference', $types, $params);
+    $sql = "SELECT reference, COUNT(*) AS n, SUM(debit) AS d, SUM(credit) AS c
+            FROM gle
+            WHERE $pfx_sql AND datetime >= ? AND datetime <= ?
+            GROUP BY reference";
+    $params[] = $df; $params[] = $dt; $types .= 'ss';
+    $err  = '';
+    $rows = recon_fetch_all($db, $sql, $types, $params, $err);
+    if ($err !== '') $warnings[] = 'GLE date lookup error: ' . $err;
+    return recon_gle_agg_map($rows);
+}
 
-            $stmt = $conn_exact->prepare($sql);
-            if (!$stmt) return $out;
-            $stmt->bind_param($types, ...$params);
-            $stmt->execute();
-            $res = $stmt->get_result();
-            while ($row = $res->fetch_assoc()) {
-                $ref = trim($row['reference'] ?? '');
-                if ($ref !== '') $out[$ref][] = $row;
-            }
-            $stmt->close();
-            return $out;
-        };
+// KBP references whose 428101 line matches the partner name (candidates for GLE-only)
+function recon_gle_partner_candidate_refs(mysqli $db, $partner_name, $df, $dt, array &$warnings) {
+    $refs = [];
+    if ($partner_name === '') return $refs;
 
-        // ----------------------------------------------------------
-        // 3c. Date-only GLE lookup (prefix UNION, indexed)
-        // ----------------------------------------------------------
-        $fetch_gle_date_only = function ($date_from_in, $date_to_in) use ($conn_exact) {
-            $out = [];
-            if ($date_from_in === null || $date_to_in === null) return $out;
+    $types = ''; $params = [];
+    $pfx_sql = recon_prefix_sql(RECON_GLE_TO_BP_PREFIXES, 'reference', $types, $params);
 
-            $prefixes = ['APB', 'EBP', 'KBP', 'WQP'];
-            $branch_sql = [];
-            $branch_params = [];
-            $branch_types = '';
+    $date_sql = '';
+    if ($df !== null) { $date_sql .= ' AND datetime >= ?'; $params[] = $df; $types .= 's'; }
+    if ($dt !== null) { $date_sql .= ' AND datetime <= ?'; $params[] = $dt; $types .= 's'; }
 
-            foreach ($prefixes as $pfx) {
-                $branch_sql[] = "(SELECT
-                        no, datetime, gl_code, gl_desc, partner_id, `desc`,
-                        reference, entry_number, currency, debit, credit,
-                        transaction_type, branch_id, branch_code, item,
-                        main_zone, zone, region
-                    FROM gle FORCE INDEX (idx_ref_prefix_datetime)
-                    WHERE reference >= ? AND reference < ?
-                      AND datetime >= ? AND datetime <= ?)";
-                $branch_params[] = $pfx;
-                $branch_params[] = $pfx . '~';
-                $branch_params[] = $date_from_in;
-                $branch_params[] = $date_to_in;
-                $branch_types   .= 'ssss';
-            }
+    $params[] = '%' . addcslashes($partner_name, '%_\\') . '%';
+    $types   .= 's';
 
-            $sql = implode(" UNION ALL ", $branch_sql) .
-                   " ORDER BY reference ASC, entry_number ASC, gl_code ASC";
+    // idx_gle_reference_details (gl_code, desc, reference, datetime, no) covers this
+    $sql = "SELECT DISTINCT reference, `desc`
+            FROM gle
+            WHERE gl_code = '428101' AND $pfx_sql$date_sql AND `desc` LIKE ?";
+    $err  = '';
+    $rows = recon_fetch_all($db, $sql, $types, $params, $err);
+    if ($err !== '') { $warnings[] = 'GLE partner lookup error: ' . $err; return $refs; }
 
-            $max_rows = 50000;
-
-            $stmt = $conn_exact->prepare($sql);
-            if (!$stmt) return $out;
-            $stmt->bind_param($branch_types, ...$branch_params);
-            $stmt->execute();
-            $res = $stmt->get_result();
-
-            $count = 0;
-            while ($row = $res->fetch_assoc()) {
-                if (++$count > $max_rows) break;
-                $ref = trim($row['reference'] ?? '');
-                if ($ref !== '') $out[$ref][] = $row;
-            }
-            $stmt->close();
-            return $out;
-        };
-
-        // 1) Reference-based
-        $refs_to_lookup = [];
-        if ($reference_no !== '') $refs_to_lookup[$reference_no] = true;
-        foreach ($refs as $r) if ($r !== '') $refs_to_lookup[$r] = true;
-        $refs_to_lookup = array_keys($refs_to_lookup);
-
-        if (!empty($refs_to_lookup)) {
-            $gle_by_ref += $fetch_gle_by_refs($refs_to_lookup);
+    $normalized_partner = recon_normalize_partner_name($partner_name);
+    $memo = []; // similar_text is expensive; many rows share the same desc
+    foreach ($rows as $r) {
+        $rdesc = (string)($r['desc'] ?? '');
+        $ref   = trim((string)$r['reference']);
+        if ($rdesc === '' || $ref === '') continue;
+        if (!isset($memo[$rdesc])) {
+            $norm = recon_normalize_partner_name($rdesc);
+            $pct  = 0.0;
+            similar_text($normalized_partner, $norm, $pct);
+            $memo[$rdesc] = ($norm === $normalized_partner || $pct >= 95.0);
         }
+        if ($memo[$rdesc]) $refs[$ref] = true;
+    }
+    return array_keys($refs);
+}
 
-        // 2) Partner-based — find candidate refs via 428101, then expand to FULL journal
-        if ($partner_id !== '' && !$is_all_partners && $partner_name !== '') {
-            $partner_hits = $fetch_gle_by_partner($partner_name, $date_from_val, $date_to_val);
+/**
+ * Runs the whole reconciliation at the AGGREGATE level.
+ * Returns ['rows' => [...one light row per reference...], 'totals' => [...], 'warnings' => [...]]
+ * Row keys match what the page/export templates already use.
+ */
+function recon_run(mysqli $conn, mysqli $conn_exact, array $f, array $partners, $reference_column) {
+    $warnings     = [];
+    $partner_name = ($f['partner_id'] !== '' && !$f['is_all']) ? recon_partner_name($partners, $f['partner_id']) : '';
+    $partner_map  = [];
+    foreach ($partners as $p) $partner_map[(string)$p['partner_id_kpx']] = $p['partner_name'];
+    list($df, $dt) = recon_date_bounds($f);
 
-            if (!empty($partner_hits)) {
-                $normalized_partner = normalizePartnerName($partner_name);
-                $filtered = [];
-                foreach ($partner_hits as $ref => $rows) {
-                    foreach ($rows as $row) {
-                        $rdesc = (string)($row['desc'] ?? '');
-                        if ($rdesc === '') continue;
-                        $norm = normalizePartnerName($rdesc);
-                        $pct  = 0.0;
-                        similar_text($normalized_partner, $norm, $pct);
-                        if ($norm === $normalized_partner || $pct >= 95.0) {
-                            $filtered[$ref][] = $row;
-                        }
-                    }
-                }
-                $partner_hits = $filtered;
-            }
+    // ---------- BP aggregate (no ORDER BY, no join; names come from $partners) ----------
+    $col = $reference_column;
+    $sql = "
+        SELECT t.`{$col}` AS reference_no,
+               MIN(t.partner_id_kpx)        AS partner_id_kpx,
+               MAX(t.datetime)              AS datetime,
+               SUM(t.amount_paid)           AS amt,
+               SUM(t.charge_to_customer)    AS chg_c,
+               SUM(t.charge_to_partner)     AS chg_p
+        FROM mldb.billspayment_transaction t
+        WHERE t.outlet <> 'ML CEBU HEAD OFFICE'
+          AND t.`{$col}` IS NOT NULL AND t.`{$col}` <> ''
+    ";
+    $params = []; $types = '';
+    if ($f['reference_no'] !== '') {
+        $sql .= " AND t.`{$col}` = ?"; $params[] = $f['reference_no']; $types .= 's';
+    }
+    if ($f['partner_id'] !== '' && !$f['is_all']) {
+        $sql .= ' AND t.partner_id_kpx = ?'; $params[] = $f['partner_id']; $types .= 's';
+    }
+    if ($df !== null) { $sql .= ' AND t.datetime >= ?'; $params[] = $df; $types .= 's'; }
+    if ($dt !== null) { $sql .= ' AND t.datetime <= ?'; $params[] = $dt; $types .= 's'; }
+    if ($f['date_only']) {
+        $sql .= ' AND ' . recon_prefix_sql(RECON_DATE_ONLY_PREFIXES, "t.`{$col}`", $types, $params);
+    }
+    $sql .= " GROUP BY t.`{$col}` ORDER BY NULL LIMIT " . (RECON_BP_GROUP_CAP + 1);
 
-            // Expand every partner-matched reference to its complete GLE journal lines
-            if (!empty($partner_hits)) {
-                $partner_refs = array_keys($partner_hits);
-                $full_gle_for_partner_refs = $fetch_gle_by_refs($partner_refs);
-                foreach ($full_gle_for_partner_refs as $ref => $rows) {
-                    foreach ($rows as $row) {
-                        $gle_by_ref[$ref][] = $row;
-                    }
-                }
-            }
-        }
-
-        // 3) Date-only / All partners
-        if ($date_only_search || $is_all_partners) {
-            $date_hits = $fetch_gle_date_only($date_from_val, $date_to_val);
-            foreach ($date_hits as $ref => $rows) {
-                foreach ($rows as $row) {
-                    $gle_by_ref[$ref][] = $row;
-                }
-            }
-        }
-
-        // Dedup GLE rows (per reference, by `no`)
-        foreach ($gle_by_ref as $ref => &$rows) {
-            $seen = [];
-            $deduped = [];
-            foreach ($rows as $row) {
-                $key = $row['no'] ?? '';
-                if (!isset($seen[$key])) {
-                    $seen[$key] = true;
-                    $deduped[]  = $row;
-                }
-            }
-            $rows = $deduped;
-        }
-        unset($rows);
+    $err = '';
+    $bp_rows = recon_fetch_all($conn, $sql, $types, $params, $err);
+    if ($err !== '') $warnings[] = 'Local query error: ' . $err;
+    if (count($bp_rows) > RECON_BP_GROUP_CAP) {
+        array_pop($bp_rows);
+        $warnings[] = 'Result capped at ' . RECON_BP_GROUP_CAP . ' BP references. Please narrow the filters.';
     }
 
-    // ---------- RECONCILE ----------
-    $local_by_ref = [];
-    foreach ($local_rows as $lr) {
-        $r = trim($lr['reference_no'] ?? '');
-        if ($r !== '') $local_by_ref[$r][] = $lr;
+    $bp = [];
+    foreach ($bp_rows as $r) {
+        $ref = trim((string)$r['reference_no']);
+        if ($ref === '') continue;
+        if (!isset($bp[$ref])) {
+            $bp[$ref] = [
+                'pid' => $r['partner_id_kpx'], 'dt' => $r['datetime'],
+                'amt' => (float)$r['amt'], 'chg_c' => (float)$r['chg_c'], 'chg_p' => (float)$r['chg_p'],
+            ];
+        } else { // refs that only differed by whitespace
+            $bp[$ref]['amt']   += (float)$r['amt'];
+            $bp[$ref]['chg_c'] += (float)$r['chg_c'];
+            $bp[$ref]['chg_p'] += (float)$r['chg_p'];
+            if ((string)$r['datetime'] > (string)$bp[$ref]['dt']) $bp[$ref]['dt'] = $r['datetime'];
+        }
+    }
+    unset($bp_rows);
+
+    // ---------- GLE aggregates ----------
+    // (a) every BP reference (+ the typed reference) -> BP -> GLE direction
+    $lookup = array_map('strval', array_keys($bp));
+    if ($f['reference_no'] !== '') $lookup[] = $f['reference_no'];
+
+    // (b) partner mode: KBP references found via the partner's 428101 line (GLE -> BP direction)
+    if ($partner_name !== '') {
+        foreach (recon_gle_partner_candidate_refs($conn_exact, $partner_name, $df, $dt, $warnings) as $r) {
+            if (!isset($bp[$r])) $lookup[] = (string)$r;
+        }
+    }
+    $lookup = array_values(array_unique($lookup));
+
+    $gle = recon_gle_agg_by_refs($conn_exact, $lookup, $df, $dt, $warnings);
+
+    // (c) date-only / ALL partners: KBP references in the range (only KBP can be GLE-only)
+    if ($f['date_only']) {
+        foreach (recon_gle_agg_scoped_by_date($conn_exact, $df, $dt, $warnings) as $ref => $v) {
+            if (!isset($gle[$ref])) $gle[$ref] = $v;
+        }
     }
 
-    $all_refs = [];
-    foreach ($local_by_ref as $ref => $_) $all_refs[$ref] = true;
-    foreach ($gle_by_ref as $ref => $_) {
-        if ($ref !== '' && $ref !== '__DESC_MATCH__') $all_refs[$ref] = true;
+    // ---------- Scope ----------
+    $keys = [];
+    foreach ($bp as $ref => $_) $keys[(string)$ref] = true;
+    foreach ($gle as $ref => $_) {
+        $ref = (string)$ref;
+        if ($ref === '') continue;
+        if (isset($bp[$ref]) || recon_is_gle_to_bp_ref($ref)) $keys[$ref] = true;
     }
+    $keys = array_map('strval', array_keys($keys));
+    sort($keys, SORT_NATURAL | SORT_FLAG_CASE);
 
-    $all_ref_keys = array_keys($all_refs);
-    sort($all_ref_keys, SORT_NATURAL | SORT_FLAG_CASE);
+    // ---------- Reconcile ----------
+    $rows = [];
+    foreach ($keys as $ref) {
+        $b = $bp[$ref]  ?? null;
+        $g = $gle[$ref] ?? null;
+        $has_local = ($b !== null);
+        $has_gle   = ($g !== null);
+        if (!$has_local && !$has_gle) continue;
+        if (!$has_local && !recon_is_gle_to_bp_ref($ref)) continue;
 
-    $transactions = [];
-    foreach ($all_ref_keys as $ref) {
-        $local_group = $local_by_ref[$ref] ?? [];
-        $gle_rows    = $gle_by_ref[$ref]   ?? [];
+        $bp_total = $has_local ? ($b['amt'] + $b['chg_c'] + $b['chg_p']) : null;
+        $d = $has_gle ? $g['d'] : 0.0;
+        $c = $has_gle ? $g['c'] : 0.0;
 
-        $has_local = !empty($local_group);
-        $has_gle   = !empty($gle_rows);
-
-        $match_status = $has_local && $has_gle ? 'MATCHED'
-                      : ($has_local ? 'UNMATCHED (BP only)' : 'UNMATCHED (GLE only)');
-
-        $amt = 0; $chg_c = 0; $chg_p = 0;
-        $local_meta = null;
-        foreach ($local_group as $lg) {
-            $amt   += (float)($lg['amount_paid']        ?? 0);
-            $chg_c += (float)($lg['charge_to_customer'] ?? 0);
-            $chg_p += (float)($lg['charge_to_partner']  ?? 0);
-            if ($local_meta === null) $local_meta = $lg;
-        }
-
-        $gle_debit_total  = 0;
-        $gle_credit_total = 0;
-        foreach ($gle_rows as $g) {
-            $gle_debit_total  += (float)($g['debit']  ?? 0);
-            $gle_credit_total += (float)($g['credit'] ?? 0);
-        }
-
-        $bp_reference_total        = $amt + $chg_c + $chg_p;
-        $reference_variance_debit  = $bp_reference_total - $gle_debit_total;
-        $reference_variance_credit = $bp_reference_total - $gle_credit_total;
-
+        $var_d = $var_c = null;
         if ($has_local && $has_gle) {
-            if (abs($reference_variance_debit) < 0.01 || abs($reference_variance_credit) < 0.01) {
-                $match_status = 'MATCHED';
-                $matched_count++;
-            } else {
-                $match_status = 'VARIANCE';
-                $variance_count++;
-            }
-        } elseif ($has_local && !$has_gle) {
-            $unmatched_local++;
+            $var_d = $bp_total - $d;
+            $var_c = $bp_total - $c;
+            $status = (abs($var_d) < 0.00 || abs($var_c) < 0.00) ? 'MATCHED' : 'VARIANCE';
+        } elseif ($has_local) {
+            $status = 'UNMATCHED (BP only)';
         } else {
-            $unmatched_gle++;
+            $status = 'UNMATCHED (GLE only)';
         }
 
-        usort($gle_rows, function ($a, $b) {
-            $cmp = strcmp((string)($a['entry_number'] ?? ''), (string)($b['entry_number'] ?? ''));
-            if ($cmp !== 0) return $cmp;
-            $cmp = strcmp((string)($a['gl_code'] ?? ''), (string)($b['gl_code'] ?? ''));
-            if ($cmp !== 0) return $cmp;
-            return strcmp((string)($a['no'] ?? ''), (string)($b['no'] ?? ''));
-        });
-
-        $first_gle = $gle_rows[0] ?? null;
-
-        $transactions[] = [
-            'partner_id_kpx'     => $local_meta['partner_id_kpx'] ?? null,
-            'partner_name'       => $local_meta['partner_name']   ?? null,
+        $pid = $has_local ? $b['pid'] : null;
+        $rows[] = [
+            'partner_id_kpx'     => $pid,
+            'partner_name'       => $pid !== null ? ($partner_map[(string)$pid] ?? null) : null,
             'reference_no'       => $ref,
-            'datetime'           => $local_meta['datetime']       ?? ($first_gle['datetime'] ?? null),
-            'amount_paid'        => $has_local ? $amt   : null,
-            'charge_to_customer' => $has_local ? $chg_c : null,
-            'charge_to_partner'  => $has_local ? $chg_p : null,
-            'gle_row_count'      => count($gle_rows),
-            'gle_debit_total'    => $has_gle ? $gle_debit_total  : null,
-            'gle_credit_total'   => $has_gle ? $gle_credit_total : null,
-            'gle_rows'           => $gle_rows,
-            'gle_desc'           => $first_gle['desc'] ?? null,
-            'match_status'       => $match_status,
-            'bp_total'           => $has_local ? $bp_reference_total : null,
-            'variance_debit'     => $has_local && $has_gle ? $reference_variance_debit : null,
-            'variance_credit'    => $has_local && $has_gle ? $reference_variance_credit : null,
+            'datetime'           => $has_local ? $b['dt'] : null,
+            'amount_paid'        => $has_local ? $b['amt']   : null,
+            'charge_to_customer' => $has_local ? $b['chg_c'] : null,
+            'charge_to_partner'  => $has_local ? $b['chg_p'] : null,
+            'gle_row_count'      => $has_gle ? $g['n'] : 0,
+            'gle_debit_total'    => $has_gle ? $d : null,
+            'gle_credit_total'   => $has_gle ? $c : null,
+            'gle_rows'           => [],      // filled by recon_attach_details()
+            'gle_desc'           => null,    // filled by recon_attach_details()
+            'match_status'       => $status,
+            'bp_total'           => $bp_total,
+            'variance_debit'     => $var_d,
+            'variance_credit'    => $var_c,
             'has_local'          => $has_local,
             'has_gle'            => $has_gle,
         ];
-
-        if ($has_local) {
-            $total_amount_paid     += $amt;
-            $total_charge_customer += $chg_c;
-            $total_charge_partner  += $chg_p;
-        }
-        if ($has_gle) {
-            $total_debit  += $gle_debit_total;
-            $total_credit += $gle_credit_total;
-        }
     }
 
-    // Store for reuse (bounded LRU: keep last 5 filter combinations)
-    if (!isset($_SESSION['recon_export']) || !is_array($_SESSION['recon_export'])) {
-        $_SESSION['recon_export'] = [];
-    }
-    $_SESSION['recon_export'][$cache_key] = [
-        'transactions'          => $transactions,
-        'total_amount_paid'     => $total_amount_paid,
-        'total_charge_customer' => $total_charge_customer,
-        'total_charge_partner'  => $total_charge_partner,
-        'total_debit'           => $total_debit,
-        'total_credit'          => $total_credit,
-        'matched_count'         => $matched_count,
-        'variance_count'        => $variance_count,
-        'unmatched_local'       => $unmatched_local,
-        'unmatched_gle'         => $unmatched_gle,
-        'created_at'            => time(),
+    return [
+        'rows'     => $rows,
+        'totals'   => recon_sum_rows($rows),
+        'warnings' => array_values(array_unique($warnings)),
+        'created'  => time(),
     ];
-    if (count($_SESSION['recon_export']) > 5) {
-        uasort($_SESSION['recon_export'], function ($a, $b) {
-            return ($a['created_at'] ?? 0) <=> ($b['created_at'] ?? 0);
-        });
-        array_shift($_SESSION['recon_export']);
-    }
 }
 
 // ------------------------------------------------------------
-// 4. Apply display mode
+// PHASE 2: full GLE rows, only for the rows passed in
 // ------------------------------------------------------------
-$display_transactions = $transactions;
-if ($display_mode === 'variance') {
-    $display_transactions = array_values(array_filter($transactions, function ($row) {
-        return $row['match_status'] !== 'MATCHED';
-    }));
-} elseif ($display_mode === 'matched') {
-    $display_transactions = array_values(array_filter($transactions, function ($row) {
-        return $row['match_status'] === 'MATCHED';
-    }));
+function recon_attach_details(mysqli $conn_exact, array $rows, $df, $dt, array &$warnings) {
+    $refs = [];
+    foreach ($rows as $r) {
+        if ($r['has_gle']) $refs[] = (string)$r['reference_no'];
+    }
+    if (!$refs) return $rows;
+
+    $date_sql = ''; $date_params = []; $date_types = '';
+    if ($df !== null) { $date_sql .= ' AND datetime >= ?'; $date_params[] = $df; $date_types .= 's'; }
+    if ($dt !== null) { $date_sql .= ' AND datetime <= ?'; $date_params[] = $dt; $date_types .= 's'; }
+
+    $by_ref = [];
+    foreach (array_chunk(array_values(array_unique($refs)), RECON_REF_CHUNK) as $chunk) {
+        $ph  = implode(',', array_fill(0, count($chunk), '?'));
+        $sql = "SELECT `no`, datetime, gl_code, gl_desc, `desc`, reference, entry_number, debit, credit
+                FROM gle
+                WHERE reference IN ($ph)$date_sql";
+        $err = '';
+        $res = recon_fetch_all($conn_exact, $sql, str_repeat('s', count($chunk)) . $date_types,
+                               array_merge($chunk, $date_params), $err);
+        if ($err !== '') $warnings[] = 'GLE detail error: ' . $err;
+        foreach ($res as $g) {
+            $ref = trim((string)$g['reference']);
+            if ($ref !== '') $by_ref[$ref][] = $g;
+        }
+    }
+
+    foreach ($rows as &$r) {
+        $ref = (string)$r['reference_no'];
+        $g   = $by_ref[$ref] ?? [];
+        if ($g) {
+            usort($g, function ($a, $b) {
+                $cmp = strcmp((string)($a['entry_number'] ?? ''), (string)($b['entry_number'] ?? ''));
+                if ($cmp !== 0) return $cmp;
+                $cmp = strcmp((string)($a['gl_code'] ?? ''), (string)($b['gl_code'] ?? ''));
+                if ($cmp !== 0) return $cmp;
+                return strcmp((string)($a['no'] ?? ''), (string)($b['no'] ?? ''));
+            });
+            $r['gle_rows']      = $g;
+            $r['gle_row_count'] = count($g);
+            $r['gle_desc']      = $g[0]['desc'] ?? null;
+            if ($r['datetime'] === null) $r['datetime'] = $g[0]['datetime'] ?? null;
+        }
+    }
+    unset($r);
+    return $rows;
 }
+
+// ===== END inlined recon library =====
+
+date_default_timezone_set('Asia/Manila');
+
+use Dompdf\Dompdf;
+use Dompdf\Options;
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+$generated_by = $_SESSION['admin_email'] ?? ($_SESSION['user_email'] ?? 'Guest');
+// Release the session lock immediately: a long export must not block the user's other tabs.
+session_write_close();
+
+set_time_limit(3600);
+ini_set('memory_limit', '1024M');
+
+// ------------------------------------------------------------
+// 1. Filters (same parser/validation as the main page)
+// ------------------------------------------------------------
+$f      = recon_parse_filters($_GET);
+$format = (isset($_GET['format']) && $_GET['format'] === 'csv') ? 'csv' : 'pdf';
+
+$err = recon_validate_filters($f);
+if ($err !== '') {
+    die(htmlspecialchars($err));
+}
+
+$reference_column = recon_detect_reference_column($conn);
+$partners         = recon_load_partners($conn);
+$partner_name     = ($f['partner_id'] !== '' && !$f['is_all']) ? recon_partner_name($partners, $f['partner_id']) : '';
+list($df_val, $dt_val) = recon_date_bounds($f);
+
+// ------------------------------------------------------------
+// 2. Phase 1: aggregates (reuse the cache written by the main page)
+// ------------------------------------------------------------
+$cache_key = recon_cache_key($f);
+$result    = recon_cache_get($cache_key);
+if ($result === null) {
+    $result = recon_run($conn, $conn_exact, $f, $partners, $reference_column);
+    recon_cache_put($cache_key, $result);
+}
+
+$recon_warnings = $result['warnings'] ?? [];
+$T = $result['totals'];
+$total_amount_paid     = $T['amount_paid'];
+$total_charge_customer = $T['charge_customer'];
+$total_charge_partner  = $T['charge_partner'];
+$total_debit           = $T['debit'];
+$total_credit          = $T['credit'];
+$matched_count         = $T['matched'];
+$variance_count        = $T['variance'];
+$unmatched_local       = $T['unmatched_local'];
+$unmatched_gle         = $T['unmatched_gle'];
 
 $total_bp_combined  = $total_amount_paid + $total_charge_customer + $total_charge_partner;
 $variance_vs_debit  = $total_bp_combined - $total_debit;
 $variance_vs_credit = $total_bp_combined - $total_credit;
 
-// ------------------------------------------------------------
-// 5. Build HTML for PDF (unchanged markup, same fields)
-// ------------------------------------------------------------
-$generated_by = $_SESSION['admin_email'] ?? ($_SESSION['user_email'] ?? 'Guest');
+// Rows to export (light aggregate rows). Details are loaded in chunks below.
+$display_transactions = recon_filter_rows($result['rows'], $f['display_mode']);
+unset($result);
+
+$DT = recon_sum_rows($display_transactions); // totals of what is actually exported
+$disp_bp_combined = $DT['amount_paid'] + $DT['charge_customer'] + $DT['charge_partner'];
+
 $generated_at = date('Y-m-d h:i:s A');
 
 $filter_parts = [];
-if ($reference_no !== '') $filter_parts[] = "Reference: " . htmlspecialchars($reference_no);
-if ($partner_id !== '')   $filter_parts[] = "Partner: " . htmlspecialchars($partner_id === 'ALL' ? 'ALL PARTNERS' : $partner_id . ($partner_name ? " - $partner_name" : ''));
-if ($date_from !== '')    $filter_parts[] = "From: " . htmlspecialchars($date_from);
-if ($date_to !== '')      $filter_parts[] = "To: " . htmlspecialchars($date_to);
-if ($display_mode !== 'all') $filter_parts[] = "Display: " . htmlspecialchars(ucfirst($display_mode));
+if ($f['reference_no'] !== '') $filter_parts[] = 'Reference: ' . $f['reference_no'];
+if ($f['partner_id'] !== '')   $filter_parts[] = 'Partner: ' . ($f['is_all'] ? 'ALL PARTNERS' : $f['partner_id'] . ($partner_name ? " - $partner_name" : ''));
+if ($f['date_from'] !== '')    $filter_parts[] = 'From: ' . $f['date_from'];
+if ($f['date_to'] !== '')      $filter_parts[] = 'To: ' . $f['date_to'];
+if ($f['display_mode'] !== 'all') $filter_parts[] = 'Display: ' . ucfirst(str_replace('_', ' ', $f['display_mode']));
 $filter_summary = implode(' | ', $filter_parts);
+
+function recon_partner_display(array $row) {
+    if (!empty($row['partner_id_kpx']) || !empty($row['partner_name'])) {
+        return trim(($row['partner_id_kpx'] ?? '') . ' - ' . ($row['partner_name'] ?? ''), ' -');
+    }
+    if (!empty($row['gle_desc'])) return $row['gle_desc'];
+    return '—';
+}
+
+// ============================================================
+// CSV (streamed in chunks - fast, no row cap)
+// ============================================================
+if ($format === 'csv') {
+    $filename = 'Recon_Report_' . date('Ymd_His') . '.csv';
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Cache-Control: no-store');
+
+    $out = fopen('php://output', 'w');
+    fwrite($out, "\xEF\xBB\xBF"); // UTF-8 BOM so Excel reads it correctly
+
+    fputcsv($out, ['Bills Payment vs GLE Reconciliation Report']);
+    fputcsv($out, ['Filters', $filter_summary ?: 'None']);
+    fputcsv($out, ['Generated by', $generated_by, 'Generated at', $generated_at]);
+    fputcsv($out, ['Overall Amount Paid', number_format($total_amount_paid, 2),
+                   'Overall Chg Cust', number_format($total_charge_customer, 2),
+                   'Overall Chg Partr', number_format($total_charge_partner, 2),
+                   'Overall BP Total', number_format($total_bp_combined, 2),
+                   'Overall GLE Debit', number_format($total_debit, 2),
+                   'Overall GLE Credit', number_format($total_credit, 2)]);
+    fputcsv($out, ['Matched', $matched_count, 'Variance', $variance_count,
+                   'BP only', $unmatched_local, 'GLE only', $unmatched_gle]);
+    if (!empty($recon_warnings)) fputcsv($out, ['Warnings', implode(' | ', $recon_warnings)]);
+    fputcsv($out, []);
+
+    // BP amounts appear only on the FIRST line of each reference so pivots/sums don't double count.
+    fputcsv($out, ['Status', 'Reference', 'Partner', 'BP Datetime',
+                   'BP Amt Paid', 'BP Chg Cust', 'BP Chg Partr', 'BP Total', 'Var (BP-GLE Debit)', 'Var (BP-GLE Credit)',
+                   'GL Code', 'GL Desc', 'GLE Partner', 'GLE Reference', 'GLE Datetime', 'Debit', 'Credit', 'Entry No.']);
+
+    $detail_warnings = [];
+    foreach (array_chunk($display_transactions, 500) as $chunk) {
+        $chunk = recon_attach_details($conn_exact, $chunk, $df_val, $dt_val, $detail_warnings);
+        foreach ($chunk as $row) {
+            $partner_display = recon_partner_display($row);
+            $bp_cells = [
+                $row['has_local'] ? $row['datetime'] : '',
+                $row['has_local'] ? number_format((float)$row['amount_paid'], 2) : '',
+                $row['has_local'] ? number_format((float)$row['charge_to_customer'], 2) : '',
+                $row['has_local'] ? number_format((float)$row['charge_to_partner'], 2) : '',
+                $row['has_local'] ? number_format((float)$row['bp_total'], 2) : '',
+                ($row['has_local'] && $row['has_gle']) ? number_format((float)$row['variance_debit'], 2) : '',
+                ($row['has_local'] && $row['has_gle']) ? number_format((float)$row['variance_credit'], 2) : '',
+            ];
+            $blank_bp = ['', '', '', '', '', '', ''];
+
+            if (empty($row['gle_rows'])) {
+                fputcsv($out, array_merge([$row['match_status'], $row['reference_no'], $partner_display],
+                                          $bp_cells, ['', '', '', '', '', '', '', '']));
+                continue;
+            }
+            foreach ($row['gle_rows'] as $i => $g) {
+                fputcsv($out, array_merge(
+                    [$row['match_status'], $row['reference_no'], $partner_display],
+                    $i === 0 ? $bp_cells : $blank_bp,
+                    [
+                        $g['gl_code'] ?? '', $g['gl_desc'] ?? '', $g['desc'] ?? '', $g['reference'] ?? '', $g['datetime'] ?? '',
+                        number_format((float)($g['debit'] ?? 0), 2),
+                        number_format((float)($g['credit'] ?? 0), 2),
+                        $g['entry_number'] ?? '',
+                    ]
+                ));
+            }
+        }
+        unset($chunk);
+        flush();
+    }
+
+    fputcsv($out, []);
+    fputcsv($out, ['TOTAL (exported rows)', '', '', '',
+                   number_format($DT['amount_paid'], 2),
+                   number_format($DT['charge_customer'], 2),
+                   number_format($DT['charge_partner'], 2),
+                   number_format($disp_bp_combined, 2), '', '',
+                   '', '', '', '', '',
+                   number_format($DT['debit'], 2),
+                   number_format($DT['credit'], 2), '']);
+    fclose($out);
+    exit;
+}
+
+// ============================================================
+// PDF
+// ============================================================
+require_once __DIR__ . '/../../../vendor/autoload.php';
+
+if (count($display_transactions) > RECON_PDF_MAX_REFS) {
+    $csv_qs = http_build_query(array_merge($_GET, ['format' => 'csv']));
+    echo '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Too many rows for PDF</title></head>'
+       . '<body style="font-family:Arial,sans-serif;padding:2rem;">'
+       . '<h3>This export has ' . number_format(count($display_transactions)) . ' references.</h3>'
+       . '<p>PDF export is limited to ' . number_format(RECON_PDF_MAX_REFS) . ' references to keep it fast and reliable. '
+       . 'Either narrow the filters (e.g. a partner, a shorter date range, or a different Display option), '
+       . 'or download the full data as CSV.</p>'
+       . '<p><a href="export_recon.php?' . htmlspecialchars($csv_qs) . '" '
+       . 'style="background:#2e7d32;color:#fff;padding:8px 16px;border-radius:4px;text-decoration:none;">Download CSV</a></p>'
+       . '</body></html>';
+    exit;
+}
+
+function recon_pdf_bp_subrow(array $row) {
+    $has = $row['has_local'];
+    $h  = '<tr class="bp-subrow">';
+    $h .= '<td colspan="4" class="num" style="border-top: none;">';
+    $h .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Amt Paid:</span> <strong>' . ($has && $row['amount_paid'] !== null ? number_format((float)$row['amount_paid'], 2) : '—') . '</strong> &nbsp;&nbsp;';
+    $h .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Chg Cust:</span> <strong>' . ($has && $row['charge_to_customer'] !== null ? number_format((float)$row['charge_to_customer'], 2) : '—') . '</strong> &nbsp;&nbsp;';
+    $h .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Chg Partr:</span> <strong>' . ($has && $row['charge_to_partner'] !== null ? number_format((float)$row['charge_to_partner'], 2) : '—') . '</strong>';
+    $h .= '</td>';
+    $h .= '<td colspan="8" style="border-top: none;"></td>';
+    $h .= '</tr>';
+    return $h;
+}
+
+function recon_pdf_gle_cells(array $g) {
+    return '<td class="num">' . htmlspecialchars($g['gl_code'] ?? '—') . '</td>'
+         . '<td>' . htmlspecialchars($g['gl_desc'] ?? '—') . '</td>'
+         . '<td>' . htmlspecialchars($g['desc'] ?? '—') . '</td>'
+         . '<td>' . htmlspecialchars($g['reference'] ?? '—') . '</td>'
+         . '<td>' . htmlspecialchars($g['datetime'] ?? '—') . '</td>'
+         . '<td class="num">' . number_format((float)($g['debit'] ?? 0), 2) . '</td>'
+         . '<td class="num">' . number_format((float)($g['credit'] ?? 0), 2) . '</td>'
+         . '<td>' . htmlspecialchars($g['entry_number'] ?? '—') . '</td>';
+}
+
+function recon_pdf_row_html(array $row) {
+    $child_rows = $row['gle_rows'] ?? [];
+    switch ($row['match_status']) {
+        case 'MATCHED':             $status_class = 'status-matched';  break;
+        case 'VARIANCE':            $status_class = 'status-variance'; break;
+        case 'UNMATCHED (BP only)': $status_class = 'status-bp-only';  break;
+        default:                    $status_class = 'status-gle-only';
+    }
+    $partner_display = recon_partner_display($row);
+    $dt = htmlspecialchars($row['has_local'] ? ($row['datetime'] ?? '—') : '—');
+
+    $head = '<td class="center ' . $status_class . '">' . htmlspecialchars($row['match_status']) . '</td>'
+          . '<td>' . htmlspecialchars($partner_display) . '</td>'
+          . '<td>' . htmlspecialchars($row['reference_no'] ?? '—') . '</td>'
+          . '<td>' . $dt . '</td>';
+
+    $html = '';
+    if (empty($child_rows)) {
+        $html .= '<tr>' . $head . '<td class="center">—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>';
+        $html .= recon_pdf_bp_subrow($row);
+        return $html;
+    }
+    foreach ($child_rows as $i => $g) {
+        $html .= '<tr>' . ($i === 0 ? $head : '<td class="center"></td><td></td><td></td><td></td>')
+               . recon_pdf_gle_cells($g) . '</tr>';
+        if ($i === 0) $html .= recon_pdf_bp_subrow($row);
+    }
+    return $html;
+}
 
 $html = '
 <!DOCTYPE html>
@@ -634,7 +816,7 @@ $html = '
 <body>
     <h1>Bills Payment vs GLE Reconciliation Report</h1>
     <div class="meta">
-        <strong>Filters:</strong> ' . ($filter_summary ?: 'None') . '<br>
+        <strong>Filters:</strong> ' . htmlspecialchars($filter_summary ?: 'None') . '<br>
         <strong>Generated by:</strong> ' . htmlspecialchars($generated_by) . ' &nbsp;|&nbsp;
         <strong>Generated at:</strong> ' . htmlspecialchars($generated_at) . '
     </div>
@@ -698,112 +880,35 @@ if (empty($display_transactions)) {
         <tbody>
     ';
 
-    foreach ($display_transactions as $row) {
-        $child_rows  = $row['gle_rows'] ?? [];
-        $has_match   = ($row['match_status'] === 'MATCHED');
-        $is_variance = ($row['match_status'] === 'VARIANCE');
-        $is_bp_only  = ($row['match_status'] === 'UNMATCHED (BP only)');
-        $is_gle_only = ($row['match_status'] === 'UNMATCHED (GLE only)');
-        $is_multi    = (($row['gle_row_count'] ?? 0) > 1);
-
-        if (!empty($row['partner_id_kpx']) || !empty($row['partner_name'])) {
-            $partner_display = trim(($row['partner_id_kpx'] ?? '') . ' - ' . ($row['partner_name'] ?? ''), ' -');
-        } elseif (!empty($row['gle_desc'])) {
-            $partner_display = $row['gle_desc'];
-        } else {
-            $partner_display = '—';
+    // Phase 2: GLE detail rows loaded in chunks, only for exported references
+    $detail_warnings = [];
+    foreach (array_chunk($display_transactions, 500) as $chunk) {
+        $chunk = recon_attach_details($conn_exact, $chunk, $df_val, $dt_val, $detail_warnings);
+        foreach ($chunk as $row) {
+            $html .= recon_pdf_row_html($row);
         }
-
-        if ($has_match)        $status_class = 'status-matched';
-        elseif ($is_variance)  $status_class = 'status-variance';
-        elseif ($is_bp_only)   $status_class = 'status-bp-only';
-        else                   $status_class = 'status-gle-only';
-
-        if ($is_multi) {
-            foreach ($child_rows as $g_index => $g) {
-                $html .= '<tr>';
-                if ($g_index === 0) {
-                    $html .= '<td class="center ' . $status_class . '">' . htmlspecialchars($row['match_status']) . '</td>';
-                    $html .= '<td>' . htmlspecialchars($partner_display) . '</td>';
-                    $html .= '<td>' . htmlspecialchars($row['reference_no'] ?? '—') . '</td>';
-                    $html .= '<td>' . htmlspecialchars($row['has_local'] ? ($row['datetime'] ?? '—') : '—') . '</td>';
-                } else {
-                    $html .= '<td class="center"></td><td></td><td></td><td></td>';
-                }
-                $html .= '<td class="num">' . htmlspecialchars($g['gl_code'] ?? '—') . '</td>';
-                $html .= '<td>' . htmlspecialchars($g['gl_desc'] ?? '—') . '</td>';
-                $html .= '<td>' . htmlspecialchars($g['desc'] ?? '—') . '</td>';
-                $html .= '<td>' . htmlspecialchars($g['reference'] ?? '—') . '</td>';
-                $html .= '<td>' . htmlspecialchars($g['datetime'] ?? '—') . '</td>';
-                $html .= '<td class="num">' . number_format((float)($g['debit'] ?? 0), 2) . '</td>';
-                $html .= '<td class="num">' . number_format((float)($g['credit'] ?? 0), 2) . '</td>';
-                $html .= '<td>' . htmlspecialchars($g['entry_number'] ?? '—') . '</td>';
-                $html .= '</tr>';
-
-                if ($g_index === 0) {
-                    $html .= '<tr class="bp-subrow">';
-                    $html .= '<td colspan="4" class="num" style="border-top: none;">';
-                    $html .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Amt Paid:</span> <strong>' . ($row['has_local'] && $row['amount_paid'] !== null ? number_format((float)$row['amount_paid'], 2) : '—') . '</strong> &nbsp;&nbsp;';
-                    $html .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Chg Cust:</span> <strong>' . ($row['has_local'] && $row['charge_to_customer'] !== null ? number_format((float)$row['charge_to_customer'], 2) : '—') . '</strong> &nbsp;&nbsp;';
-                    $html .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Chg Partr:</span> <strong>' . ($row['has_local'] && $row['charge_to_partner'] !== null ? number_format((float)$row['charge_to_partner'], 2) : '—') . '</strong>';
-                    $html .= '</td>';
-                    $html .= '<td colspan="8" style="border-top: none;"></td>';
-                    $html .= '</tr>';
-                }
-            }
-        } else {
-            $html .= '<tr>';
-            $html .= '<td class="center ' . $status_class . '">' . htmlspecialchars($row['match_status']) . '</td>';
-            $html .= '<td>' . htmlspecialchars($partner_display) . '</td>';
-            $html .= '<td>' . htmlspecialchars($row['reference_no'] ?? '—') . '</td>';
-            $html .= '<td>' . htmlspecialchars($row['has_local'] ? ($row['datetime'] ?? '—') : '—') . '</td>';
-
-            if (!empty($child_rows)) {
-                $single = $child_rows[0];
-                $html .= '<td class="num">' . htmlspecialchars($single['gl_code'] ?? '—') . '</td>';
-                $html .= '<td>' . htmlspecialchars($single['gl_desc'] ?? '—') . '</td>';
-                $html .= '<td>' . htmlspecialchars($single['desc'] ?? '—') . '</td>';
-                $html .= '<td>' . htmlspecialchars($single['reference'] ?? '—') . '</td>';
-                $html .= '<td>' . htmlspecialchars($single['datetime'] ?? '—') . '</td>';
-                $html .= '<td class="num">' . number_format((float)($single['debit'] ?? 0), 2) . '</td>';
-                $html .= '<td class="num">' . number_format((float)($single['credit'] ?? 0), 2) . '</td>';
-                $html .= '<td>' . htmlspecialchars($single['entry_number'] ?? '—') . '</td>';
-            } else {
-                $html .= '<td class="center">—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>';
-            }
-            $html .= '</tr>';
-
-            $html .= '<tr class="bp-subrow">';
-            $html .= '<td colspan="4" class="num" style="border-top: none;">';
-            $html .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Amt Paid:</span> <strong>' . ($row['has_local'] && $row['amount_paid'] !== null ? number_format((float)$row['amount_paid'], 2) : '—') . '</strong> &nbsp;&nbsp;';
-            $html .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Chg Cust:</span> <strong>' . ($row['has_local'] && $row['charge_to_customer'] !== null ? number_format((float)$row['charge_to_customer'], 2) : '—') . '</strong> &nbsp;&nbsp;';
-            $html .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Chg Partr:</span> <strong>' . ($row['has_local'] && $row['charge_to_partner'] !== null ? number_format((float)$row['charge_to_partner'], 2) : '—') . '</strong>';
-            $html .= '</td>';
-            $html .= '<td colspan="8" style="border-top: none;"></td>';
-            $html .= '</tr>';
-        }
+        unset($chunk);
     }
 
+    // Footer = totals of the rows shown in this report (overall totals are in the summary at the top)
     $html .= '
         </tbody>
         <tfoot>
             <tr>
                 <td colspan="4" class="num"></td>
-                <td colspan="5">TOTAL</td>
-                <td class="num">' . number_format($total_debit, 2) . '</td>
-                <td class="num">' . number_format($total_credit, 2) . '</td>
+                <td colspan="5">TOTAL (displayed rows)</td>
+                <td class="num">' . number_format($DT['debit'], 2) . '</td>
+                <td class="num">' . number_format($DT['credit'], 2) . '</td>
                 <td></td>
             </tr>
             <tr>
-                <td colspan="4" class="num" style="border-top: none;">';
-    $html .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Amt Paid:</span> <strong>' . number_format($total_amount_paid, 2) . '</strong> &nbsp;&nbsp;';
-    $html .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Chg Cust:</span> <strong>' . number_format($total_charge_customer, 2) . '</strong> &nbsp;&nbsp;';
-    $html .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">Chg Partr:</span> <strong>' . number_format($total_charge_partner, 2) . '</strong> &nbsp;&nbsp;';
-    $html .= '<span style="text-transform: uppercase; font-size: 6px; color: #666;">BP Total:</span> <strong>' . number_format($total_bp_combined, 2) . '</strong>';
-
-    $html .= '      </td>
-                <td colspan="8">
+                <td colspan="4" class="num" style="border-top: none;">
+                    <span style="text-transform: uppercase; font-size: 6px; color: #666;">Amt Paid:</span> <strong>' . number_format($DT['amount_paid'], 2) . '</strong> &nbsp;&nbsp;
+                    <span style="text-transform: uppercase; font-size: 6px; color: #666;">Chg Cust:</span> <strong>' . number_format($DT['charge_customer'], 2) . '</strong> &nbsp;&nbsp;
+                    <span style="text-transform: uppercase; font-size: 6px; color: #666;">Chg Partr:</span> <strong>' . number_format($DT['charge_partner'], 2) . '</strong> &nbsp;&nbsp;
+                    <span style="text-transform: uppercase; font-size: 6px; color: #666;">BP Total:</span> <strong>' . number_format($disp_bp_combined, 2) . '</strong>
                 </td>
+                <td colspan="8"></td>
             </tr>
         </tfoot>
     </table>
@@ -812,16 +917,14 @@ if (empty($display_transactions)) {
 
 $html .= '</body></html>';
 
-// ------------------------------------------------------------
-// 6. Render PDF
-// ------------------------------------------------------------
 $options = new Options();
-$options->set('isRemoteEnabled', true);
+$options->set('isRemoteEnabled', false);      // no remote assets are used -> faster, safer
 $options->set('isHtml5ParserEnabled', true);
 $options->set('defaultFont', 'DejaVu Sans');
 
 $dompdf = new Dompdf($options);
 $dompdf->loadHtml($html);
+unset($html);
 $dompdf->setPaper('A4', 'landscape');
 $dompdf->render();
 
